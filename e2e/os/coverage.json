@@ -190,6 +190,20 @@
       "what": "The sweep over Monitor: every tab selected; every sort header pressed, sorting, and the other way on a second click; every fault row opened and closed; every log chip moving the filter on. Each read back from its tree and Monitor's door."
     },
     {
+      "id": "a11y.keyboard",
+      "task": "TASK-064",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/a11y.rs",
+      "what": "Everything without a pointer: Super, typing and Enter start Monitor; Tab and Shift+Tab walk its controls (the tree and the ring say which has focus) and Enter and Space work them (sorts, tabs, chips); Super+T and typing reach the shell; Alt+Tab moves between windows; Alt+F4 closes them."
+    },
+    {
+      "id": "theme.both",
+      "task": "TASK-064",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/theme.rs",
+      "what": "Every surface in light, then dark: the ground, the Rack, the launcher, Monitor and the terminal in their theme's tokens; each title strip follows the theme the moment it changes (lit when focused, dimmed when not). Pictures of both kept."
+    },
+    {
       "id": "monitor.tabs",
       "task": "TASK-062",
       "setup": "e2e",

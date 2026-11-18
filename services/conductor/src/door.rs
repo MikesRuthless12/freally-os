@@ -108,19 +108,26 @@ impl Door {
         // A cdpd restarted since the last call: connect to the new one, once.
         for _ in 0..2 {
             // cdpd asks conductor (the services, the boot, connections) while
-            // conductor waits for its answer: serve its requests meanwhile.
+            // conductor waits for its answer, and so may any app cdpd asks in
+            // turn: serve every service's requests meanwhile.
             let Some(i) = c.services.iter().position(|s| s.m.name == "cdpd") else {
                 return String::from("error: no cdpd in this image");
             };
-            let Some(dir) = c.services[i].child.as_ref().map(|ch| ch.channel.0.raw()) else {
+            if c.services[i].child.is_none() {
                 return String::from("error: cdpd isn't running");
-            };
+            }
+            let (who, dirs): (Vec<usize>, Vec<u32>) = c
+                .services
+                .iter()
+                .enumerate()
+                .filter_map(|(k, s)| s.child.as_ref().map(|ch| (k, ch.channel.0.raw())))
+                .unzip();
             if self.cdpd.is_none() {
                 self.cdpd = c.open_connection("cdpd", "conductor").map(fstd::ipc::Client::new);
             }
             let Some(cl) = self.cdpd.as_mut() else { continue };
             let deadline = Instant::after(Duration::from_secs(5));
-            match cl.call_serving::<_, cd::Answer>(cd::CALL, &call, deadline, dir, || c.request(i)) {
+            match cl.call_serving::<_, cd::Answer>(cd::CALL, &call, deadline, &dirs, |k| c.request(who[k])) {
                 Ok(a) => return alloc::format!("json {}", a.result),
                 Err(fstd::ipc::CallError::Remote(_, why)) => return alloc::format!("error: {why}"),
                 Err(e) => {

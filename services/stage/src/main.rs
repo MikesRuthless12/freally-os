@@ -353,6 +353,23 @@ impl Stage {
                     Ok((Vec::new(), Vec::new()))
                 })
             }
+            st::RAISE_APP if name == "desktop" => {
+                fwire::from_payload::<st::RaiseApp>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).map(|r| {
+                    // Its most recently used window, if it has one.
+                    let id = self
+                        .desk
+                        .windows
+                        .cycle_order()
+                        .into_iter()
+                        .find(|&id| self.desk.windows.get(id).is_some_and(|w| w.owner == r.name));
+                    if let Some(id) = id {
+                        let mut out = Vec::new();
+                        self.desk.focus(id, &mut out);
+                        self.apply(out);
+                    }
+                    (fwire::to_payload(&id.is_some()), Vec::new())
+                })
+            }
             st::SET_THEME => {
                 fwire::from_payload::<st::SetTheme>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|t| {
                     if !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {

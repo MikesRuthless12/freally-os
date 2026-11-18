@@ -610,7 +610,12 @@ impl Desktop {
         }
         let service = self.known[i].app.service.clone();
         match fstd::service::connect_within(&service, Duration::from_secs(5)) {
-            Ok(_) => fstd::info!("desktop: started {service}"),
+            Ok(_) => {
+                fstd::info!("desktop: started {service}");
+                // Already running: its window comes forward.
+                let raise = st::RaiseApp { name: service.clone() };
+                let _ = self.stage.call::<_, bool>(st::RAISE_APP, &raise, Vec::new(), deadline());
+            }
             Err(e) => fstd::warn!("desktop: couldn't start {service}: {e:?}"),
         }
         self.services();

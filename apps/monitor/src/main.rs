@@ -53,6 +53,28 @@ const COLS: [(&str, u32, Option<Column>); 6] = [
     ("Restarts", 830, Some(Column::Restarts)),
 ];
 
+/// What a control does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Act {
+    Tab(usize),
+    Sort(Column),
+    Fault(usize),
+    ServiceChip,
+    LevelChip,
+}
+
+/// One control on screen: what it does, where, and what it says it is.
+#[derive(Clone, Debug)]
+struct Ctl {
+    act: Act,
+    at: (i32, i32, u32, u32),
+    role: u8,
+    name: String,
+    testid: String,
+    state: u32,
+    value: String,
+}
+
 fn deadline() -> u64 {
     Instant::after(Duration::from_secs(2))
 }
@@ -75,10 +97,15 @@ struct Monitor {
     log: Log,
     log_cursor: u64,
     logger: Option<Client>,
-    /// Conductor didn't answer: the banner.
+    /// Conductor didn't answer three refreshes running: the banner (one
+    /// missed refresh keeps what was shown).
     unreachable: bool,
+    missed: u32,
     last_sample: u64,
     ax: fstd::ax::Publisher,
+    /// The control the keyboard is on (an index into `controls()`); none
+    /// until a key moves it, and a click puts it away.
+    focus: Option<usize>,
 }
 
 fn fonts() -> Result<Fonts<'static>, String> {
@@ -159,8 +186,10 @@ impl Monitor {
             log_cursor: 0,
             logger: None,
             unreachable: false,
+            missed: 0,
             last_sample: 0,
             ax: Default::default(),
+            focus: None,
         };
         m.refresh();
         m.draw();
@@ -174,6 +203,7 @@ impl Monitor {
         match fstd::service::ask::<_, c::Services>(c::LIST_SERVICES, &()) {
             Ok(s) => {
                 self.unreachable = false;
+                self.missed = 0;
                 let procs = s
                     .services
                     .into_iter()
@@ -189,7 +219,10 @@ impl Monitor {
                     .collect();
                 self.procs.sample(procs, now);
             }
-            Err(_) => self.unreachable = true,
+            Err(_) => {
+                self.missed += 1;
+                self.unreachable = self.missed >= 3;
+            }
         }
         if let Ok(t) = fstd::service::ask::<_, c::BootTimeline>(c::BOOT_TIMELINE, &()) {
             let stages: Vec<(String, f64)> = t
@@ -254,6 +287,7 @@ impl Monitor {
         let shown: Vec<Line> = self.log.shown().into_iter().cloned().collect();
         let (svc, lvl) = (self.log.service.clone(), self.log.min_level);
         let unreachable = self.unreachable;
+        let ring = self.focus.and_then(|i| self.controls().get(i).map(|c| c.at));
         let fonts = &mut self.fonts;
         {
             let mut s = Self::surface(self.px, w, h);
@@ -486,6 +520,10 @@ impl Monitor {
                     }
                 }
             }
+            // The keyboard's ring, round the control it's on.
+            if let Some((x, y, w, h)) = ring {
+                draw::focus_ring(&mut s, Rect::new(x, y, w, h), 6.0 * t.scale, t.colour(Tok::Focus));
+            }
             for p in s.px.iter_mut() {
                 *p |= 0xFF00_0000;
             }
@@ -507,7 +545,6 @@ impl Monitor {
         let t = self.theme;
         let px = |v: u32| t.px(v) as i32;
         let node = fstd::ax::node;
-        let id = |n: &mut ax::Node, testid: String| n.testid = testid;
         let tab_w = t.px(140);
         let mut nodes = alloc::vec![node(
             ax::ROOT,
@@ -516,10 +553,12 @@ impl Monitor {
             0,
             (px(PAD), 0, tab_w * TABS.len() as u32, t.px(TAB_H))
         )];
-        for (i, name) in TABS.iter().enumerate() {
-            let state = if i == self.tab { ax::SELECTED } else { 0 };
-            let mut n = node(0, ax::TAB, name, state, (px(PAD) + i as i32 * tab_w as i32, 0, tab_w, t.px(TAB_H)));
-            id(&mut n, alloc::format!("tab-{}", name.to_ascii_lowercase()));
+        for (i, c) in self.controls().into_iter().enumerate() {
+            let parent = if matches!(c.act, Act::Tab(_)) { 0 } else { ax::ROOT };
+            let focused = if self.focus == Some(i) { ax::FOCUSED } else { 0 };
+            let mut n = node(parent, c.role, &c.name, c.state | focused, c.at);
+            n.testid = c.testid;
+            n.value = c.value;
             nodes.push(n);
         }
         if self.unreachable {
@@ -535,23 +574,6 @@ impl Monitor {
         let top = px(TAB_H) + px(12);
         match self.tab {
             0 => {
-                for (k, (name, x, col)) in COLS.iter().enumerate() {
-                    let Some(col) = col else { continue };
-                    let next = COLS.get(k + 1).map_or(W, |c| c.1);
-                    let on = *col == self.procs.sort;
-                    let mut n = node(
-                        ax::ROOT,
-                        ax::BUTTON,
-                        &alloc::format!("Sort by {name}"),
-                        if on { ax::PRESSED } else { 0 },
-                        (px(*x), top, t.px(next - x), t.px(24)),
-                    );
-                    id(&mut n, alloc::format!("sort-{}", name.to_ascii_lowercase()));
-                    if on {
-                        n.value = String::from(if self.procs.descending { "descending" } else { "ascending" });
-                    }
-                    nodes.push(n);
-                }
                 let table = nodes.len() as u32;
                 let mut tb = node(
                     ax::ROOT,
@@ -560,60 +582,100 @@ impl Monitor {
                     0,
                     (px(8), top + px(24), self.w - t.px(16), t.px(ROW_H) * self.procs.rows.len() as u32),
                 );
-                id(&mut tb, String::from("processes"));
+                tb.testid = String::from("processes");
                 nodes.push(tb);
                 for (i, r) in self.procs.rows.iter().enumerate() {
-                    let mut row = node(
-                        table,
-                        ax::ROW,
-                        &r.proc.name,
-                        0,
-                        (px(8), top + px(24) + i as i32 * px(ROW_H), self.w - t.px(16), t.px(ROW_H)),
-                    );
+                    let at = (px(8), top + px(24) + i as i32 * px(ROW_H), self.w - t.px(16), t.px(ROW_H));
+                    let mut row = node(table, ax::ROW, &r.proc.name, 0, at);
                     row.value = r.proc.state.clone();
                     nodes.push(row);
                 }
             }
             1 => {
                 let table = nodes.len() as u32;
-                nodes.push(node(
-                    ax::ROOT,
-                    ax::TABLE,
-                    "Boot stages",
-                    0,
-                    (px(PAD), top, self.w - t.px(2 * PAD), t.px(ROW_H) * 15),
-                ));
+                let at = (px(PAD), top, self.w - t.px(2 * PAD), t.px(ROW_H) * 15);
+                nodes.push(node(ax::ROOT, ax::TABLE, "Boot stages", 0, at));
                 if let Some(b) = &self.boot {
                     for (i, (name, ms, _)) in b.stages.iter().enumerate() {
-                        let mut row = node(
-                            table,
-                            ax::ROW,
-                            name,
-                            0,
-                            (px(PAD), top + i as i32 * px(ROW_H), self.w - t.px(2 * PAD), t.px(ROW_H)),
-                        );
+                        let at = (px(PAD), top + i as i32 * px(ROW_H), self.w - t.px(2 * PAD), t.px(ROW_H));
+                        let mut row = node(table, ax::ROW, name, 0, at);
                         row.value = alloc::format!("{ms:.1} ms");
                         nodes.push(row);
                     }
+                }
+            }
+            _ => {}
+        }
+        ax::Tree { nodes }
+    }
+
+    /// The controls on screen now, in the keyboard's order: the tabs, then
+    /// the tab shown's own (its sort headers, its faults, or its chips).
+    fn controls(&self) -> Vec<Ctl> {
+        let t = self.theme;
+        let px = |v: u32| t.px(v) as i32;
+        let ctl = |act, at, role, name: &str, testid: String, state, value: &str| Ctl {
+            act,
+            at,
+            role,
+            name: String::from(name),
+            testid,
+            state,
+            value: String::from(value),
+        };
+        let tab_w = t.px(140);
+        let mut out: Vec<Ctl> = TABS
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let state = if i == self.tab { ax::SELECTED } else { 0 };
+                let at = (px(PAD) + i as i32 * tab_w as i32, 0, tab_w, t.px(TAB_H));
+                ctl(Act::Tab(i), at, ax::TAB, name, alloc::format!("tab-{}", name.to_ascii_lowercase()), state, "")
+            })
+            .collect();
+        if self.unreachable {
+            return out;
+        }
+        let top = px(TAB_H) + px(12);
+        match self.tab {
+            0 => {
+                for (k, (name, x, col)) in COLS.iter().enumerate() {
+                    let Some(col) = col else { continue };
+                    let next = COLS.get(k + 1).map_or(W, |c| c.1);
+                    let on = *col == self.procs.sort;
+                    let value = match (on, self.procs.descending) {
+                        (false, _) => "",
+                        (true, true) => "descending",
+                        (true, false) => "ascending",
+                    };
+                    out.push(ctl(
+                        Act::Sort(*col),
+                        (px(*x), top, t.px(next - x), t.px(24)),
+                        ax::BUTTON,
+                        &alloc::format!("Sort by {name}"),
+                        alloc::format!("sort-{}", name.to_ascii_lowercase()),
+                        if on { ax::PRESSED } else { 0 },
+                        value,
+                    ));
                 }
             }
             2 => {
                 let mut ry = top;
                 for (i, f) in self.faults.iter().enumerate() {
                     let open = self.open_fault == Some(i);
-                    let mut n = node(
-                        ax::ROOT,
+                    out.push(ctl(
+                        Act::Fault(i),
+                        (px(8), ry, self.w - t.px(16), t.px(ROW_H)),
                         ax::BUTTON,
                         &alloc::format!("{}: {}", f.service, f.message),
+                        alloc::format!("fault-{}", f.seq),
                         if open { ax::EXPANDED } else { 0 },
-                        (px(8), ry, self.w - t.px(16), t.px(ROW_H)),
-                    );
-                    id(&mut n, alloc::format!("fault-{}", f.seq));
-                    nodes.push(n);
+                        "",
+                    ));
                     ry += px(ROW_H) + if open { px(20) * (3 + f.frames.len() as i32) } else { 0 };
                 }
             }
-            _ => {
+            3 => {
                 let svc = alloc::format!("Service: {}", self.log.service.as_deref().unwrap_or("all"));
                 let lvl = alloc::format!(
                     "Level: {}",
@@ -622,63 +684,77 @@ impl Monitor {
                         .copied()
                         .unwrap_or("all")
                 );
-                let mut a = node(ax::ROOT, ax::BUTTON, &svc, 0, (px(PAD), top, t.px(240), t.px(24)));
-                id(&mut a, String::from("chip-service"));
-                let mut b = node(ax::ROOT, ax::BUTTON, &lvl, 0, (px(260), top, t.px(200), t.px(24)));
-                id(&mut b, String::from("chip-level"));
-                nodes.push(a);
-                nodes.push(b);
-            }
-        }
-        ax::Tree { nodes }
-    }
-
-    /// A click at (x, y) on the surface.
-    fn click(&mut self, x: i32, y: i32) {
-        let t = self.theme;
-        let px = |v: u32| t.px(v) as i32;
-        if y < px(TAB_H) {
-            let i = ((x - px(PAD)) / t.px(140) as i32).clamp(0, TABS.len() as i32 - 1) as usize;
-            self.tab = i;
-            fstd::info!("monitor: tab {}", TABS[i]);
-            return;
-        }
-        let top = px(TAB_H) + px(12);
-        match self.tab {
-            0 if y < top + px(24) => {
-                // A header: sort by its column.
-                if let Some((_, _, Some(c))) = COLS.iter().rev().find(|(_, cx, _)| x >= px(*cx)) {
-                    self.procs.sort_by(*c);
-                }
-            }
-            2 => {
-                let mut ry = top;
-                for i in 0..self.faults.len() {
-                    if y >= ry && y < ry + px(ROW_H) {
-                        self.open_fault = if self.open_fault == Some(i) { None } else { Some(i) };
-                        return;
-                    }
-                    ry += px(ROW_H)
-                        + if self.open_fault == Some(i) {
-                            px(20) * (3 + self.faults[i].frames.len() as i32)
-                        } else {
-                            0
-                        };
-                }
-            }
-            3 if y < top + px(24) => {
-                if x < px(260) {
-                    // The service chip: all, then each service in turn.
-                    let svcs = self.log.services();
-                    self.log.service = match &self.log.service {
-                        None => svcs.first().cloned(),
-                        Some(cur) => svcs.iter().position(|s| s == cur).and_then(|i| svcs.get(i + 1).cloned()),
-                    };
-                } else {
-                    self.log.min_level = (self.log.min_level + 1) % 5;
-                }
+                let at = (px(PAD), top, t.px(240), t.px(24));
+                out.push(ctl(Act::ServiceChip, at, ax::BUTTON, &svc, String::from("chip-service"), 0, ""));
+                let at = (px(260), top, t.px(200), t.px(24));
+                out.push(ctl(Act::LevelChip, at, ax::BUTTON, &lvl, String::from("chip-level"), 0, ""));
             }
             _ => {}
+        }
+        out
+    }
+
+    /// Works a control (a click on it, or Enter or Space on it).
+    fn act(&mut self, a: Act) {
+        match a {
+            Act::Tab(i) => {
+                self.tab = i;
+                fstd::info!("monitor: tab {}", TABS[i]);
+            }
+            Act::Sort(c) => self.procs.sort_by(c),
+            Act::Fault(i) => self.open_fault = if self.open_fault == Some(i) { None } else { Some(i) },
+            Act::ServiceChip => {
+                // All, then each service in turn.
+                let svcs = self.log.services();
+                self.log.service = match &self.log.service {
+                    None => svcs.first().cloned(),
+                    Some(cur) => svcs.iter().position(|s| s == cur).and_then(|i| svcs.get(i + 1).cloned()),
+                };
+            }
+            Act::LevelChip => self.log.min_level = (self.log.min_level + 1) % 5,
+        }
+    }
+
+    /// A click at (x, y) on the surface: the control there, if any; the
+    /// keyboard's ring goes away.
+    fn click(&mut self, x: i32, y: i32) {
+        self.focus = None;
+        let hit = self.controls().into_iter().find(|c| {
+            let (cx, cy, w, h) = c.at;
+            x >= cx && y >= cy && x < cx + w as i32 && y < cy + h as i32
+        });
+        if let Some(c) = hit {
+            self.act(c.act);
+        }
+    }
+
+    /// Tab and Shift+Tab move the keyboard's focus round the controls;
+    /// Enter and Space work the one it's on. True if anything changed.
+    fn keyboard(&mut self, usage: u16, modifiers: u8) -> bool {
+        const TAB: u16 = 0x2B;
+        const ENTER: u16 = 0x28;
+        const SPACE: u16 = 0x2C;
+        let n = self.controls().len();
+        match usage {
+            TAB if modifiers & 2 == 0 && n > 0 => {
+                let back = modifiers & 1 != 0;
+                self.focus = Some(match (self.focus, back) {
+                    (None, false) => 0,
+                    (None, true) => n - 1,
+                    (Some(i), false) => (i + 1) % n,
+                    (Some(i), true) => (i + n - 1) % n,
+                });
+                true
+            }
+            ENTER | SPACE => {
+                let Some(c) = self.focus.and_then(|i| self.controls().get(i).cloned()) else { return false };
+                self.act(c.act);
+                // The controls may have changed (another tab): stay in range.
+                let n = self.controls().len();
+                self.focus = self.focus.map(|i| i.min(n.saturating_sub(1)));
+                true
+            }
+            _ => false,
         }
     }
 
@@ -696,12 +772,14 @@ impl Monitor {
             st::EV_KEY => {
                 if let Ok(k) = fwire::from_payload::<st::Key>(p)
                     && k.down
-                    && k.usage == 0x2B
-                    && k.modifiers & 2 != 0
                 {
-                    // Ctrl+Tab: the next tab.
-                    self.tab = (self.tab + 1) % TABS.len();
-                    self.draw();
+                    if k.usage == 0x2B && k.modifiers & 2 != 0 {
+                        // Ctrl+Tab: the next tab.
+                        self.tab = (self.tab + 1) % TABS.len();
+                        self.draw();
+                    } else if self.keyboard(k.usage, k.modifiers) {
+                        self.draw();
+                    }
                 }
             }
             st::EV_THEME => {

@@ -15,6 +15,8 @@ mod inventory;
 mod site;
 mod sweep;
 
+#[path = "../../../e2e/os/specs/a11y.rs"]
+mod a11y;
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
 #[path = "../../../e2e/os/specs/cdp.rs"]
@@ -33,6 +35,8 @@ mod site_specs;
 mod stage;
 #[path = "../../../e2e/os/specs/terminal.rs"]
 mod terminal;
+#[path = "../../../e2e/os/specs/theme.rs"]
+mod theme;
 
 use cdp_proto::Cdp;
 use fjson::Value;
@@ -77,6 +81,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("cdp.dom", cdp_specs::dom),
     ("desktop.sweep", desktop::sweep),
     ("monitor.sweep", monitor::sweep),
+    ("a11y.keyboard", a11y::keyboard),
+    ("theme.both", theme::both),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

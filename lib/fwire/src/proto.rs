@@ -339,6 +339,9 @@ pub mod stage {
     pub const SUBSCRIBE_SHORTCUTS: u32 = 13;
     /// The screen's size, the UI scale and the theme.
     pub const SCREEN: u32 = 14;
+    /// The desktop only: bring an app's most recently used window forward
+    /// (`RaiseApp` → `bool`, whether it had one).
+    pub const RAISE_APP: u32 = 15;
     /// The e2e door's read-backs (e2e images only; conductor's door only).
     pub const LIST_WINDOWS: u32 = 100;
     pub const POINTER: u32 = 101;
@@ -457,6 +460,11 @@ pub mod stage {
         /// VMO holding its length (u64, little-endian) and then the tree
         /// (`crate::proto::ax::Tree`).
         pub struct AxTree { pub window_id: u32, pub tree: HandleRef }
+    }
+
+    wire_struct! {
+        /// `raise_app`: the service whose window comes forward.
+        pub struct RaiseApp { pub name: String }
     }
 
     wire_struct! {
@@ -757,6 +765,7 @@ pub mod inventory {
                 (st::SET_SCALE, "set_scale"),
                 (st::SUBSCRIBE_SHORTCUTS, "subscribe_shortcuts"),
                 (st::SCREEN, "screen"),
+                (st::RAISE_APP, "raise_app"),
                 (st::LIST_WINDOWS, "list_windows"),
                 (st::POINTER, "pointer"),
                 (st::AX_TREE, "ax_tree"),

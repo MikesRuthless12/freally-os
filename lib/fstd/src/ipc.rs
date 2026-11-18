@@ -144,23 +144,25 @@ impl Client {
 
 impl Client {
     /// As `call` (no handles either way), but while it waits it also watches
-    /// `other`, a channel, running `serve` whenever a message waits there:
-    /// for a callee that may ask the caller in turn (conductor's test door
-    /// asks cdpd, which asks conductor for the services).
+    /// `others`, channels, running `serve(i)` whenever a message waits on
+    /// `others[i]`: for a caller others keep asking meanwhile (conductor's
+    /// test door asks cdpd, which asks conductor for the services, and so may
+    /// any app cdpd asks in turn).
     pub fn call_serving<Req: Wire, Rep: Wire>(
         &mut self,
         ordinal: u32,
         req: &Req,
         deadline_ns: u64,
-        other: u32,
-        mut serve: impl FnMut(),
+        others: &[u32],
+        mut serve: impl FnMut(usize),
     ) -> Result<Rep, CallError> {
         use fcore_abi::signal;
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1).max(1);
         self.channel.send(&fwire::request(txid, ordinal, req)?, Vec::new())?;
+        let mut items = alloc::vec![[self.channel.0.raw(), signal::READABLE | signal::PEER_CLOSED]];
+        items.extend(others.iter().map(|&o| [o, signal::READABLE]));
         loop {
-            let items = [[self.channel.0.raw(), signal::READABLE | signal::PEER_CLOSED], [other, signal::READABLE]];
             match sys::wait_many(&items, deadline_ns)? {
                 0 => {
                     let m = match self.channel.try_recv() {
@@ -179,7 +181,7 @@ impl Client {
                     }
                     return Ok(fwire::from_payload(payload)?);
                 }
-                _ => serve(),
+                i => serve(i - 1),
             }
         }
     }
