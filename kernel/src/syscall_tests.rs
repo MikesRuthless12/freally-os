@@ -31,6 +31,21 @@ ktest!(syscalls_each_succeeds_and_each_error_path_is_reported, {
         {
             return Err("vm_map allowed W+X");
         }
+        // A mapping can't do more than the VMO's handle allows (closeout
+        // review): MAP alone maps nothing readable or runnable; READ lets it
+        // be read or run, as the image's handles are.
+        let (map_only, _) = call(nr::HANDLE_DUPLICATE, vmo, rights::MAP as u64, 0, 0, 0, 0)?;
+        for want in [perm::READ, perm::READ | perm::EXEC] {
+            if e(call(nr::VM_MAP, well_known::SELF_ASPACE as u64, map_only, 0, 4096, 0, want as u64))
+                != Some(FErr::AccessDenied)
+            {
+                return Err("vm_map mapped a VMO its handle may only MAP, readable or runnable");
+            }
+        }
+        let (readable, _) = call(nr::HANDLE_DUPLICATE, vmo, (rights::MAP | rights::READ) as u64, 0, 0, 0, 0)?;
+        let (at2, _) =
+            call(nr::VM_MAP, well_known::SELF_ASPACE as u64, readable, 0, 4096, 0, (perm::READ | perm::EXEC) as u64)?;
+        call(nr::VM_UNMAP, well_known::SELF_ASPACE as u64, at2, 4096, 0, 0, 0)?;
         if e(call(nr::VMO_CREATE, 4096, 1, 0, 0, 0, 0)) != Some(FErr::AccessDenied) {
             return Err("a contiguous VMO without the DMA grant");
         }
@@ -183,6 +198,14 @@ ktest!(hardware_access_stays_inside_each_grant, {
         // Ports: inside the grant, yes; outside, no.
         if e(call(nr::IOPORT_GRANT, com1, 0x60, 1, 0, 0, 0)) != Some(FErr::AccessDenied) {
             return Err("ioport_grant opened a port outside its resource");
+        }
+        // A range past the 65,536 ports, or one that wraps, is refused as
+        // such (closeout review: it wrapped silently, and a 65,536-port grant
+        // shrank to none).
+        for (base, len) in [(u64::MAX - 1, 3), (0, 0x1_0000 + 1), (0xFFFF, 2)] {
+            if e(call(nr::IOPORT_GRANT, root, base, len, 0, 0, 0)) != Some(FErr::InvalidArgs) {
+                return Err("ioport_grant took a range past the last port");
+            }
         }
         call(nr::IOPORT_GRANT, com1, 0x3F8, 8, 0, 0, 0)?;
         // MMIO: never RAM the kernel hands out; the framebuffer, yes.

@@ -143,8 +143,19 @@ impl AddressSpace {
             }
         };
         for p in 0..len / FRAME {
-            let phys = vmo.page(vmo_off + p * FRAME).ok_or(FErr::InvalidArgs)?;
-            paging::map(self.pml4, addr + p * FRAME, phys, flags).map_err(|_| FErr::NoMemory)?;
+            let mapped = match vmo.page(vmo_off + p * FRAME) {
+                Some(phys) => paging::map(self.pml4, addr + p * FRAME, phys, flags).map_err(|_| FErr::NoMemory),
+                None => Err(FErr::InvalidArgs),
+            };
+            if let Err(e) = mapped {
+                // Nothing of a failed map stays: the pages mapped so far would
+                // outlive the VMO frames they point at (no mapping is recorded).
+                for q in 0..p {
+                    paging::unmap(self.pml4, addr + q * FRAME);
+                }
+                crate::smp::tlb::user(self.pml4, addr, p);
+                return Err(e);
+            }
         }
         maps.push(Mapping { addr, len, _vmo: vmo.clone() });
         Ok(addr)
@@ -282,4 +293,25 @@ ktest!(aspace_dropping_one_returns_its_table_pages, {
         a.map(&v, 0, FRAME, 0x7FFF_0000_0000, perm::READ)?;
     }
     if frames::free_count() != before { Err("an address space leaked frames") } else { Ok(()) }
+});
+
+ktest!(aspace_a_map_that_fails_part_way_leaves_nothing_mapped, {
+    // Closeout review: the pages mapped before a failure stayed, with no
+    // mapping recorded, so the process kept them after the VMO's frames went.
+    let a = AddressSpace::new()?;
+    let v = Vmo::new(4 * FRAME, false)?;
+    let at = 0x80_0000;
+    paging::FAIL_MAP_AT.store(3, Ordering::Relaxed);
+    let r = a.map(&v, 0, 4 * FRAME, at, perm::READ);
+    paging::FAIL_MAP_AT.store(0, Ordering::Relaxed);
+    if r.is_ok() {
+        return Err("the planned failure didn't happen");
+    }
+    if (0..4).any(|p| paging::translate(a.pml4, at + p * FRAME).is_some()) {
+        return Err("a map that failed part-way left pages mapped");
+    }
+    if a.mapped_bytes() != 0 {
+        return Err("a map that failed was recorded");
+    }
+    Ok(())
 });

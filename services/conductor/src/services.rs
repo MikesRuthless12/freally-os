@@ -283,17 +283,15 @@ impl Conductor {
     /// Serves one message from service `i`'s directory channel.
     pub fn request(&mut self, i: usize) {
         let Some(child) = self.services[i].child.as_ref() else { return };
-        let mut bytes = alloc::vec![0u8; 1024];
-        let mut hs = [0u32; 16];
-        let (n, nh) = match fstd::sys::channel_read(child.channel.0.raw(), &mut bytes, &mut hs) {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        if fstd::inventory::seen_if(cfg!(feature = "flavour-e2e"), &child.channel, &bytes[..n]) {
+        // Read whole: a message too big for a fixed buffer would stay at the
+        // channel's head, and conductor would wake for it forever (closeout review).
+        let raw = child.channel.0.raw();
+        let Ok((bytes, hs)) = fstd::ipc::read_whole(|b, h| fstd::sys::channel_read(raw, b, h)) else { return };
+        if fstd::inventory::seen_if(cfg!(feature = "flavour-e2e"), &child.channel, &bytes) {
             return;
         }
-        let mut handles: Vec<Option<Handle>> = hs[..nh].iter().map(|&v| Handle::from_raw(v)).collect();
-        let Ok((h, payload)) = fwire::parse(&bytes[..n]) else {
+        let mut handles: Vec<Option<Handle>> = hs.iter().map(|&v| Handle::from_raw(v)).collect();
+        let Ok((h, payload)) = fwire::parse(&bytes) else {
             fstd::warn!("conductor: a malformed message from {}", self.services[i].m.name);
             return;
         };

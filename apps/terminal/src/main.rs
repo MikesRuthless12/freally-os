@@ -52,7 +52,8 @@ struct Sys {
     logger: Option<Client>,
 }
 
-const STAGES: [&str; 15] = ["F0", "F1", "B0", "B1", "B2", "B3", "K0", "K1", "K2", "K3", "C0", "S1", "S2", "S3", "S4"];
+/// The boot's stages, by id (the protocol's own list).
+const STAGES: [&str; 15] = c::STAGES;
 
 impl System for Sys {
     fn services(&mut self) -> Result<Vec<Service>, String> {

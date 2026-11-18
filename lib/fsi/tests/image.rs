@@ -104,3 +104,14 @@ fn recheck_file_catches_a_changed_file() {
     assert!(fsi::recheck_file(&image, "/system/version").is_ok());
     assert_eq!(fsi::recheck_file(&image, "/system/nope").err(), Some(FsiError::BadToc));
 }
+
+/// The rechecks hold the TOC where `verify` does, right after the header
+/// (closeout review: they took the header's word for where it was).
+#[test]
+fn the_rechecks_refuse_a_toc_moved_from_its_place() {
+    let mut image = sample(10);
+    let moved = 2 * fsi::BLOCK as u64;
+    image[88..96].copy_from_slice(&moved.to_le_bytes());
+    assert_eq!(fsi::recheck_file(&image, "/system/NOTICE").err(), Some(FsiError::BadLayout));
+    assert_eq!(fsi::recheck_toc(&image).err(), Some(FsiError::BadLayout));
+}

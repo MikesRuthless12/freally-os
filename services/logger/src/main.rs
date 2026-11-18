@@ -124,12 +124,12 @@ fn run(_bootstrap: u32) -> i64 {
 /// Serves every message waiting from one client; false once it's gone.
 fn serve(lg: &mut Logger, who: &str, ch: &Channel) -> bool {
     loop {
-        let mut bytes = alloc::vec![0u8; 4096];
-        let mut hs = [0u32; 4];
-        match fstd::sys::channel_read(ch.0.raw(), &mut bytes, &mut hs) {
-            Ok((n, _)) if fstd::inventory::seen(ch, &bytes[..n]) => {}
-            Ok((n, _)) => {
-                let Ok((h, p)) = fwire::parse(&bytes[..n]) else { continue };
+        // Read whole: a message too big for a fixed buffer would stay at the
+        // channel's head, and the logger would wake for it forever (closeout review).
+        match fstd::ipc::read_whole(|b, h| fstd::sys::channel_read(ch.0.raw(), b, h)) {
+            Ok((bytes, _)) if fstd::inventory::seen(ch, &bytes) => {}
+            Ok((bytes, _)) => {
+                let Ok((h, p)) = fwire::parse(&bytes) else { continue };
                 match h.ordinal {
                     l::WRITE => {
                         fstd::inventory::count(l::WRITE);
@@ -154,7 +154,6 @@ fn serve(lg: &mut Logger, who: &str, ch: &Channel) -> bool {
                 }
             }
             Err(FErr::ShouldWait) => return true,
-            Err(FErr::BufferTooSmall) => return true,
             Err(_) => return false,
         }
     }

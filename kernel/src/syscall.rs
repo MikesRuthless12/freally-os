@@ -366,8 +366,14 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let vh = handle(a1, rights::MAP)?;
             let Object::AddressSpace(a) = &*ah.object else { return Err(FErr::WrongType) };
             let Object::Vmo(v) = &*vh.object else { return Err(FErr::WrongType) };
-            // A writable mapping needs WRITE on the VMO; an executable one, EXECUTE or READ.
-            if a5 & fcore_abi::perm::WRITE != 0 && vh.rights & rights::WRITE == 0 {
+            // A mapping does no more than the VMO's handle allows: readable
+            // needs READ, writable WRITE, executable EXECUTE or READ.
+            let want = |p: u64| a5 & p != 0;
+            let has = |r: u32| vh.rights & r != 0;
+            if (want(fcore_abi::perm::READ) && !has(rights::READ))
+                || (want(fcore_abi::perm::WRITE) && !has(rights::WRITE))
+                || (want(fcore_abi::perm::EXEC) && !has(rights::EXECUTE | rights::READ))
+            {
                 return Err(FErr::AccessDenied);
             }
             one(a.map(v, a2, a3, a4, a5 as u32)?)
@@ -500,7 +506,8 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
         }
         nr::IOPORT_GRANT => {
             let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
-            if a2 == 0 || a1 + a2 > 0x1_0000 {
+            // Inside the 65,536 ports, and a count a u16 holds (no wrap, no truncation).
+            if a2 == 0 || a2 > 0xFFFF || a1.checked_add(a2).is_none_or(|end| end > 0x1_0000) {
                 return Err(FErr::InvalidArgs);
             }
             if !crate::hw::covers(&r, crate::obj::ResourceKind::IoPort, a1, a2) {

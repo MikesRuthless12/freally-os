@@ -42,7 +42,8 @@ const TABS: [&str; 4] = ["Processes", "Boot", "Faults", "Log"];
 const TAB_H: u32 = 44;
 const ROW_H: u32 = 32;
 const PAD: u32 = 16;
-const STAGES: [&str; 15] = ["F0", "F1", "B0", "B1", "B2", "B3", "K0", "K1", "K2", "K3", "C0", "S1", "S2", "S3", "S4"];
+/// The boot's stages, by id (the protocol's own list).
+const STAGES: [&str; 15] = c::STAGES;
 /// The Processes table's columns: header, x at 100 %, sort column.
 const COLS: [(&str, u32, Option<Column>); 6] = [
     ("Service", 16, Some(Column::Name)),

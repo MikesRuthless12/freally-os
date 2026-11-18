@@ -51,9 +51,21 @@ fn next(table: u64, i: u64, user: bool) -> Result<u64, &'static str> {
     }
 }
 
+/// ktest builds only: the `n`th `map` from now fails (0: none does), so a test
+/// can see what a failure part-way through leaves behind.
+#[cfg(feature = "ktest")]
+pub static FAIL_MAP_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Maps one 4 KiB page. `flags` must not ask for writable and executable together
 /// (W^X: a writable page must carry NX).
 pub fn map(pml4: u64, virt: u64, phys: u64, flags: u64) -> Result<(), &'static str> {
+    #[cfg(feature = "ktest")]
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        if FAIL_MAP_AT.load(Relaxed) != 0 && FAIL_MAP_AT.fetch_sub(1, Relaxed) == 1 {
+            return Err("a planned failure (ktest)");
+        }
+    }
     if flags & WRITABLE != 0 && flags & NX == 0 {
         return Err("W^X: a page can't be writable and executable");
     }

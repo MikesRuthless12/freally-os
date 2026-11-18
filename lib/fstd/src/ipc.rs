@@ -55,20 +55,34 @@ impl Channel {
     /// The next message if one is waiting, never waiting: `ShouldWait` when
     /// there's none yet, `PeerClosed` when none will come.
     pub fn try_recv(&self) -> Result<Message, FErr> {
-        let mut bytes = vec![0u8; 512];
-        let mut handles = [0u32; 16];
         loop {
-            match sys::channel_read(self.0.raw(), &mut bytes, &mut handles) {
-                Ok((n, _)) if crate::inventory::seen(self, &bytes[..n]) => continue,
-                Ok((n, nh)) => {
-                    bytes.truncate(n);
-                    let hs = handles[..nh].iter().filter_map(|&v| Handle::from_raw(v)).collect();
-                    return Ok(Message { bytes, handles: hs });
-                }
-                // Too small: grow and read again.
-                Err(FErr::BufferTooSmall) => bytes.resize(bytes.len() * 4, 0),
-                Err(e) => return Err(e),
+            let (bytes, hs) = read_whole(|b, h| sys::channel_read(self.0.raw(), b, h))?;
+            if crate::inventory::seen(self, &bytes) {
+                continue;
             }
+            let handles = hs.iter().filter_map(|&v| Handle::from_raw(v)).collect();
+            return Ok(Message { bytes, handles });
+        }
+    }
+}
+
+/// Reads one whole message with `read` (a `channel_read`): its bytes and
+/// raw handles. A buffer too small grows (to the kernel's 64 KiB) and reads
+/// again, so a large message is taken off the channel, never left at its head
+/// to fail every read after it.
+pub fn read_whole(
+    mut read: impl FnMut(&mut [u8], &mut [u32]) -> Result<(usize, usize), FErr>,
+) -> Result<(Vec<u8>, Vec<u32>), FErr> {
+    let mut bytes = vec![0u8; 512];
+    let mut handles = [0u32; 16];
+    loop {
+        match read(&mut bytes, &mut handles) {
+            Ok((n, nh)) => {
+                bytes.truncate(n);
+                return Ok((bytes, handles[..nh].to_vec()));
+            }
+            Err(FErr::BufferTooSmall) if bytes.len() < 1 << 16 => bytes.resize(bytes.len() * 4, 0),
+            Err(e) => return Err(e),
         }
     }
 }
@@ -192,4 +206,27 @@ fn check_reply(h: &Header, txid: u32, ordinal: u32) -> Result<(), CallError> {
         return Err(CallError::Wire(WireError::BadTag));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_large_message_is_read_whole() {
+        // A channel holding a 3,000-byte message with 2 handles: a read with
+        // less room fails without taking it, as the kernel's does.
+        let read = |b: &mut [u8], h: &mut [u32]| {
+            if b.len() < 3000 {
+                return Err(FErr::BufferTooSmall);
+            }
+            b[..3000].fill(7);
+            h[..2].copy_from_slice(&[11, 12]);
+            Ok((3000, 2))
+        };
+        let (bytes, hs) = read_whole(read).unwrap();
+        assert_eq!((bytes.len(), hs), (3000, vec![11, 12]));
+        // Past the kernel's 64 KiB nothing fits: an error, not a loop.
+        assert_eq!(read_whole(|_, _| Err(FErr::BufferTooSmall)), Err(FErr::BufferTooSmall));
+    }
 }
