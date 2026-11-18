@@ -68,6 +68,12 @@ pub fn take_handle(name: &str) -> Option<Handle> {
 
 /// A channel to the service called `name`, waiting up to 5 s for it to register.
 pub fn connect(name: &str) -> Result<Channel, CallError> {
+    connect_within(name, Duration::from_secs(5))
+}
+
+/// As `connect`, waiting at most `wait` for the service to register (zero:
+/// one try, as the log client does when the logger is restarting).
+pub fn connect_within(name: &str, wait: Duration) -> Result<Channel, CallError> {
     let start = Instant::now();
     loop {
         let r = {
@@ -83,9 +89,7 @@ pub fn connect(name: &str) -> Result<Channel, CallError> {
         match r {
             Ok((_, mut handles)) if !handles.is_empty() => return Ok(Channel(handles.remove(0))),
             Ok(_) => return Err(CallError::Sys(FErr::Internal)),
-            Err(CallError::Remote(code, _))
-                if code == FErr::ShouldWait as i32 && start.elapsed() < Duration::from_secs(5) =>
-            {
+            Err(CallError::Remote(code, _)) if code == FErr::ShouldWait as i32 && start.elapsed() < wait => {
                 crate::time::sleep(Duration::from_millis(5));
             }
             Err(e) => return Err(e),

@@ -1,11 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "drv-i8042"
-description = "The PS/2 keyboard and mouse driver."
+description = "drv-i8042: the PS/2 keyboard and mouse."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "drv-i8042"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+finput.workspace = true
+fstd.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

@@ -29,6 +29,7 @@ fimage = { path = "lib/fimage" }
 fjson = { path = "lib/fjson" }
 facpi = { path = "lib/facpi" }
 felf = { path = "lib/felf" }
+finput = { path = "lib/finput" }
 fsvc = { path = "lib/fsvc" }
 frt = { path = "lib/frt" }
 fstd = { path = "lib/fstd" }

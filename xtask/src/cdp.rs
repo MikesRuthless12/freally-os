@@ -120,6 +120,7 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         o.tcg = !std::path::Path::new("/dev/kvm").exists();
         o.port_offset = PORT_OFFSET;
         o.tamper_byte = s.get("tamper").and_then(Value::as_i64).map(|b| b as usize);
+        o.no_ps2 = s.get("no_ps2").and_then(Value::as_bool).unwrap_or(false);
         if let Some(from) = s.get("image_from").and_then(Value::as_str) {
             o.image_override = Some(build::build(crate::pack::parse_flavour(from)?)?.image);
         }

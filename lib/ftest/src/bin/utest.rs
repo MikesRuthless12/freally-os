@@ -7,7 +7,8 @@
 //! - 1: reads address 0 (the kernel files a page-fault report);
 //! - 2: panics (the kernel files a panic report with the message);
 //! - 3: opens COM1's ports through the resource in handle 4, reads one, exits 7;
-//! - 4: reads that port with no grant (a general-protection fault).
+//! - 4: reads that port with no grant (a general-protection fault);
+//! - 5: waits forever on the event in handle 4 (the kernel kills it there).
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -33,6 +34,11 @@ fn run(mode: u32) -> i64 {
         4 => {
             port_read(0x3FD);
             4
+        }
+        // Blocked in the kernel, holding the event, until the kernel kills it.
+        5 => {
+            let _ = fstd::sys::wait_one(4, fcore_abi::signal::SIGNALED, u64::MAX);
+            5
         }
         _ => panic!("utest: deliberate panic"),
     }

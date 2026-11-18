@@ -197,6 +197,11 @@ extern "C" fn dispatch(f: &mut Frame) {
     {
         proc::terminate(&p, -1);
     }
+    // On the way back to ring 3 a killed thread ends: only its registers are
+    // on the stack here (everything the syscall held has been dropped).
+    if crate::sched::dying() {
+        crate::sched::exit_current();
+    }
 }
 
 /// The table itself. `Ok((rax, rdx))`.
@@ -248,11 +253,13 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             start_user_thread(&thread, a2, a3, bootstrap)?;
             one(0)
         }
+        // The thread ends on its way back to user mode (`dispatch`).
         nr::PROCESS_EXIT => {
             if let Some(p) = proc::current() {
                 proc::terminate(&p, a0 as i64);
             }
-            crate::sched::exit_current();
+            crate::sched::kill_current();
+            one(0)
         }
         nr::PROCESS_KILL => {
             let p = handle(a0, rights::MANAGE)?;
@@ -302,7 +309,10 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             start_user_thread(&thread, a1, a2, a3)?;
             one(0)
         }
-        nr::THREAD_EXIT => crate::sched::exit_current(),
+        nr::THREAD_EXIT => {
+            crate::sched::kill_current();
+            one(0)
+        }
         nr::THREAD_SET_CLASS => {
             let t = handle(a0, rights::MANAGE)?;
             let class = crate::sched::Class::from_u64(a1).ok_or(FErr::InvalidArgs)?;
@@ -634,9 +644,17 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
 
 /// The kernel side of a user thread before its first entry to ring 3.
 pub extern "C" fn user_thread_entry(start: u64) {
+    // Killed before it was started (no `start`), or before it first ran: end
+    // here (the thread trampoline's exit).
+    if start == 0 {
+        return;
+    }
     // SAFETY: `start` is a Box<[u64; 3]> leaked by start_user_thread.
     let s = unsafe { alloc::boxed::Box::from_raw(start as *mut [u64; 3]) };
     let [rip, rsp, arg] = *s;
+    if crate::sched::dying() {
+        return;
+    }
     let pid = crate::sched::current()
         .and_then(|t| t.process.lock().as_ref().and_then(|p| proc::as_process(p).ok().map(|x| x.pid)))
         .unwrap_or(0);

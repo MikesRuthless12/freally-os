@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "finput"
+description = "finput: PS/2 scan code set 2 → Freally key codes (HID usages), the US layout, PS/2 mouse packets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

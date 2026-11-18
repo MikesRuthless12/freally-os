@@ -247,3 +247,27 @@ pub mod display {
         pub struct Fill { pub rgb: u32 }
     }
 }
+
+/// Keyboards and mice (TASK-043): a subscriber gets every event.
+pub mod input {
+    use crate::wire_struct;
+
+    pub const SUBSCRIBE: u32 = 1;
+    /// Events.
+    pub const KEY: u32 = 2;
+    pub const MOUSE: u32 = 3;
+
+    wire_struct! {
+        /// A key went down or up: its Freally key code (the HID usage), the
+        /// character the US layout gives it (0 for none), and the modifiers
+        /// held (bit 0 shift, 1 ctrl, 2 alt, 3 meta, 4 caps lock).
+        pub struct Key { pub usage: u16, pub down: bool, pub ch: u32, pub modifiers: u8 }
+    }
+
+    wire_struct! {
+        /// Relative motion and the wheel in HID's directions (right, down and
+        /// scrolling up positive), and the buttons held (bit 0 left, 1 right,
+        /// 2 middle).
+        pub struct Mouse { pub dx: i16, pub dy: i16, pub wheel: i8, pub buttons: u8 }
+    }
+}

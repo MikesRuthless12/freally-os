@@ -83,8 +83,9 @@ fn file(mut r: FaultReport) {
     }
 }
 
-/// A fault in ring 3: file the report and end the process. Never returns.
-pub fn user_fault(f: &Frame) -> ! {
+/// A fault in ring 3: file the report and end the process. The thread ends on
+/// its way back out of the exception (`idt::dispatch`).
+pub fn user_fault(f: &Frame) {
     let p = crate::proc::current();
     let (pid, service) = p
         .as_ref()
@@ -118,7 +119,7 @@ pub fn user_fault(f: &Frame) -> ! {
     if let Some(p) = p {
         crate::proc::terminate(&p, -11);
     }
-    crate::sched::exit_current();
+    crate::sched::kill_current();
 }
 
 /// Every report, as `system_info(FAULTS)` returns them.

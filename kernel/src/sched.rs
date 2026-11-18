@@ -22,7 +22,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -69,6 +69,8 @@ pub struct Thread {
     pub kstack_top: u64,
     fpu: Option<UnsafeCell<Box<[u8]>>>,
     pub wake_at: AtomicU64,
+    /// Killed: it runs only to unwind, and ends on its way back to user mode.
+    dying: AtomicBool,
     /// The process this thread belongs to (None for kernel threads).
     pub process: SpinLock<Option<crate::obj::ObjectRef>>,
 }
@@ -309,14 +311,28 @@ pub fn create(
         kstack_top: top,
         fpu: new_fpu_area(user),
         wake_at: AtomicU64::new(0),
+        dying: AtomicBool::new(false),
         process: SpinLock::new(None),
     }))
 }
 
-/// Makes a created thread runnable.
+/// Makes a created thread runnable (once: a thread killed before it started
+/// is already on its way to its end).
 pub fn start(t: &ThreadRef) {
-    t.state.store(READY, Ordering::Release);
-    SCHED.lock().queues[t.class() as usize].push_back(t.clone());
+    if t.state.compare_exchange(BLOCKED, READY, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        SCHED.lock().queues[t.class() as usize].push_back(t.clone());
+    }
+}
+
+/// The running thread, for `dying` on every return to user mode without the
+/// scheduler's lock. Written only by the scheduler (per CPU with SMP, TASK-036).
+static CURRENT: AtomicPtr<Thread> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Whether the running thread has been killed.
+pub fn dying() -> bool {
+    let t = CURRENT.load(Ordering::Acquire);
+    // SAFETY: the running thread is alive: the scheduler's `current` holds it.
+    !t.is_null() && unsafe { (*t).dying.load(Ordering::Acquire) }
 }
 
 extern "C" fn idle_loop(_: u64) {
@@ -341,11 +357,13 @@ pub fn init() -> Result<(), &'static str> {
         kstack_top: 0,
         fpu: None,
         wake_at: AtomicU64::new(0),
+        dying: AtomicBool::new(false),
         process: SpinLock::new(None),
     });
     let idle = create("idle", Class::Background, idle_loop, 0, false)?;
     idle.state.store(READY, Ordering::Release);
     let mut s = SCHED.lock();
+    CURRENT.store(Arc::as_ptr(&boot) as *mut Thread, Ordering::Release);
     s.current = Some(boot);
     s.idle = Some(idle);
     drop(s);
@@ -397,6 +415,7 @@ pub fn schedule() {
         }
         let next = (0..4).find_map(|c| s.queues[c].pop_front()).or_else(|| s.idle.clone()).expect("the idle thread");
         next.state.store(RUNNING, Ordering::Release);
+        CURRENT.store(Arc::as_ptr(&next) as *mut Thread, Ordering::Release);
         s.current = Some(next.clone());
         let now = cpu::rdtsc();
         s.slice_end = now + crate::time::ns_to_ticks(next.class().slice_ns());
@@ -422,14 +441,25 @@ pub fn schedule() {
         let want = next.process.lock().as_ref().and_then(crate::proc::aspace_of);
         let want_pml4 = want.as_ref().map_or(paging::kernel_pml4(), |a| a.pml4);
         if cpu::cr3() & !0xFFF != want_pml4 {
-            match want {
+            match &want {
                 Some(a) => a.activate(),
                 None => crate::mm::aspace::activate_kernel(),
             }
         }
+        drop(want);
         restore_fpu(&next);
-        // SAFETY: both stacks are valid; the scheduler owns `saved_rsp`.
-        unsafe { switch_context(prev.saved_rsp.get(), *next.saved_rsp.get()) };
+        let save = prev.saved_rsp.get();
+        // SAFETY: the scheduler owns `saved_rsp`.
+        let to = unsafe { *next.saved_rsp.get() };
+        // No reference may stay on this stack across the switch: a dead
+        // thread's stack never resumes, so whatever it held would leak (its
+        // process with it). The zombie list keeps a dead `prev` alive until
+        // it's reaped, after this switch; `current` keeps `next`.
+        drop(next);
+        let keep = (prev.state.load(Ordering::Acquire) != DEAD).then_some(prev);
+        // SAFETY: both stacks are valid.
+        unsafe { switch_context(save, to) };
+        drop(keep);
     }
     if irq_on {
         cpu::interrupts_on();
@@ -494,10 +524,23 @@ pub fn wake(t: &ThreadRef) {
     }
 }
 
-/// Blocks the current thread until `wake` (or until `deadline` in TSC ticks, if not u64::MAX).
+/// Blocks the current thread until `wake` (or until `deadline` in TSC ticks,
+/// if not u64::MAX). A killed thread never blocks: callers see `dying()` and
+/// unwind.
 pub fn block_until(deadline: u64) {
     let Some(t) = current() else { return };
+    if t.dying.load(Ordering::Acquire) {
+        return;
+    }
     t.state.store(BLOCKED, Ordering::Release);
+    // A kill between the check and the store found it running and woke
+    // nothing: undo the block. (If its wake got in first, it's queued; the
+    // switch below returns to it at once.)
+    if t.dying.load(Ordering::Acquire)
+        && t.state.compare_exchange(BLOCKED, RUNNING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    {
+        return;
+    }
     if deadline != u64::MAX {
         t.wake_at.store(deadline, Ordering::Relaxed);
         SCHED.lock().sleepers.push(t.clone());
@@ -513,9 +556,12 @@ pub fn yield_now() {
     schedule();
 }
 
-/// Ends the current thread.
+/// Ends the current thread. Call only with nothing of the kernel's on the
+/// stack (a thread's last return, or on its way back to user mode): what the
+/// stack holds is never dropped.
 pub extern "C" fn exit_current() -> ! {
     if let Some(t) = current() {
+        crate::proc::thread_gone(&t);
         t.state.store(DEAD, Ordering::Release);
         t.header.update(0, signal::TERMINATED);
         SCHED.lock().zombies.push(t);
@@ -588,14 +634,18 @@ pub fn set_start_arg(t: &ThreadRef, arg: u64) {
     unsafe { *((*t.saved_rsp.get()) as *mut u64).add(2) = arg };
 }
 
-/// Stops another thread: it never runs again; its stack is freed later.
+/// Kills a thread. It isn't stopped where it stands (what its kernel stack
+/// holds would never be dropped): woken if blocked, it runs only to unwind
+/// (its waits return at once) and ends on its way back to user mode, with
+/// nothing of the kernel's left on its stack.
 pub fn kill(t: &ThreadRef) {
-    t.state.store(DEAD, Ordering::Release);
-    t.header.update(0, signal::TERMINATED);
-    let mut s = SCHED.lock();
-    for q in s.queues.iter_mut() {
-        q.retain(|x| !Arc::ptr_eq(x, t));
+    t.dying.store(true, Ordering::Release);
+    wake(t);
+}
+
+/// Kills the running thread: it ends on its way back to user mode.
+pub fn kill_current() {
+    if let Some(t) = current() {
+        kill(&t);
     }
-    s.sleepers.retain(|x| !Arc::ptr_eq(x, t));
-    s.zombies.push(t.clone());
 }

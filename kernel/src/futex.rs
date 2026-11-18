@@ -32,7 +32,13 @@ pub fn wait(addr: u64, expected: u32, deadline: u64) -> Result<(), FErr> {
     let mut w = WAITERS.lock();
     let still_waiting = w.iter().any(|(_, _, t)| Arc::ptr_eq(t, &me));
     w.retain(|(_, _, t)| !Arc::ptr_eq(t, &me));
-    if still_waiting { Err(FErr::TimedOut) } else { Ok(()) }
+    if sched::dying() {
+        Err(FErr::BadState)
+    } else if still_waiting {
+        Err(FErr::TimedOut)
+    } else {
+        Ok(())
+    }
 }
 
 /// Wakes up to `count` threads waiting on user `addr`; returns how many.

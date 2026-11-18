@@ -33,6 +33,8 @@ pub struct VmOptions {
     /// Test only: boot this image instead of the flavour's own (`@boot.seal`: a release
     /// bootloader must refuse a dev-signed image).
     pub image_override: Option<PathBuf>,
+    /// Test only: no PS/2 controller (`@input.absent`).
+    pub no_ps2: bool,
 }
 
 impl VmOptions {
@@ -47,6 +49,7 @@ impl VmOptions {
             cpus: 2,
             tamper_byte: None,
             image_override: None,
+            no_ps2: false,
         }
     }
 
@@ -108,7 +111,7 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     let dir = o.dir();
     let mut c = Command::new("qemu-system-x86_64");
     c.args(["-name", &format!("freally-{}", o.name)]);
-    c.args(["-machine", "q35"]);
+    c.args(["-machine", if o.no_ps2 { "q35,i8042=off" } else { "q35" }]);
     if o.tcg {
         c.args(["-accel", "tcg", "-cpu", "max"]);
     } else {

@@ -121,6 +121,10 @@ pub fn wait_one(h: &Header, signals: u32, deadline: u64) -> Result<u32, FErr> {
         }
         sched::block_until(deadline);
         h.waiters.lock().retain(|t| !Arc::ptr_eq(t, &me));
+        // Killed: unwind (the thread ends on its way back to user mode).
+        if sched::dying() {
+            return Err(FErr::BadState);
+        }
     }
 }
 
@@ -141,6 +145,9 @@ pub fn wait_many(items: &[(&Header, u32)], deadline: u64) -> Result<usize, FErr>
         }
         if let Some(i) = hit.or_else(|| items.iter().position(|(h, s)| h.get() & s != 0)) {
             return Ok(i);
+        }
+        if sched::dying() {
+            return Err(FErr::BadState);
         }
         if deadline != u64::MAX && crate::arch::cpu::rdtsc() >= deadline {
             return Err(FErr::TimedOut);

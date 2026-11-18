@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = drv-i8042
+binary      = /system/drivers/i8042
+description = Reads the built-in keyboard and the mouse, and passes every key and movement on.
+start       = boot
+after       = logger, devmgr
+restart     = on-failure
+class       = interactive
+flavours    = release, dev, e2e

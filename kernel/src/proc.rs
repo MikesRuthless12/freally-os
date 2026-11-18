@@ -90,27 +90,45 @@ pub fn current() -> Option<ObjectRef> {
     sched::current()?.process.lock().clone()
 }
 
-/// Ends a process: every handle closed, every thread stopped, waiters told.
+/// Ends a process: every handle closed and every thread killed. Its threads
+/// unwind and end on their way back to user mode (the caller's included);
+/// the last one out tells waiters (`thread_gone`), so "ended" means nothing
+/// of it still runs.
 pub fn terminate(o: &ObjectRef, code: i64) {
     let Ok(p) = as_process(o) else { return };
-    let threads = {
+    let (threads, handles) = {
         let mut inner = p.inner.lock();
         if inner.exit_code.is_some() {
             return;
         }
         inner.exit_code = Some(code);
-        inner.handles.clear();
-        core::mem::take(&mut inner.threads)
+        (inner.threads.clone(), core::mem::take(&mut inner.handles))
     };
-    p.header.update(0, signal::TERMINATED);
-    let me = sched::current();
-    for t in threads {
-        if me.as_ref().is_some_and(|c| Arc::ptr_eq(c, &t)) {
-            continue;
+    // Closed outside the lock: closing runs objects' own clean-up.
+    drop(handles);
+    if threads.is_empty() {
+        p.header.update(0, signal::TERMINATED);
+    }
+    for t in &threads {
+        sched::kill(t);
+    }
+}
+
+/// A thread of a process ended (from `sched::exit_current`). The last one
+/// out ends the process: exit code 0 if nothing set one, every handle closed,
+/// waiters told.
+pub fn thread_gone(t: &ThreadRef) {
+    let Some(o) = t.process.lock().clone() else { return };
+    let Ok(p) = as_process(&o) else { return };
+    let handles = {
+        let mut inner = p.inner.lock();
+        inner.threads.retain(|x| !Arc::ptr_eq(x, t));
+        if !inner.threads.is_empty() {
+            return;
         }
-        sched::kill(&t);
-    }
-    if me.is_some_and(|c| c.process.lock().as_ref().is_some_and(|x| Arc::ptr_eq(x, o))) {
-        sched::exit_current();
-    }
+        inner.exit_code.get_or_insert(0);
+        core::mem::take(&mut inner.handles)
+    };
+    drop(handles);
+    p.header.update(0, signal::TERMINATED);
 }

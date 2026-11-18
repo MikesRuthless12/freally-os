@@ -72,6 +72,7 @@ static EXEC_PROBE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBo
 pub fn exception(f: &mut Frame) {
     if f.is_user() {
         crate::fault::user_fault(f);
+        return;
     }
     if f.vector == 14 && f.error & 0x10 != 0 && EXEC_PROBE.swap(false, Ordering::SeqCst) {
         LAST_FIXED_VECTOR.store(14, Ordering::Relaxed);

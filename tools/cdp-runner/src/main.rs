@@ -45,6 +45,9 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("log.read", services::read),
     ("devices.pci", services::pci),
     ("display.fill", services::fill),
+    ("input.keys", services::keys),
+    ("input.mouse", services::mouse),
+    ("input.absent", services::absent),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -216,6 +219,11 @@ impl Ctx {
     /// A warm reboot (RAM kept), as a restart button does.
     pub fn reset(&mut self) -> Result<(), String> {
         self.cdp.call("Page.reload", Value::Obj(Vec::new())).map(|_| ())
+    }
+
+    /// Every COM1 line containing `text`.
+    pub fn log_lines_with(&self, text: &str) -> Vec<String> {
+        self.log().lines().filter(|l| l.contains(text)).map(String::from).collect()
     }
 
     /// How many COM1 lines contain `text`.

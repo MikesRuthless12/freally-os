@@ -7,7 +7,8 @@
     "e2e-tampered": { "flavour": "e2e", "tamper": 9000 },
     "release": { "flavour": "release" },
     "release-with-dev-image": { "flavour": "release", "image_from": "dev" },
-    "e2e-crash-ud2": { "flavour": "e2e", "kernel_features": ["crash-ud2"] }
+    "e2e-crash-ud2": { "flavour": "e2e", "kernel_features": ["crash-ud2"] },
+    "e2e-no-ps2": { "flavour": "e2e", "no_ps2": true }
   },
   "features": [
     {
@@ -93,6 +94,27 @@
       "setup": "e2e",
       "spec": "e2e/os/specs/services.rs",
       "what": "drv-gop-fb offers the firmware's framebuffer as a write-combining VMO; filled with the UI kit's ground, the screen is that colour, every pixel."
+    },
+    {
+      "id": "input.keys",
+      "task": "TASK-043",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "Every printable character and modifier typed reaches drv-i8042 through IRQ 1 as scan code set 2 and comes out as the right Freally key code and US character."
+    },
+    {
+      "id": "input.mouse",
+      "task": "TASK-043",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "The PS/2 mouse, found with its IntelliMouse wheel, reports through IRQ 12 every movement on both axes, each of its three buttons, and the wheel both ways, in HID's directions."
+    },
+    {
+      "id": "input.absent",
+      "task": "TASK-043",
+      "setup": "e2e-no-ps2",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "On a machine with no PS/2 controller, drv-i8042 says No PS/2 controller found. and ends cleanly: never restarted, nothing else disturbed."
     }
   ]
 }

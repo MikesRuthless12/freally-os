@@ -193,6 +193,67 @@ ktest!(user_a_granted_port_reads_and_an_ungranted_one_faults, {
     Ok(())
 });
 
+ktest!(user_a_killed_thread_unwinds_and_an_ended_process_is_freed, {
+    use crate::obj::Header;
+    use fcore_abi::signal;
+    let ticks = |ms: u64| crate::time::ns_to_ticks(ms * 1_000_000);
+    let now = crate::arch::cpu::rdtsc;
+    // Mode 5 blocks forever in a wait on the event in its handle 4.
+    let event: ObjectRef = Arc::new(Object::Event(Header::new()));
+    let l = load("/system/test/utest", "utest", 0)?;
+    proc::as_process(&l.process)
+        .map_err(|e| e.describe())?
+        .inner
+        .lock()
+        .handles
+        .add_at(4, Handle { object: event.clone(), rights: rights::WAIT })
+        .map_err(|e| e.describe())?;
+    start(&l, 5)?;
+    let Object::Event(h) = &*event else { return Err("not an event") };
+    let t0 = now();
+    while h.waiters.lock().is_empty() {
+        if now() - t0 > ticks(2000) {
+            return Err("the test program never waited");
+        }
+        sched::sleep_ns(1_000_000);
+    }
+    // Killed mid-wait: its wait unwinds, so the reference its syscall held goes.
+    proc::terminate(&l.process, -9);
+    let header = crate::obj::waitable(&l.process).map_err(|e| e.describe())?;
+    crate::ipc::wait_one(header, signal::TERMINATED, now() + ticks(2000))
+        .map_err(|_| "the killed program never ended")?;
+    if !proc::as_process(&l.process).map_err(|e| e.describe())?.inner.lock().threads.is_empty() {
+        return Err("the process said it ended while a thread of it still ran");
+    }
+    if Arc::strong_count(&event) != 1 {
+        return Err("a killed thread leaked what its kernel stack held (its wait never unwound)");
+    }
+    // Once its thread is reaped, nothing holds the ended process: not even the
+    // thread that ended it from inside a syscall.
+    let Loaded { process, thread, .. } = l;
+    drop(thread);
+    for _ in 0..20 {
+        sched::sleep_ns(1_000_000);
+    }
+    if Arc::strong_count(&process) != 1 {
+        return Err("an ended process is still referenced (leaked by the thread that ended it)");
+    }
+    // The same for a process that ends itself (process_exit, mode 0 exits 42).
+    let l = load("/system/test/utest", "utest", 0)?;
+    start(&l, 0)?;
+    let header = crate::obj::waitable(&l.process).map_err(|e| e.describe())?;
+    crate::ipc::wait_one(header, signal::TERMINATED, now() + ticks(5000)).map_err(|_| "mode 0 never ended")?;
+    let Loaded { process, thread, .. } = l;
+    drop(thread);
+    for _ in 0..20 {
+        sched::sleep_ns(1_000_000);
+    }
+    if Arc::strong_count(&process) != 1 {
+        return Err("a process that exited is still referenced (leaked by its own process_exit)");
+    }
+    Ok(())
+});
+
 ktest!(user_a_panic_files_a_report_with_its_message, {
     let before = crate::fault::latest_seq();
     crate::init::run_test_program(2)?;
