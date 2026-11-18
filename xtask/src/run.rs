@@ -148,7 +148,10 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
         Flavour::Release => {}
     }
     if o.headless {
-        c.args(["-display", "none"]);
+        // Nothing reads QEMU's terminal in a headless run: no monitor, no stdin
+        // (an inherited terminal could stall a fresh VM's firmware).
+        c.args(["-display", "none", "-monitor", "none"]);
+        c.stdin(std::process::Stdio::null());
     }
     c
 }
