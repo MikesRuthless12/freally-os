@@ -128,6 +128,13 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
                 for p in build::PROGRAMS.iter().chain(build::TEST_PROGRAMS) {
                     c.args(["--package", p.package]);
                 }
+                // e2e compiles in the most (conductor's test door).
+                let f: Vec<String> = build::PROGRAMS
+                    .iter()
+                    .chain(build::TEST_PROGRAMS)
+                    .map(|p| format!("{}/flavour-e2e", p.package))
+                    .collect();
+                c.args(["--features", &f.join(",")]);
                 c.args(["--", "-D", "warnings"]);
                 quiet(c).map(|_| "no warnings".into())
             }),

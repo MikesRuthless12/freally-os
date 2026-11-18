@@ -274,3 +274,17 @@ pub fn recheck_file<'a>(image: &'a [u8], path: &str) -> Result<(TocEntry, &'a [u
     }
     Ok((e, bytes))
 }
+
+/// The TOC of an image the bootloader verified in full, its layout checked
+/// again (each file's bytes are rechecked by `recheck_file` as it's used).
+pub fn recheck_toc(image: &[u8]) -> Result<TocIter<'_>, FsiError> {
+    let h = Header::parse(image)?;
+    let toc_end = h.toc_offset.checked_add(h.toc_len).ok_or(FsiError::BadLayout)?;
+    if toc_end > h.tree_offset || h.tree_offset > image.len() as u64 || !h.toc_len.is_multiple_of(TOC_ENTRY_LEN as u64)
+    {
+        return Err(FsiError::BadLayout);
+    }
+    let toc = &image[h.toc_offset as usize..toc_end as usize];
+    toc::check(toc, image.len() as u64, h.tree_offset)?;
+    Ok(TocIter::new(toc))
+}

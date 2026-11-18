@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = logger
+binary      = /system/services/logger
+description = Keeps the system's log, so you can see what every service said and when.
+start       = boot
+restart     = always
+class       = normal
+grants      = kernel-log, serial
+flavours    = release, dev, e2e

@@ -216,8 +216,13 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             if grants() & grant::PROCESS_CREATE == 0 {
                 return Err(FErr::AccessDenied);
             }
+            // The child's grants: never one its creator doesn't hold.
+            let child = a2 as u32;
+            if a2 > u32::MAX as u64 || child & !grants() != 0 {
+                return Err(FErr::AccessDenied);
+            }
             let name = user_name(a0, a1)?;
-            let p = proc::create(core::str::from_utf8(&name).unwrap_or("?"), 0)?;
+            let p = proc::create(core::str::from_utf8(&name).unwrap_or("?"), child)?;
             let aspace = proc::as_process(&p)?.inner.lock().aspace.clone();
             let ph =
                 add_handle(p, rights::MANAGE | rights::READ | rights::WAIT | rights::DUPLICATE | rights::TRANSFER)?;
@@ -238,7 +243,9 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
                 proc::as_process(&me)?.inner.lock().handles.remove(a4 as u32)?;
                 target.inner.lock().handles.add_at(fcore_abi::well_known::BOOTSTRAP, arg)?;
             }
-            start_user_thread(&thread, a2, a3, 0)?;
+            // The bootstrap channel is handle 1 in the child; RDI says so.
+            let bootstrap = if a4 != 0 { fcore_abi::well_known::BOOTSTRAP as u64 } else { 0 };
+            start_user_thread(&thread, a2, a3, bootstrap)?;
             one(0)
         }
         nr::PROCESS_EXIT => {

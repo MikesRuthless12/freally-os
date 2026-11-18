@@ -93,6 +93,11 @@ fn every_conductor_message_round_trips() {
     ] {
         round_trip(c::FAULTS, c::Faults { reports: vec![c::FaultReport { kind, ..report() }], next_cursor: 4 });
     }
+    round_trip(
+        c::START,
+        c::Start { name: "logger".to_string(), flavour: 2, handles: vec![("serial".to_string(), HandleRef(0))] },
+    );
+    round_trip(c::INCOMING, c::Incoming { client: "stage".to_string(), channel: HandleRef(0) });
     round_trip(c::BOOT_TIMELINE, c::BootTimeline { stages: vec![(2, 0), (6, 912_000_000), (10, 1_040_000_000)] });
 }
 

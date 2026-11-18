@@ -157,6 +157,11 @@ fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> 
             "--failures",
             &failures.display().to_string(),
         ])
+        .args(if o.flavour == Flavour::E2e {
+            vec![String::from("--com3"), format!("127.0.0.1:{}", o.port(3))]
+        } else {
+            Vec::new()
+        })
         .stdout(Stdio::piped())
         .spawn();
     let mut result = Ok((0, ids.len()));

@@ -329,6 +329,11 @@ pub fn from_payload<T: Wire>(b: &[u8]) -> Result<T, WireError> {
     Ok(v)
 }
 
+/// A whole message: the header for `payload`, then `payload`.
+pub fn message_bytes(txid: u32, ordinal: u32, flags: u16, payload: Vec<u8>) -> Result<Vec<u8>, WireError> {
+    message(txid, ordinal, flags, payload)
+}
+
 fn message(txid: u32, ordinal: u32, flags: u16, payload: Vec<u8>) -> Result<Vec<u8>, WireError> {
     if payload.len() > MAX_PAYLOAD {
         return Err(WireError::TooLong);

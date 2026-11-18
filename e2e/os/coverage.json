@@ -65,6 +65,20 @@
       "setup": "dev",
       "spec": "e2e/os/specs/boot.rs",
       "what": "Freally Core starts conductor from the image as PID 1, its ELF re-checked and loaded W^X; conductor says it started and C0 is stamped."
+    },
+    {
+      "id": "log.read",
+      "task": "TASK-039",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "The logger keeps every service's lines and the kernel's own, mirrors services' lines to COM1 in dev and e2e, and reads them back page by page."
+    },
+    {
+      "id": "services.restart",
+      "task": "TASK-038",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "Conductor starts services from their manifests; each one that restarts is killed in turn and is back within 200 ms."
     }
   ]
 }

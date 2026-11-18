@@ -6,5 +6,5 @@ description = Starts every other service, restarts any that fail, and keeps thei
 start       = boot
 restart     = never
 class       = normal
-grants      = process-create, realtime, dma, faults
+grants      = process-create, realtime, dma, faults, kernel-log, boot-control, devices
 flavours    = release, dev, e2e

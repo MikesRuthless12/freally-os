@@ -131,7 +131,7 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let programs: Vec<&crate::build::UserProgram> = crate::build::PROGRAMS.iter().collect();
-    let user = crate::build::build_user(&programs)?;
+    let user = crate::build::build_user(&programs, flavour)?;
     pack(flavour, &out, &crate::build::kernel_path(), &user)?;
     println!("pack: {} (unsigned, for the {} key)", out.display(), signing_key(flavour).as_str());
     Ok(())

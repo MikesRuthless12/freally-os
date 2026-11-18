@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The system image and BootInfo, as the kernel hands them to conductor
+//! (handles 5 and 6): mapped read-only. Every file conductor uses is checked
+//! against its TOC hash before it's used (`fsi::recheck_file`).
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use fcore_abi::{BootInfo, FErr, perm, well_known};
+
+pub struct Image {
+    bytes: &'static [u8],
+    pub flavour: u8,
+    pub version: String,
+}
+
+/// Maps `len` bytes of `vmo` read-only into conductor.
+fn map(vmo: u32, len: u64) -> Result<&'static [u8], FErr> {
+    let len = len.next_multiple_of(4096);
+    let at = fstd::sys::vm_map(well_known::SELF_ASPACE, vmo, 0, len, 0, perm::READ)?;
+    // SAFETY: the kernel just mapped `len` readable bytes at `at`; they stay mapped.
+    Ok(unsafe { core::slice::from_raw_parts(at as *const u8, len as usize) })
+}
+
+impl Image {
+    pub fn open() -> Result<Image, FErr> {
+        let bi = map(well_known::BOOTINFO_VMO, 4096)?;
+        // SAFETY: the kernel copied a BootInfo to offset 0 of this page.
+        let info: BootInfo = unsafe { core::ptr::read_unaligned(bi.as_ptr() as *const BootInfo) };
+        let all = map(well_known::IMAGE_VMO, info.image.len)?;
+        let end = info.image.version.iter().position(|&b| b == 0).unwrap_or(32);
+        Ok(Image {
+            bytes: &all[..info.image.len as usize],
+            flavour: match info.flavour {
+                1 => 1,
+                2 => 2,
+                _ => 0,
+            },
+            version: String::from_utf8_lossy(&info.image.version[..end]).into_owned(),
+        })
+    }
+
+    /// A file's bytes, checked against its TOC hash.
+    pub fn file(&self, path: &str) -> Result<&'static [u8], String> {
+        fsi::recheck_file(self.bytes, path).map(|(_, b)| b).map_err(|e| String::from(e.describe()))
+    }
+
+    /// Every path in the TOC.
+    pub fn paths(&self) -> Result<Vec<String>, String> {
+        Ok(fsi::recheck_toc(self.bytes)
+            .map_err(|e| String::from(e.describe()))?
+            .map(|e| String::from(e.path()))
+            .collect())
+    }
+}

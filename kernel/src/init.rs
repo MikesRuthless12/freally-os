@@ -84,12 +84,19 @@ pub fn start(l: &Loaded, arg: u64) -> Result<(), &'static str> {
 /// the event the kernel signals when it files a fault report.
 pub fn start_conductor() -> Result<(), &'static str> {
     let bi = crate::boot_info().ok_or("no BootInfo")?;
-    let l =
-        load("/system/conductor", "conductor", grant::PROCESS_CREATE | grant::REALTIME | grant::DMA | grant::FAULTS)?;
+    let l = load(
+        "/system/conductor",
+        "conductor",
+        grant::PROCESS_CREATE | grant::REALTIME | grant::DMA | grant::FAULTS | grant::KERNEL_LOG | grant::BOOT_CONTROL,
+    )?;
     let p = proc::as_process(&l.process).map_err(|e| e.describe())?;
-    let bi_virt = bi as *const _ as u64;
-    let bi_phys = bi_virt.checked_sub(DIRECT_MAP).ok_or("BootInfo isn't in the direct map")?;
-    let bi_len = (bi_phys % 4096 + size_of::<fcore_abi::BootInfo>() as u64).next_multiple_of(4096);
+    // A copy of BootInfo at offset 0 of its own page (its pointers are the
+    // kernel's and mean nothing in user space; its scalars are what conductor reads).
+    let bi_vmo = Vmo::new(4096, false).map_err(|e| e.describe())?;
+    // SAFETY: BootInfo is plain data; this reads its bytes.
+    let bi_bytes =
+        unsafe { core::slice::from_raw_parts(bi as *const _ as *const u8, size_of::<fcore_abi::BootInfo>()) };
+    bi_vmo.write(0, bi_bytes).map_err(|e| e.describe())?;
     let ro = rights::READ | rights::MAP | rights::DUPLICATE | rights::TRANSFER;
     {
         let mut inner = p.inner.lock();
@@ -99,7 +106,7 @@ pub fn start_conductor() -> Result<(), &'static str> {
         };
         add(&mut inner, well_known::ROOT_RESOURCE, Object::Resource(root), rights::MANAGE | rights::DUPLICATE)?;
         add(&mut inner, well_known::IMAGE_VMO, Object::Vmo(Vmo::wrap(bi.image.base, bi.image.len)), ro)?;
-        add(&mut inner, well_known::BOOTINFO_VMO, Object::Vmo(Vmo::wrap(bi_phys & !0xFFF, bi_len)), ro)?;
+        add(&mut inner, well_known::BOOTINFO_VMO, Object::Vmo(bi_vmo), ro)?;
         inner
             .handles
             .add_at(

@@ -91,25 +91,28 @@ pub struct UserProgram {
 }
 
 /// Every image has these.
-pub const PROGRAMS: &[UserProgram] = &[UserProgram {
-    package: "svc-conductor",
-    bin: "conductor",
-    path: "/system/conductor",
-    kind: fsi::Kind::Conductor,
-}];
+pub const PROGRAMS: &[UserProgram] = &[
+    UserProgram { package: "svc-conductor", bin: "conductor", path: "/system/conductor", kind: fsi::Kind::Conductor },
+    UserProgram { package: "svc-logger", bin: "logger", path: "/system/services/logger", kind: fsi::Kind::Service },
+];
 
 /// Test images (`cargo xtask test`) add these.
 pub const TEST_PROGRAMS: &[UserProgram] =
     &[UserProgram { package: "ftest", bin: "utest", path: "/system/test/utest", kind: fsi::Kind::App }];
 
-/// Builds user programs; returns each one's image path, kind and built ELF.
-pub fn build_user(programs: &[&UserProgram]) -> Result<Vec<(String, fsi::Kind, PathBuf)>, String> {
+/// Builds user programs for `flavour` (each package's `flavour-*` feature:
+/// what only one flavour may carry is compiled out of the others); returns
+/// each one's image path, kind and built ELF.
+pub fn build_user(programs: &[&UserProgram], flavour: Flavour) -> Result<Vec<(String, fsi::Kind, PathBuf)>, String> {
     let mut c = util::cargo();
     c.env("CARGO_ENCODED_RUSTFLAGS", user_rustflags()).env_remove("RUSTFLAGS");
     c.args(["build", "--quiet", "--release"]).args(user_target_args());
+    let mut features = Vec::new();
     for p in programs {
         c.args(["--package", p.package, "--bin", p.bin]);
+        features.push(format!("{}/flavour-{}", p.package, flavour.name()));
     }
+    c.args(["--features", &features.join(",")]);
     util::run_ok(&mut c)?;
     let dir = util::target_dir().join("x86_64-freally/release");
     Ok(programs.iter().map(|p| (p.path.to_string(), p.kind, dir.join(p.bin))).collect())
@@ -181,7 +184,7 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> R
     if kernel_features.contains(&"ktest") {
         programs.extend(TEST_PROGRAMS);
     }
-    let user = build_user(&programs)?;
+    let user = build_user(&programs, flavour)?;
 
     // 4. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");

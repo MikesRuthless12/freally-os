@@ -9,7 +9,7 @@ use fwire::proto::conductor::{FaultReport, Faults};
 
 pub const KEEP: usize = 32;
 /// The faults event's bit (the kernel sets it; conductor clears it).
-const NEW_FAULT: u32 = 1 << 24;
+pub const NEW_FAULT: u32 = 1 << 24;
 
 pub struct Kept {
     pub reports: VecDeque<FaultReport>,
@@ -41,9 +41,8 @@ impl Kept {
         Ok(self.reports.iter().skip(self.reports.len() - kept_new).collect())
     }
 
-    /// Waits for the kernel's signal, then takes and logs what's new.
-    pub fn wait_and_take(&mut self) -> Result<(), FErr> {
-        fstd::sys::wait_one(well_known::FAULTS_EVENT, NEW_FAULT, u64::MAX)?;
+    /// The kernel signalled: clear the signal, then take and log what's new.
+    pub fn take_now(&mut self) -> Result<(), FErr> {
         fstd::sys::object_signal(well_known::FAULTS_EVENT, NEW_FAULT, 0)?;
         let mut buf = alloc::vec![0u8; 64 * 1024];
         let n = fstd::sys::system_info(topic::FAULTS, &mut buf)?;

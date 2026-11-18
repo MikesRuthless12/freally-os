@@ -17,6 +17,8 @@ mod site;
 mod boot;
 #[path = "../../../e2e/os/specs/kernel.rs"]
 mod kernel;
+#[path = "../../../e2e/os/specs/services.rs"]
+mod services;
 #[path = "../../../e2e/site/specs/site.rs"]
 mod site_specs;
 
@@ -39,6 +41,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("kernel.panic_screen", kernel::panic_screen),
     ("kernel.last_panic", kernel::last_panic),
     ("boot.conductor", boot::conductor),
+    ("services.restart", services::restart),
+    ("log.read", services::read),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -67,6 +71,8 @@ pub struct Ctx {
     pub failures: PathBuf,
     pub spec: String,
     allowed_errors: Vec<String>,
+    /// The e2e test door (COM3's socket), when the setup has one.
+    pub com3: Option<String>,
 }
 
 impl Ctx {
@@ -163,6 +169,36 @@ impl Ctx {
         self.log().lines().find(|l| l.contains(text)).map(String::from)
     }
 
+    /// Sends `cmd` to the e2e test door (conductor, on COM3) and returns its
+    /// answer's lines, up to `end` (waiting up to 10 s).
+    pub fn door(&self, cmd: &str) -> Result<Vec<String>, String> {
+        use std::io::{BufRead, Write};
+        let addr = self.com3.as_deref().ok_or("this setup has no test door (e2e only)")?;
+        let start = Instant::now();
+        let stream = loop {
+            match std::net::TcpStream::connect(addr) {
+                Ok(s) => break s,
+                Err(e) if start.elapsed() > Duration::from_secs(10) => return Err(format!("the test door: {e}")),
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+        let mut w = stream.try_clone().map_err(|e| e.to_string())?;
+        w.write_all(format!("{cmd}\n").as_bytes()).map_err(|e| e.to_string())?;
+        let mut lines = Vec::new();
+        for line in std::io::BufReader::new(stream).lines() {
+            let line = line.map_err(|e| format!("the test door went quiet after {lines:?}: {e}"))?;
+            let line = line.trim().to_string();
+            if line == "end" {
+                return Ok(lines);
+            }
+            if !line.is_empty() {
+                lines.push(line);
+            }
+        }
+        Err(format!("the test door closed after {lines:?}"))
+    }
+
     /// A warm reboot (RAM kept), as a restart button does.
     pub fn reset(&mut self) -> Result<(), String> {
         self.cdp.call("Page.reload", Value::Obj(Vec::new())).map(|_| ())
@@ -220,7 +256,14 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut ctx = Ctx { cdp, com1: PathBuf::from(com1), failures, spec: String::new(), allowed_errors: Vec::new() };
+    let mut ctx = Ctx {
+        cdp,
+        com1: PathBuf::from(com1),
+        failures,
+        spec: String::new(),
+        allowed_errors: Vec::new(),
+        com3: arg("--com3"),
+    };
     let mut red = 0;
     let wanted: Vec<&str> = specs.split(',').filter(|s| !s.is_empty()).collect();
     for id in &wanted {

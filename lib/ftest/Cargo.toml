@@ -11,6 +11,11 @@ publish = false
 name = "utest"
 path = "src/bin/utest.rs"
 
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
 [dependencies]
 fcore-abi.workspace = true
 fstd.workspace = true

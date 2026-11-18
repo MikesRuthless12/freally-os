@@ -11,9 +11,20 @@ publish = false
 name = "conductor"
 path = "src/main.rs"
 
+[features]
+# Exactly one, chosen by `cargo xtask build` for the image's flavour.
+flavour-release = []
+flavour-dev = []
+# The test door on COM3 (`door.rs`): compiled into e2e images only.
+flavour-e2e = []
+
 [dependencies]
 fcore-abi.workspace = true
+fcrypto.workspace = true
+felf.workspace = true
+fsi.workspace = true
 fstd.workspace = true
+fsvc.workspace = true
 fwire.workspace = true
 
 [lints]

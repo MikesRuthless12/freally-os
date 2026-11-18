@@ -138,3 +138,65 @@ pub fn object_signal(h: u32, clear: u32, set: u32) -> Result<(), FErr> {
 pub fn vmo_read(h: u32, offset: u64, buf: &mut [u8]) -> Result<usize, FErr> {
     call1(nr::VMO_READ, [h as u64, offset, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0]).map(|n| n as usize)
 }
+
+/// A new process with `grants` (never beyond the caller's): (process, address space).
+pub fn process_create(name: &str, grants: u32) -> Result<(u32, u32), FErr> {
+    call(nr::PROCESS_CREATE, [name.as_ptr() as u64, name.len() as u64, grants as u64, 0, 0, 0])
+        .map(|(p, a)| (p as u32, a as u32))
+}
+
+/// Starts `thread` at `entry` with `stack_top`; `bootstrap` (moved) becomes the child's handle 1.
+pub fn process_start(process: u32, thread: u32, entry: u64, stack_top: u64, bootstrap: u32) -> Result<(), FErr> {
+    call1(nr::PROCESS_START, [process as u64, thread as u64, entry, stack_top, bootstrap as u64, 0]).map(|_| ())
+}
+
+pub fn process_kill(process: u32) -> Result<(), FErr> {
+    call1(nr::PROCESS_KILL, [process as u64, 0, 0, 0, 0, 0]).map(|_| ())
+}
+
+/// (pid, exited, exit code) of a process.
+pub fn process_info(process: u32) -> Result<(u32, bool, i64), FErr> {
+    let mut b = [0u8; 56];
+    call1(nr::PROCESS_INFO, [process as u64, b.as_mut_ptr() as u64, b.len() as u64, 0, 0, 0])?;
+    let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    let mut code = [0u8; 8];
+    code.copy_from_slice(&b[16..24]);
+    Ok((u32_at(0), u32_at(12) != 0, i64::from_le_bytes(code)))
+}
+
+pub fn thread_create(process: u32, name: &str) -> Result<u32, FErr> {
+    call1(nr::THREAD_CREATE, [process as u64, name.as_ptr() as u64, name.len() as u64, 0, 0, 0]).map(|h| h as u32)
+}
+
+pub fn vmo_write(h: u32, offset: u64, data: &[u8]) -> Result<(), FErr> {
+    call1(nr::VMO_WRITE, [h as u64, offset, data.as_ptr() as u64, data.len() as u64, 0, 0]).map(|_| ())
+}
+
+/// Waits for any of `items` ([handle, signals]); returns the index of one that's ready.
+pub fn wait_many(items: &[[u32; 2]], deadline_ns: u64) -> Result<usize, FErr> {
+    call1(nr::OBJECT_WAIT_MANY, [items.as_ptr() as u64, items.len() as u64, deadline_ns, 0, 0, 0]).map(|i| i as usize)
+}
+
+pub fn resource_create(parent: u32, kind: u64, base: u64, len: u64) -> Result<u32, FErr> {
+    call1(nr::RESOURCE_CREATE, [parent as u64, kind, base, len, 0, 0]).map(|h| h as u32)
+}
+
+pub fn ioport_grant(resource: u32, port: u16, len: u16) -> Result<(), FErr> {
+    call1(nr::IOPORT_GRANT, [resource as u64, port as u64, len as u64, 0, 0, 0]).map(|_| ())
+}
+
+/// One byte from an I/O port the process was granted.
+#[inline]
+pub fn inb(port: u16) -> u8 {
+    let v: u8;
+    // SAFETY: a port read; an ungranted port faults the process, nothing else.
+    unsafe { core::arch::asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack, preserves_flags)) };
+    v
+}
+
+/// One byte to an I/O port the process was granted.
+#[inline]
+pub fn outb(port: u16, v: u8) {
+    // SAFETY: as `inb`.
+    unsafe { core::arch::asm!("out dx, al", in("al") v, in("dx") port, options(nomem, nostack, preserves_flags)) };
+}

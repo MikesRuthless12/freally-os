@@ -7,6 +7,8 @@ pub mod conductor {
     use alloc::string::String;
     use alloc::vec::Vec;
 
+    /// Conductor's first message to a service it starts (an event on handle 1).
+    pub const START: u32 = 0;
     pub const CONNECT: u32 = 1;
     pub const REGISTER: u32 = 2;
     pub const LIST_SERVICES: u32 = 3;
@@ -16,6 +18,20 @@ pub mod conductor {
     pub const FAULTS: u32 = 7;
     pub const BOOT_TIMELINE: u32 = 8;
     pub const WATCH: u32 = 9;
+    /// To a service's registered endpoint: a client connected (an event; the
+    /// new channel is handle 0).
+    pub const INCOMING: u32 = 10;
+
+    wire_struct! {
+        /// `start`: who the service is, the image's flavour (0 release, 1 dev,
+        /// 2 e2e), and the handles its manifest's grants carry, by name.
+        pub struct Start { pub name: String, pub flavour: u8, pub handles: Vec<(String, HandleRef)> }
+    }
+
+    wire_struct! {
+        /// `incoming`: who connected; the channel is handle 0.
+        pub struct Incoming { pub client: String, pub channel: HandleRef }
+    }
 
     wire_struct! {
         /// `connect` and `restart` and `rollback`: a service by name.
@@ -125,6 +141,7 @@ pub mod logger {
     use alloc::string::String;
     use alloc::vec::Vec;
 
+    /// One-way (an event): a client never waits on the log.
     pub const WRITE: u32 = 1;
     pub const READ: u32 = 2;
     pub const SUBSCRIBE: u32 = 3;

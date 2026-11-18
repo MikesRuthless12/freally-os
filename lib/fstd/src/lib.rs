@@ -17,6 +17,7 @@ pub mod handle;
 pub mod ipc;
 pub mod log;
 pub mod process;
+pub mod service;
 pub mod time;
 
 pub use fcore_abi::{FErr, well_known};

@@ -193,7 +193,11 @@ name = "svc-conductor"
 version = "0.1.0"
 dependencies = [
  "fcore-abi",
+ "fcrypto",
+ "felf",
+ "fsi",
  "fstd",
+ "fsvc",
  "fwire",
 ]
 
@@ -212,6 +216,11 @@ version = "0.1.0"
 [[package]]
 name = "svc-logger"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "svc-stage"
