@@ -288,4 +288,5 @@ dependencies = [
  "fscreen",
  "fsi",
  "fsvc",
+ "fui",
 ]

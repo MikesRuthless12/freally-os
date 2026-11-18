@@ -16,8 +16,9 @@ Freally OS is set in **Noto**, everywhere from the boot screen on. The fonts are
 
 | Font | Where it's used | Licence | Source |
 |---|---|---|---|
-| Noto Sans (Regular, SemiBold) | the interface, the boot and integrity screens | SIL Open Font License 1.1 | <https://github.com/notofonts/latin-greek-cyrillic> |
-| Noto Sans Mono (Regular) | Freally Terminal, code | SIL Open Font License 1.1 | <https://github.com/notofonts/latin-greek-cyrillic> |
+| Noto Sans 2.015 (Regular, Medium, SemiBold; unhinted) | the interface, the boot and integrity screens | SIL Open Font License 1.1 | <https://github.com/notofonts/latin-greek-cyrillic> |
+| Noto Sans Symbols 2 2.008 (Regular; unhinted) | the interface's ✓ (Noto Sans has none) | SIL Open Font License 1.1 | <https://github.com/notofonts/symbols> |
+| Noto Sans Mono (Regular) | Freally Terminal, code, and the interface's arrows (Noto Sans has none) | SIL Open Font License 1.1 | <https://github.com/notofonts/latin-greek-cyrillic> |
 | `assets/fonts/noto/boot-atlas.fatl` | the boot screen's glyphs, pre-rendered from Noto Sans by `cargo xtask atlas` | SIL Open Font License 1.1 (as the fonts it comes from) | this repository |
 
 The licence is in [`assets/fonts/noto/OFL.txt`](assets/fonts/noto/OFL.txt), copyright 2022 The Noto Project Authors.

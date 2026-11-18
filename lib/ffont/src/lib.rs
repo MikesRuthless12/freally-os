@@ -7,6 +7,8 @@
 //! - [`raster`]: an exact-area coverage rasterizer: each edge adds the signed
 //!   area it covers in each pixel, and a running sum along each row gives the
 //!   coverage. Anti-aliased, and deterministic for the same input.
+//! - [`text`]: drawing at run time (user space): glyphs rendered on first
+//!   use and kept, blended in linear light.
 //! - [`atlas`]: the FATL glyph atlas, pre-rendered at build time, and drawing
 //!   text from it with no allocation (the bootloader's and panic screen's path).
 #![cfg_attr(not(test), no_std)]
@@ -19,5 +21,7 @@ pub mod atlas;
 mod fmath;
 #[cfg(feature = "raster")]
 pub mod raster;
+#[cfg(feature = "raster")]
+pub mod text;
 #[cfg(feature = "raster")]
 pub mod ttf;
