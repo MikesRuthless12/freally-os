@@ -161,7 +161,14 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
     ));
     g.push((
         "ktests",
-        Box::new(|| {
+        Box::new(move || {
+            // The test kernel's image is signed with the dev key, which never
+            // goes into the container (like the KVM-timed gates, ci:local runs these).
+            if container && !crate::keys::KeyName::Dev.secret_path().exists() {
+                return Ok(String::from(
+                    "SKIP: no dev key in the container to sign the test kernel; ci:local runs every ktest",
+                ));
+            }
             let (results, verdict) = crate::ktest::run(600)?;
             let failed: Vec<String> =
                 results.iter().filter(|r| !r.pass).map(|r| format!("{}: {}", r.name, r.why.join(" ").trim())).collect();
