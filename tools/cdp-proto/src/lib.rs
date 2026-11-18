@@ -100,6 +100,7 @@ impl WebSocket {
     pub fn connect(host_port: &str, path: &str) -> io::Result<WebSocket> {
         let stream = TcpStream::connect(host_port)?;
         stream.set_nodelay(true)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
         let mut writer = stream.try_clone()?;
         let mut seed = [0u8; 16];
         // The key and the masks only need to be unpredictable to a proxy; this is
@@ -266,17 +267,20 @@ impl Drop for Cdp {
 }
 
 impl Cdp {
-    /// Connects to the first target `/json/list` gives at `host_port`.
+    /// Connects to the first page target `/json/list` gives at `host_port`
+    /// (a browser also lists targets of its own, such as its omnibox popup,
+    /// which never answer a page's methods). A reply that takes over 60 s is an
+    /// error, never a hang.
     pub fn connect(host_port: &str) -> io::Result<Cdp> {
         let list = http_get(host_port, "/json/list")?;
         let v = fjson::parse(&list)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("/json/list: {e:?}")))?;
         let url = v
             .as_array()
-            .and_then(|a| a.first())
+            .and_then(|a| a.iter().find(|t| t.get("type").and_then(Value::as_str) == Some("page")))
             .and_then(|t| t.get("webSocketDebuggerUrl"))
             .and_then(Value::as_str)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no target"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no page target"))?;
         let rest = url.strip_prefix("ws://").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not ws://"))?;
         let (hp, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
         Ok(Cdp { ws: WebSocket::connect(hp, path)?, next_id: 1 })
@@ -287,6 +291,10 @@ impl Cdp {
         let id = self.next_id;
         self.next_id += 1;
         let msg = Value::obj([("id", id.into()), ("method", method.into()), ("params", params)]);
+        let trace = std::env::var_os("FREALLY_CDP_TRACE").is_some();
+        if trace {
+            eprintln!("cdp → {id} {method}");
+        }
         self.ws.send_text(&msg.to_json()).map_err(|e| e.to_string())?;
         loop {
             match self.ws.recv().map_err(|e| e.to_string())? {
@@ -294,6 +302,9 @@ impl Cdp {
                     let v = fjson::parse(&t).map_err(|e| format!("bad reply: {e:?}"))?;
                     if v.get("id").and_then(Value::as_i64) != Some(id) {
                         continue; // an event, or another call's reply
+                    }
+                    if trace {
+                        eprintln!("cdp ← {id}");
                     }
                     if let Some(e) = v.get("error") {
                         return Err(e.get("message").and_then(Value::as_str).unwrap_or("error").to_string());
@@ -307,17 +318,44 @@ impl Cdp {
     }
 }
 
-/// A plain HTTP GET of `path`; the body as text.
+/// A plain HTTP GET of `path`; the body as text. Reads exactly the body's
+/// `Content-Length` when the server gives one (a browser's DevTools server
+/// keeps the connection open whatever `Connection: close` asks), else to the
+/// end; a server silent for 10 s is an error, never a hang.
 pub fn http_get(host_port: &str, path: &str) -> io::Result<String> {
-    let mut s = TcpStream::connect(host_port)?;
-    write!(s, "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n")?;
-    let mut text = String::new();
-    s.read_to_string(&mut text)?;
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    if !head.starts_with("HTTP/1.1 200") {
-        return Err(io::Error::other(head.lines().next().unwrap_or("no status").to_string()));
+    let s = TcpStream::connect(host_port)?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let mut w = s.try_clone()?;
+    write!(w, "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n")?;
+    let mut r = BufReader::new(s);
+    let mut status = String::new();
+    r.read_line(&mut status)?;
+    let mut length = None;
+    loop {
+        let mut h = String::new();
+        if r.read_line(&mut h)? == 0 || h.trim().is_empty() {
+            break;
+        }
+        if let Some((k, v)) = h.split_once(':')
+            && k.trim().eq_ignore_ascii_case("Content-Length")
+        {
+            length = v.trim().parse::<usize>().ok();
+        }
     }
-    Ok(body.to_string())
+    let mut body = Vec::new();
+    match length {
+        Some(n) => {
+            body.resize(n, 0);
+            r.read_exact(&mut body)?;
+        }
+        None => {
+            r.read_to_end(&mut body)?;
+        }
+    }
+    if !status.starts_with("HTTP/1.1 200") {
+        return Err(io::Error::other(status.trim().to_string()));
+    }
+    String::from_utf8(body).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a body that isn't UTF-8"))
 }
 
 #[cfg(test)]

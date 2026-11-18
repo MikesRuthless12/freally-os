@@ -358,6 +358,10 @@ pub mod grant {
     pub const REALTIME: u32 = 1 << 1;
     pub const DMA: u32 = 1 << 2;
     pub const FAULTS: u32 = 1 << 3;
+    /// Read the kernel's early log ring (the logger).
+    pub const KERNEL_LOG: u32 = 1 << 4;
+    /// Write the boot-control UEFI variable (conductor).
+    pub const BOOT_CONTROL: u32 = 1 << 5;
 }
 
 impl FErr {

@@ -11,6 +11,7 @@ publish = false
 fcore-abi.workspace = true
 fcrypto.workspace = true
 fsi = { workspace = true, features = ["build"] }
+fsvc.workspace = true
 ffont = { workspace = true, features = ["raster"] }
 fscreen.workspace = true
 fimage.workspace = true

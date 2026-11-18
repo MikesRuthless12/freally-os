@@ -5,7 +5,11 @@
 //! start `cdp-host` on its QMP socket, and run that setup's specs with
 //! `cdp-runner`. Each spec prints `▶ @id … pass (1.2s)`; the end prints how many
 //! are green and the leg's time. Every coverage feature must have a spec and
-//! every spec a coverage feature. The site leg arrives with the site (TASK-033).
+//! every spec a coverage feature.
+//!
+//! The site leg (TASK-033): `cdp-runner --site site/` serves the built docs
+//! site, starts headless Chrome and runs `e2e/site/coverage.json`'s specs over
+//! CDP. Where the site or Chrome isn't here it says SKIP with why.
 
 use crate::build;
 use crate::run::{self, VmOptions};
@@ -62,7 +66,9 @@ pub fn cdp_cmd(args: &[String]) -> Result<(), String> {
         total += t;
     }
     if site {
-        println!("▶ site leg … skip (0.0s)\n    the docs site arrives in Phase 1 (TASK-032/033)");
+        let (g, t) = site_leg(only.as_deref())?;
+        green += g;
+        total += t;
     }
     let secs = start.elapsed().as_secs_f64();
     if green == total {
@@ -176,4 +182,66 @@ fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> 
     let _ = vm.wait();
     let _ = setup;
     result
+}
+
+/// The docs-site leg: every feature in `e2e/site/coverage.json`, one spec each.
+fn site_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
+    let root = util::repo_root();
+    let site = root.join("site");
+    if !site.join("site.json").is_file() {
+        println!("▶ site leg … skip (0.0s)\n    the docs site (its own repository) isn't checked out in site/");
+        return Ok((0, 0));
+    }
+    if Command::new(crate::cdp_chrome()).arg("--version").output().is_err() {
+        println!("▶ site leg … skip (0.0s)\n    no headless Chrome here ({}; set FREALLY_CHROME)", crate::cdp_chrome());
+        return Ok((0, 0));
+    }
+    crate::site::check()?;
+    let path = root.join("e2e/site/coverage.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let v = fjson::parse(&text).map_err(|e| format!("site coverage.json at byte {}: {}", e.at, e.what))?;
+    let mut ids = Vec::new();
+    for f in v.get("features").and_then(Value::as_array).ok_or("site coverage.json has no features")? {
+        let id = f.get("id").and_then(Value::as_str).ok_or("a site feature without an id")?;
+        for key in ["task", "spec", "what"] {
+            if f.get(key).and_then(Value::as_str).is_none_or(str::is_empty) {
+                return Err(format!("site feature {id} has no {key}"));
+            }
+        }
+        ids.push(id.to_string());
+    }
+    util::run_ok(util::cargo().args(["build", "--quiet", "-p", "cdp-runner"]))?;
+    let listed = util::capture(Command::new(tool("cdp-runner")).arg("--list-site"))?;
+    let listed: Vec<&str> = listed.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    for id in &ids {
+        if !listed.contains(&id.as_str()) {
+            return Err(format!("site feature {id} has no spec in cdp-runner"));
+        }
+    }
+    for s in &listed {
+        if !ids.iter().any(|i| i == s) {
+            return Err(format!("site spec {s} isn't in e2e/site/coverage.json"));
+        }
+    }
+    let run: Vec<&str> =
+        ids.iter().map(String::as_str).filter(|i| only.is_none_or(|o| o.iter().any(|x| x == i))).collect();
+    if run.is_empty() {
+        return Ok((0, 0));
+    }
+    let mut r = Command::new(tool("cdp-runner"))
+        .args(["--site", &site.display().to_string(), "--specs", &run.join(",")])
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("can't start cdp-runner: {e}"))?;
+    let mut green = 0;
+    if let Some(out) = r.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if line.starts_with("▶ ") && line.contains(" … pass (") {
+                green += 1;
+            }
+            println!("{line}");
+        }
+    }
+    let _ = r.wait();
+    Ok((green, run.len()))
 }

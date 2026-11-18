@@ -108,3 +108,8 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// The headless browser the docs-site leg drives: `$FREALLY_CHROME`, else `google-chrome`.
+pub fn cdp_chrome() -> String {
+    std::env::var("FREALLY_CHROME").unwrap_or_else(|_| "google-chrome".into())
+}

@@ -11,11 +11,14 @@
 //!   `cdpd` in Phase 3; Phase 0 has no controls.
 
 mod guard;
+mod site;
 
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
 #[path = "../../../e2e/os/specs/kernel.rs"]
 mod kernel;
+#[path = "../../../e2e/site/specs/site.rs"]
+mod site_specs;
 
 use cdp_proto::Cdp;
 use fjson::Value;
@@ -36,6 +39,19 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("kernel.panic_screen", kernel::panic_screen),
     ("kernel.last_panic", kernel::last_panic),
     ("boot.conductor", boot::conductor),
+];
+
+/// The docs-site leg's specs (`cdp-runner --site DIR`).
+/// A site spec: drives headless Chrome through `SiteCtx`.
+pub type SiteSpec = fn(&mut site::SiteCtx) -> Result<(), String>;
+
+pub const SITE_SPECS: &[(&str, SiteSpec)] = &[
+    ("site.pages", site_specs::pages),
+    ("site.theme", site_specs::theme),
+    ("site.no_downloads", site_specs::no_downloads),
+    ("site.no_private", site_specs::no_private),
+    ("site.cursor", site_specs::cursor),
+    ("site.toggles", site_specs::toggles),
 ];
 
 /// A screen a spec expects, drawn on the host by `fscreen` to compare.
@@ -183,6 +199,15 @@ fn main() {
         }
         return;
     }
+    if args.iter().any(|a| a == "--list-site") {
+        for (id, _) in SITE_SPECS {
+            println!("{id}");
+        }
+        return;
+    }
+    if let Some(dir) = arg("--site") {
+        std::process::exit(site_leg(PathBuf::from(dir), &arg("--specs").unwrap_or_default()));
+    }
     let (Some(endpoint), Some(com1), Some(specs)) = (arg("--endpoint"), arg("--com1-log"), arg("--specs")) else {
         eprintln!("cdp-runner --endpoint HOST:PORT --com1-log PATH --specs id,id [--failures DIR] | --list");
         std::process::exit(2);
@@ -221,6 +246,49 @@ fn main() {
         }
     }
     std::process::exit(if red == 0 { 0 } else { 1 });
+}
+
+/// The site leg: serve the built site, start headless Chrome, run the specs.
+fn site_leg(root: PathBuf, specs: &str) -> i32 {
+    let base = match site::serve(root.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("cdp-runner: can't serve {}: {e}", root.display());
+            return 1;
+        }
+    };
+    let chrome = match site::launch() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("cdp-runner: {e}");
+            return 1;
+        }
+    };
+    let mut ctx = match connect(&chrome.endpoint).and_then(|cdp| site::SiteCtx::new(cdp, base, root)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("cdp-runner: can't drive Chrome: {e}");
+            return 1;
+        }
+    };
+    let mut red = 0;
+    for id in specs.split(',').filter(|s| !s.is_empty()) {
+        let start = Instant::now();
+        let result = match SITE_SPECS.iter().find(|(s, _)| *s == id) {
+            Some((_, f)) => f(&mut ctx),
+            None => Err("no such spec".into()),
+        };
+        let secs = start.elapsed().as_secs_f64();
+        match result {
+            Ok(()) => println!("▶ @{id} … pass ({secs:.1}s)"),
+            Err(e) => {
+                red += 1;
+                println!("▶ @{id} … fail ({secs:.1}s)\n    {e}");
+            }
+        }
+    }
+    drop(chrome);
+    if red == 0 { 0 } else { 1 }
 }
 
 /// Connects, retrying while cdp-host starts.

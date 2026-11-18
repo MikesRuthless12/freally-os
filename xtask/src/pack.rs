@@ -70,8 +70,46 @@ pub fn pack(flavour: Flavour, out: &Path, kernel: &Path, user: &[(String, Kind, 
         let bytes = std::fs::read(elf).map_err(|e| format!("{}: {e}", elf.display()))?;
         b.add(path, *kind, 0, bytes);
     }
+    for (name, text) in manifests(flavour)? {
+        let m = fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?;
+        if !user.iter().any(|(p, ..)| *p == m.binary) {
+            return Err(format!("manifests/{name}.svc names {}, which this image doesn't carry", m.binary));
+        }
+        b.add(&format!("/system/manifests/{name}.svc"), Kind::Manifest, 0, text.into_bytes());
+    }
     let image = b.build(&public)?;
     std::fs::write(out, image).map_err(|e| format!("can't write {}: {e}", out.display()))
+}
+
+/// The manifests (`manifests/*.svc`) whose `flavours` include `flavour`, checked
+/// as a set (unique names and binaries, every `after` known, no cycle): each
+/// one's name (its file name) and text.
+pub fn manifests(flavour: Flavour) -> Result<Vec<(String, String)>, String> {
+    let dir = util::repo_root().join("manifests");
+    let mut all = Vec::new();
+    let mut rd: Vec<_> = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten().collect();
+    rd.sort_by_key(|e| e.file_name());
+    for e in rd {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("svc") {
+            continue;
+        }
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let m = fsvc::parse(&text).map_err(|e| format!("manifests/{stem}.svc: {e}"))?;
+        if m.name != stem {
+            return Err(format!("manifests/{stem}.svc is named {}; the file and the name must match", m.name));
+        }
+        all.push((m, text));
+    }
+    let set: Vec<fsvc::Manifest> = all.iter().map(|(m, _)| m.clone()).collect();
+    fsvc::check_set(&set)?;
+    let want = match flavour {
+        Flavour::Release => fsvc::Flavour::Release,
+        Flavour::Dev => fsvc::Flavour::Dev,
+        Flavour::E2e => fsvc::Flavour::E2e,
+    };
+    Ok(all.into_iter().filter(|(m, _)| m.flavours.contains(&want)).map(|(m, t)| (m.name, t)).collect())
 }
 
 /// Signs the image at `path` in place with `key`.

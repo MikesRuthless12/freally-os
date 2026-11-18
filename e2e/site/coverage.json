@@ -1,0 +1,12 @@
+{
+  "leg": "site",
+  "about": "Every feature of the Freally OS docs site, one tagged spec each, driven over CDP in headless Chrome by tools/cdp-runner --site. A feature without a spec, or a spec without a feature, fails the run.",
+  "features": [
+    { "id": "site.pages", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "Every page in all 18 languages: the page says its language and direction, and every string the site translates shows that language's translation, with no page error." },
+    { "id": "site.theme", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "The site's one look, the fleet's dark ground, on every page and language." },
+    { "id": "site.no_downloads", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "Nothing to download before 1.0: no download link, installer or image anywhere." },
+    { "id": "site.no_private", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "No private document is served or quoted: no Markdown, the planning documents answer 404, no task ids." },
+    { "id": "site.cursor", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "The fleet cursor: the ring and its dot replace the arrow, the dot sits on the pointer, the ring grows over a link and shrinks while pressed." },
+    { "id": "site.toggles", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "Every toggle wears the fleet's looks (off gray, on Freally green); the site has none today." }
+  ]
+}

@@ -520,6 +520,12 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
                 out.extend_from_slice(&tsc.to_le_bytes());
             }
         }
+        topic::KERNEL_LOG => {
+            if grants() & grant::KERNEL_LOG == 0 {
+                return Err(FErr::AccessDenied);
+            }
+            out = crate::serial::ring_snapshot();
+        }
         topic::FAULTS => {
             if grants() & grant::FAULTS == 0 {
                 return Err(FErr::AccessDenied);
