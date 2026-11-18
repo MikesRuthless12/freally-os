@@ -179,7 +179,7 @@ pub fn spdx() -> Result<String, String> {
     let mut n = 0;
     for f in tracked()? {
         let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let source = matches!(ext, "rs" | "toml" | "ps1" | "sh" | "mjs" | "js" | "ld")
+        let source = matches!(ext, "rs" | "toml" | "ps1" | "sh" | "mjs" | "js" | "ld" | "ron")
             || f.file_name().is_some_and(|n| n.to_string_lossy().ends_with("Dockerfile"));
         if !source {
             continue;

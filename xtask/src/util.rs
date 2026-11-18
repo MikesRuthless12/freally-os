@@ -113,3 +113,16 @@ pub fn git_files() -> Result<Vec<PathBuf>, String> {
     ]))?;
     Ok(out.split('\0').filter(|s| !s.is_empty()).map(PathBuf::from).collect())
 }
+
+/// Every file under `dir`, recursively, skipping nothing.
+pub fn walk_all(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk_all(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}

@@ -6,6 +6,8 @@ use fjson::Value;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
+pub mod qmp;
+
 /// The GUID RFC 6455 § 1.3 appends to the client's key.
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 /// Messages larger than this are refused (a screenshot is a few MB).

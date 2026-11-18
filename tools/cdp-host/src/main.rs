@@ -8,8 +8,8 @@
 //! any flavour, release included. Never Playwright.
 
 mod methods;
-mod qmp;
 
+use cdp_proto::qmp;
 use cdp_proto::{Message, WebSocket, read_request, respond};
 use fjson::Value;
 use std::io::BufReader;

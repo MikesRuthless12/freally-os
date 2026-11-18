@@ -11,8 +11,10 @@ mod doctor;
 mod gates;
 mod keys;
 mod pack;
+mod release;
 mod run;
 mod screen;
+mod showcase;
 mod util;
 
 use std::process::ExitCode;
@@ -33,6 +35,9 @@ cargo xtask <command>
   ci [--fast|--slow] [--only=g]  every gate, reported one by one
   ci-linux                       the same gates in a clean Docker container; hashes must match
   hashes [--unsigned]            the reproducibility hashes of the three flavours
+  release-local [--rehearsal]    the tagged release build, verified, booted 5x, kept off GitHub
+  target-clean                   prune the build cache (refuses if a kept release is incomplete)
+  showcase [tour]                film the real OS from showcase/tours/*.ron into an MP4
   gate <name>                    one gate: third-party, no-ai, denylist, spdx, private-docs, ladder
 ";
 
@@ -68,6 +73,9 @@ fn main() -> ExitCode {
         Some("ci") => ci::ci_cmd(rest),
         Some("ci-linux") => ci_linux::ci_linux_cmd(rest),
         Some("hashes") => build::hashes_cmd(rest),
+        Some("release-local") => release::release_local_cmd(rest),
+        Some("target-clean") => release::target_clean_cmd(rest),
+        Some("showcase") => showcase::showcase_cmd(rest),
         Some("gate") => match rest.first().map(String::as_str) {
             Some("third-party") => gates::third_party::check().map(|s| println!("third-party: {s}")),
             Some("no-ai") => gates::content::no_ai().map(|s| println!("no-AI: {s}")),

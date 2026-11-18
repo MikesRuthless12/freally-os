@@ -2,7 +2,7 @@
 //! The CDP methods cdp-host serves from QMP. Methods that need the in-OS test
 //! door (`cdpd`, e2e only) say so until it exists (Phase 3, TASK-063).
 
-use crate::qmp::Qmp;
+use cdp_proto::qmp::Qmp;
 use fjson::Value;
 use std::path::Path;
 
@@ -64,71 +64,7 @@ fn screenshot(qmp: &mut Qmp, dir: &Path, params: &Value) -> Result<Value, String
     Ok(Value::obj([("data", fjson::base64::encode(&png).into())]))
 }
 
-/// A CDP `code` (or `key`) as a QEMU qcode.
-pub fn qcode(code: &str) -> Option<String> {
-    let simple = [
-        ("Enter", "ret"),
-        ("Escape", "esc"),
-        ("Backspace", "backspace"),
-        ("Tab", "tab"),
-        ("Space", "spc"),
-        ("ArrowUp", "up"),
-        ("ArrowDown", "down"),
-        ("ArrowLeft", "left"),
-        ("ArrowRight", "right"),
-        ("ShiftLeft", "shift"),
-        ("ShiftRight", "shift_r"),
-        ("ControlLeft", "ctrl"),
-        ("ControlRight", "ctrl_r"),
-        ("AltLeft", "alt"),
-        ("AltRight", "alt_r"),
-        ("MetaLeft", "meta_l"),
-        ("MetaRight", "meta_r"),
-        ("Minus", "minus"),
-        ("Equal", "equal"),
-        ("BracketLeft", "bracket_left"),
-        ("BracketRight", "bracket_right"),
-        ("Backslash", "backslash"),
-        ("Semicolon", "semicolon"),
-        ("Quote", "apostrophe"),
-        ("Backquote", "grave_accent"),
-        ("Comma", "comma"),
-        ("Period", "dot"),
-        ("Slash", "slash"),
-        ("Delete", "delete"),
-        ("Insert", "insert"),
-        ("Home", "home"),
-        ("End", "end"),
-        ("PageUp", "pgup"),
-        ("PageDown", "pgdn"),
-        ("CapsLock", "caps_lock"),
-        ("PrintScreen", "print"),
-        ("Pause", "pause"),
-        ("ContextMenu", "menu"),
-    ];
-    if let Some((_, q)) = simple.iter().find(|(c, _)| *c == code) {
-        return Some(q.to_string());
-    }
-    if let Some(l) = code.strip_prefix("Key")
-        && l.len() == 1
-        && l.as_bytes()[0].is_ascii_uppercase()
-    {
-        return Some(l.to_ascii_lowercase());
-    }
-    if let Some(d) = code.strip_prefix("Digit")
-        && d.len() == 1
-        && d.as_bytes()[0].is_ascii_digit()
-    {
-        return Some(d.to_string());
-    }
-    if let Some(n) = code.strip_prefix('F')
-        && let Ok(n) = n.parse::<u8>()
-        && (1..=12).contains(&n)
-    {
-        return Some(format!("f{n}"));
-    }
-    None
-}
+use cdp_proto::qmp::qcode;
 
 fn key(qmp: &mut Qmp, p: &Value) -> Result<Value, String> {
     let kind = p.get("type").and_then(Value::as_str).unwrap_or("");
@@ -198,18 +134,3 @@ fn mouse(qmp: &mut Qmp, p: &Value) -> Result<Value, String> {
     Ok(Value::Obj(Vec::new()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::qcode;
-
-    #[test]
-    fn codes_map_to_qcodes() {
-        assert_eq!(qcode("KeyA").as_deref(), Some("a"));
-        assert_eq!(qcode("Digit7").as_deref(), Some("7"));
-        assert_eq!(qcode("F12").as_deref(), Some("f12"));
-        assert_eq!(qcode("Enter").as_deref(), Some("ret"));
-        assert_eq!(qcode("MetaLeft").as_deref(), Some("meta_l"));
-        assert_eq!(qcode("F13"), None);
-        assert_eq!(qcode("KeyAA"), None);
-    }
-}

@@ -24,6 +24,8 @@ pub fn reproducible_rustflags() -> String {
         format!("--remap-path-prefix={}=/cargo", home.join(".cargo").display()),
         format!("--remap-path-prefix={}=/rustup", home.join(".rustup").display()),
         "-Clink-arg=/Brepro".to_string(),
+        // No PDB and no debug directory: its signature would hash each machine's paths.
+        "-Clink-arg=/DEBUG:NONE".to_string(),
         "-Cdebuginfo=0".to_string(),
     ]
     .join("\x1f")

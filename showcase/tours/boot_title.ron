@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// The first tour: from power on, through the firmware, to the verified title.
+Tour(
+    name: "boot-title",
+    flavour: "dev",
+    steps: [
+        Record(ms: 7000),
+    ],
+)
