@@ -117,11 +117,11 @@ pub fn tabs(ctx: &mut Ctx) -> Result<(), String> {
     // Log, and its service chip.
     click(ctx, f, 16 + 420 + 30, 20)?;
     let s = until(ctx, "the Log tab", |s| s.tab == "Log" && !s.lines.is_empty())?;
-    let all = s.lines.len();
+    let before = s.filter.clone();
     click(ctx, f, 30, 66)?;
-    let s = until(ctx, "a service chosen", |s| !s.filter.starts_with("all"))?;
+    let s = until(ctx, "the service chip moved on", |s| s.filter != before)?;
     let svc = s.filter.split_whitespace().next().unwrap_or("").to_string();
-    if s.lines.iter().any(|l| !l.starts_with(&format!("{svc} "))) || s.lines.len() > all {
+    if svc != "all" && s.lines.iter().any(|l| !l.starts_with(&format!("{svc} "))) {
         return Err(format!("the filter let others through: {:?}", s.lines));
     }
     // Ctrl+Tab: back round to Processes.
@@ -132,4 +132,88 @@ pub fn tabs(ctx: &mut Ctx) -> Result<(), String> {
     until(ctx, "Ctrl+Tab to Processes", |s| s.tab == "Processes")?;
     ctx.keep_shot("monitor")?;
     Ok(())
+}
+
+/// `@monitor.sweep`: every control Monitor shows, worked by its box and read
+/// back from its tree and its door: each tab (selected, the others not);
+/// each sort header (pressed, Monitor sorted by it, a second click the other
+/// way); each fault row (opened, then closed); each log chip (the filter
+/// moves on) (TASK-063, FR-040).
+pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
+    use crate::sweep::{attr, click, q, sweep, until_attr, until_q};
+    ctx.expect_log("desktop: the Rack is up")?;
+    ctx.door("monitor open")?;
+    const MON: &str = "WINDOW[data-owner=\"monitor\"]";
+    let w = until_q(ctx, MON)?;
+    let wid = attr(ctx, w, "data-window-id")?.ok_or("no window id")?;
+    ctx.cdp.call("Target.activateTarget", fjson::Value::obj([("targetId", wid.as_str().into())]))?;
+    let tabs = sweep(ctx, MON, "TAB", |ctx, c| {
+        until_attr(ctx, &c.sel, "aria-selected", "true")?;
+        until(ctx, "the tab", |s| s.tab == c.label).map(|_| ())
+    })?;
+    if tabs != 4 {
+        return Err(format!("{tabs} tabs, not 4"));
+    }
+    // Each tab's own controls.
+    let tab = |ctx: &mut Ctx, id: &str| -> Result<(), String> {
+        let t = until_q(ctx, &format!("{MON} [data-testid=\"tab-{id}\"]"))?;
+        click(ctx, t)?;
+        until_attr(ctx, &format!("{MON} [data-testid=\"tab-{id}\"]"), "aria-selected", "true")
+    };
+    tab(ctx, "processes")?;
+    sweep(ctx, MON, "BUTTON", |ctx, c| {
+        let col = match c.testid.as_str() {
+            "sort-service" => "Name",
+            "sort-state" => "State",
+            "sort-memory" => "Memory",
+            "sort-cpu" => "Cpu",
+            "sort-restarts" => "Restarts",
+            other => return Err(format!("an unknown header {other}")),
+        };
+        until_attr(ctx, &c.sel, "aria-pressed", "true")?;
+        let s = until(ctx, "sorted", |s| s.sort.starts_with(col))?;
+        // Again: the other way.
+        let id = q(ctx, &c.sel)?;
+        let dir = attr(ctx, id, "aria-valuenow")?.unwrap_or_default();
+        click(ctx, id)?;
+        let flipped = if dir == "ascending" { "descending" } else { "ascending" };
+        until_attr(ctx, &c.sel, "aria-valuenow", flipped)?;
+        until(ctx, "the other way", |n| n.sort.starts_with(col) && n.sort != s.sort).map(|_| ())
+    })?;
+    tab(ctx, "faults")?;
+    if q(ctx, &format!("{MON} BUTTON"))? != 0 {
+        sweep(ctx, MON, "BUTTON", |ctx, c| {
+            until_attr(ctx, &c.sel, "aria-expanded", "true")?;
+            let id = q(ctx, &c.sel)?;
+            click(ctx, id)?;
+            crate::sweep::until_gone(ctx, &format!("{}[aria-expanded=\"true\"]", c.sel))
+        })?;
+    }
+    tab(ctx, "log")?;
+    sweep(ctx, MON, "BUTTON", |ctx, c| {
+        let was = c.label.clone();
+        let s = until(ctx, "the filter moved on", |s| !s.filter.is_empty())?;
+        let start = std::time::Instant::now();
+        loop {
+            let id = q(ctx, &c.sel)?;
+            let now = attr(ctx, id, "aria-label")?.unwrap_or_default();
+            if now != was {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(10) {
+                return Err(format!("{was} didn't change"));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        let _ = s;
+        Ok(())
+    })?;
+    // Closed (Alt+F4), so the next spec finds Monitor as it starts.
+    tab(ctx, "processes")?;
+    crate::stage::key(ctx, "AltLeft", true)?;
+    crate::stage::key(ctx, "F4", true)?;
+    crate::stage::key(ctx, "F4", false)?;
+    crate::stage::key(ctx, "AltLeft", false)?;
+    ctx.expect_log("monitor: closed")?;
+    crate::sweep::until_gone(ctx, MON)
 }

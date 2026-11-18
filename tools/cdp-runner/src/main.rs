@@ -11,7 +11,9 @@
 //!   `cdpd` in Phase 3; Phase 0 has no controls.
 
 mod guard;
+mod inventory;
 mod site;
+mod sweep;
 
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
@@ -73,6 +75,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("monitor.tabs", monitor::tabs),
     ("cdp.freally", cdp_specs::freally),
     ("cdp.dom", cdp_specs::dom),
+    ("desktop.sweep", desktop::sweep),
+    ("monitor.sweep", monitor::sweep),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -134,9 +138,50 @@ pub struct Ctx {
     rebooted: bool,
     /// Whether this setup's boot opened the test door (asked once).
     door_open: Option<bool>,
+    /// The controls shown and worked, for the inventory; when keys last
+    /// asked which control had the keyboard.
+    pub inv: inventory::Inventory,
+    key_probe: Option<Instant>,
 }
 
 impl Ctx {
+    /// A click is about to land: the control under the pointer is worked.
+    pub fn note_press(&mut self) {
+        if self.door_open != Some(true) {
+            return;
+        }
+        if let Ok(r) = self.cdp.call("Freally.nodeAt", Value::Obj(Vec::new()))
+            && let Some(n) = r.get("node").and_then(inventory::name)
+        {
+            self.inv.worked.insert(n);
+        }
+    }
+
+    /// A key is about to go down: the control with the keyboard is worked
+    /// (asked at most every 400 ms: a word typed is one question).
+    pub fn note_key(&mut self) {
+        if self.door_open != Some(true) || self.key_probe.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) {
+            return;
+        }
+        self.key_probe = Some(Instant::now());
+        if let Ok(r) = self.cdp.call("Freally.focusedNode", Value::Obj(Vec::new()))
+            && let Some(n) = r.get("node").and_then(inventory::name)
+        {
+            self.inv.worked.insert(n);
+        }
+    }
+
+    /// Every control cdpd has seen so far, for the inventory.
+    fn note_shown(&mut self) {
+        if let Ok(r) = self.cdp.call("Freally.inventory", Value::Obj(Vec::new())) {
+            for v in r.get("seen").and_then(Value::as_array).unwrap_or_default() {
+                if let Some(n) = inventory::name(v) {
+                    self.inv.shown.insert(n);
+                }
+            }
+        }
+    }
+
     /// This spec restarts services on purpose: the guard lets it.
     pub fn allow_restarts(&mut self) {
         self.allow_restarts = true;
@@ -494,6 +539,8 @@ fn main() {
         allow_faults: false,
         rebooted: false,
         door_open: None,
+        inv: inventory::Inventory::default(),
+        key_probe: None,
     };
     // A cold host (WSL just restarted, its caches empty) can take far longer
     // than a spec's 10 s to start the VM: wait up to 60 s for the
@@ -523,9 +570,12 @@ fn main() {
         }
         if result.is_ok()
             && !ctx.rebooted
-            && let Some(w) = watch
+            && let Some(w) = &watch
         {
-            result = ctx.guard(&w);
+            result = ctx.guard(w);
+        }
+        if watch.is_some() && !ctx.rebooted {
+            ctx.note_shown();
         }
         let secs = start.elapsed().as_secs_f64();
         match result {
@@ -535,6 +585,11 @@ fn main() {
                 println!("▶ @{id} … fail ({secs:.1}s)\n    {e}");
             }
         }
+    }
+    if let Some(out) = arg("--inventory-out")
+        && let Err(e) = std::fs::write(&out, ctx.inv.to_json().to_json())
+    {
+        eprintln!("cdp-runner: can't write {out}: {e}");
     }
     std::process::exit(if red == 0 { 0 } else { 1 });
 }

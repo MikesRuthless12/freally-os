@@ -109,6 +109,9 @@ pub(crate) fn move_to(ctx: &mut Ctx, x: i32, y: i32) -> Result<(), String> {
 }
 
 pub(crate) fn button(ctx: &mut Ctx, down: bool) -> Result<(), String> {
+    if down {
+        ctx.note_press();
+    }
     let kind = if down { "mousePressed" } else { "mouseReleased" };
     mouse(ctx, vec![("type", kind.into()), ("button", "left".into())])?;
     std::thread::sleep(Duration::from_millis(100));
@@ -116,6 +119,9 @@ pub(crate) fn button(ctx: &mut Ctx, down: bool) -> Result<(), String> {
 }
 
 pub(crate) fn key(ctx: &mut Ctx, code: &str, down: bool) -> Result<(), String> {
+    if down {
+        ctx.note_key();
+    }
     let kind = if down { "keyDown" } else { "keyUp" };
     ctx.cdp.call("Input.dispatchKeyEvent", Value::obj([("type", kind.into()), ("code", code.into())]))?;
     std::thread::sleep(Duration::from_millis(60));

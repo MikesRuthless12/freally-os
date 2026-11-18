@@ -109,6 +109,12 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         }
     }
     let (mut green, mut total) = (0, 0);
+    // A full run keeps each setup's inventory, and judges them together.
+    let inventory_dir = only.is_none().then(|| util::target_dir().join("cdp/inventory"));
+    if let Some(d) = &inventory_dir {
+        let _ = std::fs::remove_dir_all(d);
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
     for setup in setups {
         let ids: Vec<&str> = features
             .iter()
@@ -154,15 +160,75 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
             .unwrap_or_default();
         let without: Vec<&str> = without.iter().map(String::as_str).collect();
         let built = build::build_full(flavour, true, &features, &without)?;
-        let (g, t) = run_setup(setup, &o, &built, &ids)?;
+        let out = inventory_dir.as_ref().map(|d| d.join(format!("{setup}.json")));
+        let (g, t) = run_setup(setup, &o, &built, &ids, out.as_deref())?;
         green += g;
         total += t;
+    }
+    if let Some(d) = &inventory_dir {
+        total += 1;
+        let (shown, missing) = inventory(d)?;
+        if missing.is_empty() {
+            green += 1;
+            println!("▶ @inventory … pass (0.0s)\n    {shown} controls shown, each worked by a spec or accepted");
+        } else {
+            println!(
+                "▶ @inventory … fail (0.0s)\n    {} of {shown} controls no spec worked (work each, or accept it in e2e/os/accepted.json with a reason):\n      {}",
+                missing.len(),
+                missing.join("\n      ")
+            );
+        }
     }
     let _ = Flavour::E2e;
     Ok((green, total))
 }
 
-fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> Result<(usize, usize), String> {
+/// The inventory (FR-040): every control a full run's windows showed, each
+/// worked by a spec or named in `e2e/os/accepted.json` with a reason.
+/// Returns how many were shown, and the ones left.
+fn inventory(dir: &std::path::Path) -> Result<(usize, Vec<String>), String> {
+    use std::collections::BTreeSet;
+    let (mut shown, mut worked) = (BTreeSet::new(), BTreeSet::new());
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
+        let text = std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
+        let v = fjson::parse(&text).map_err(|e| format!("{}: {}", entry.path().display(), e.what))?;
+        let list = |k: &str| -> Vec<String> {
+            v.get(k)
+                .and_then(Value::as_array)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        };
+        shown.extend(list("shown"));
+        worked.extend(list("worked"));
+    }
+    let path = util::repo_root().join("e2e/os/accepted.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let v = fjson::parse(&text).map_err(|e| format!("accepted.json at byte {}: {}", e.at, e.what))?;
+    let mut accepted = Vec::new();
+    for a in v.get("accepted").and_then(Value::as_array).ok_or("accepted.json has no accepted list")? {
+        let (Some(c), Some(why)) = (a.get("control").and_then(Value::as_str), a.get("why").and_then(Value::as_str))
+        else {
+            return Err("an accepted control needs `control` and `why`".into());
+        };
+        if why.trim().is_empty() {
+            return Err(format!("accepted control {c:?} gives no reason"));
+        }
+        accepted.push(c.to_string());
+    }
+    let missing = shown.iter().filter(|c| !worked.contains(*c) && !accepted.contains(c)).cloned().collect();
+    Ok((shown.len(), missing))
+}
+
+fn run_setup(
+    setup: &str,
+    o: &VmOptions,
+    built: &build::Built,
+    ids: &[&str],
+    inventory_out: Option<&std::path::Path>,
+) -> Result<(usize, usize), String> {
     let mut vm = run::start_built(o, built)?;
     // An e2e image's test door (COM3): cdp-host reaches cdpd through it.
     let com3: Vec<String> = if o.flavour == Flavour::E2e {
@@ -191,6 +257,7 @@ fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> 
             &failures.display().to_string(),
         ])
         .args(&com3)
+        .args(inventory_out.map(|p| vec![String::from("--inventory-out"), p.display().to_string()]).unwrap_or_default())
         .stdout(Stdio::piped())
         .spawn();
     let mut result = Ok((0, ids.len()));

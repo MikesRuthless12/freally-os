@@ -176,6 +176,20 @@
       "what": "The apps as a document: the Rack's keys, Monitor's tabs and sort headers, the launcher's search and rows (a click on one starts its app), the terminal's screen. Each found by a selector, worked by its box with the real mouse and keyboard, read back from its attributes and the app; the AX tree agrees."
     },
     {
+      "id": "desktop.sweep",
+      "task": "TASK-063",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/desktop.rs",
+      "what": "The sweep over the desktop: every Rack key (the launcher's opens the launcher; each app's starts it), every launcher row (a click starts its app), the search (its value is what's typed; \"zz\" leaves no rows)."
+    },
+    {
+      "id": "monitor.sweep",
+      "task": "TASK-063",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/monitor.rs",
+      "what": "The sweep over Monitor: every tab selected; every sort header pressed, sorting, and the other way on a second click; every fault row opened and closed; every log chip moving the filter on. Each read back from its tree and Monitor's door."
+    },
+    {
       "id": "monitor.tabs",
       "task": "TASK-062",
       "setup": "e2e",

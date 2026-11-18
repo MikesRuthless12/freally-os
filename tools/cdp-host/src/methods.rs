@@ -21,6 +21,8 @@ fn cdpd_serves(m: &str) -> bool {
                 | "Freally.getFaults"
                 | "Freally.readBack"
                 | "Freally.inventory"
+                | "Freally.nodeAt"
+                | "Freally.focusedNode"
         )
 }
 

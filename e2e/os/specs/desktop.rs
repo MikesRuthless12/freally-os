@@ -244,3 +244,73 @@ pub fn launcher(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `@desktop.sweep`: every control the desktop shows, worked by its box:
+/// each Rack key (the launcher's opens the launcher, Esc closes it; an app's
+/// starts its app), the launcher's search (what's typed is its value, and
+/// nothing matches "zz") and each of its rows (a click starts that app and
+/// closes the launcher) (TASK-063, FR-040).
+pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
+    use crate::sweep::{click, q_all, sweep, type_keys, until_attr, until_gone, until_q};
+    ctx.expect_log("desktop: the Rack is up")?;
+    const RACK: &str = "WINDOW[data-owner=\"desktop\"][data-kind=\"Panel\"]";
+    const SEARCH: &str = "[data-testid=\"launcher-search\"]";
+    until_q(ctx, &format!("{RACK} BUTTON"))?;
+    let started = |ctx: &Ctx, svc: &str| ctx.log_count(&format!("desktop: started {svc}"));
+    let before: Vec<(String, usize)> =
+        ["terminal", "monitor"].iter().map(|s| (s.to_string(), started(ctx, s))).collect();
+    let keys = sweep(ctx, RACK, "BUTTON", |ctx, c| {
+        if c.testid == "rack-launcher" {
+            until_q(ctx, SEARCH)?;
+            key(ctx, "Escape", true)?;
+            key(ctx, "Escape", false)?;
+            return until_gone(ctx, SEARCH);
+        }
+        let svc = c.testid.trim_start_matches("rack-");
+        let was = before.iter().find(|(s, _)| s == svc).map_or(0, |(_, n)| *n);
+        ctx.expect_log_count(&format!("desktop: started {svc}"), was + 1)
+    })?;
+    if keys != 3 {
+        return Err(format!("{keys} Rack keys, not 3"));
+    }
+    // The launcher's rows: each opened afresh, its row clicked.
+    let open = |ctx: &mut Ctx| -> Result<(), String> {
+        key(ctx, "MetaLeft", true)?;
+        key(ctx, "MetaLeft", false)?;
+        until_attr(ctx, SEARCH, "data-focused", "true")
+    };
+    open(ctx)?;
+    let rows: Vec<String> = {
+        let ids = q_all(ctx, "LISTBOX OPTION")?;
+        let mut v = Vec::new();
+        for id in ids {
+            v.push(crate::sweep::attr(ctx, id, "data-testid")?.ok_or("a row with no test id")?);
+        }
+        v
+    };
+    if rows.len() != 2 {
+        return Err(format!("the launcher lists {rows:?}, not Terminal and Monitor"));
+    }
+    key(ctx, "Escape", true)?;
+    key(ctx, "Escape", false)?;
+    until_gone(ctx, SEARCH)?;
+    for row in &rows {
+        open(ctx)?;
+        let svc = row.trim_start_matches("launcher-").to_string();
+        let was = started(ctx, &svc);
+        let id = until_q(ctx, &format!("[data-testid=\"{row}\"]"))?;
+        click(ctx, id)?;
+        ctx.expect_log_count(&format!("desktop: started {svc}"), was + 1)?;
+        until_gone(ctx, SEARCH)?;
+    }
+    // The search: what's typed is its value; "zz" leaves no rows.
+    open(ctx)?;
+    type_keys(ctx, "zz")?;
+    until_attr(ctx, SEARCH, "aria-valuenow", "zz")?;
+    if !q_all(ctx, "LISTBOX OPTION")?.is_empty() {
+        return Err("rows for \"zz\"".into());
+    }
+    key(ctx, "Escape", true)?;
+    key(ctx, "Escape", false)?;
+    until_gone(ctx, SEARCH)
+}

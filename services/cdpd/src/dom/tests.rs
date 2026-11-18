@@ -167,3 +167,42 @@ fn targets_are_the_desktop_and_each_window() {
     assert_eq!(list[1].get("targetId").and_then(Value::as_str), Some("7"));
     assert_eq!(list[1].get("url").and_then(Value::as_str), Some("freally://app/monitor"));
 }
+
+#[test]
+fn the_control_under_a_point_and_the_one_with_the_keyboard() {
+    let d = desk();
+    let label = |i: Option<usize>| i.map(|i| d.nodes[i].attr("aria-label").unwrap_or("").to_string());
+    assert_eq!(label(d.control_at(260, 90)), Some("Boot".into()), "Monitor's Boot tab");
+    assert_eq!(label(d.control_at(20, 760)), Some("Launcher".into()), "the Rack's key");
+    assert_eq!(label(d.control_at(1150, 770)), Some("Twelve-hour clock".into()));
+    assert_eq!(d.control_at(700, 300), None, "Monitor's window, no control there");
+    assert_eq!(d.control_at(5, 5), None, "nothing at all");
+    // The Rack is under Monitor (z 0): where they overlap, Monitor's tab wins.
+    let windows =
+        [win(7, "Monitor", "monitor", 1, (0, 700, 400, 100), 0), win(3, "Rack", "desktop", 0, (0, 744, 1280, 56), 0)];
+    let d2 = Doc::build(&windows, |id| match id {
+        7 => Some(ax::Tree { nodes: vec![n(ax::ROOT, ax::TAB, "Top", 0, "", (0, 0, 400, 100))] }),
+        _ => Some(ax::Tree { nodes: vec![n(ax::ROOT, ax::BUTTON, "Under", 0, "", (0, 0, 400, 56))] }),
+    });
+    assert_eq!(
+        d2.control_at(10, 760).map(|i| d2.nodes[i].attr("aria-label").unwrap_or("").to_string()),
+        Some("Top".into())
+    );
+    // The keyboard: the focused window's focused control.
+    let w = [win(5, "Launcher", "desktop", 1, (0, 0, 400, 300), 0)];
+    let d3 = Doc::build(&w, |_| {
+        Some(ax::Tree {
+            nodes: vec![n(ax::ROOT, ax::TEXTBOX, "Find an app", ax::FOCUSED, "launcher-search", (0, 0, 10, 10))],
+        })
+    });
+    assert_eq!(
+        d3.focused_control().map(|i| d3.nodes[i].attr("data-testid").unwrap_or("").to_string()),
+        Some("launcher-search".into())
+    );
+    assert_eq!(d.focused_control(), None, "Monitor has focus, but no control in it says so");
+    let c = d.control(d.control_at(260, 90).unwrap());
+    assert_eq!(
+        (c.get("owner").and_then(Value::as_str), c.get("role").and_then(Value::as_str)),
+        (Some("monitor"), Some("TAB"))
+    );
+}

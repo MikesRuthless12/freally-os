@@ -371,7 +371,7 @@ impl Stage {
                 .map_err(|_| (FErr::InvalidArgs, "unreadable"))
                 .map(|b| (fwire::to_payload(&self.ax_bytes(b.window_id)), Vec::new())),
             #[cfg(feature = "flavour-e2e")]
-            st::POINTER if name == "conductor" => Ok((
+            st::POINTER if matches!(name.as_str(), "conductor" | "cdpd") => Ok((
                 fwire::to_payload(&st::PointerAt { x: self.desk.x, y: self.desk.y, buttons: self.desk.buttons }),
                 Vec::new(),
             )),

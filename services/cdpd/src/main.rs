@@ -34,6 +34,10 @@ struct Cdpd {
     stage: Option<Client>,
     logger: Option<Client>,
     doc: Doc,
+    /// Every control seen in any document built since cdpd started (the
+    /// inventory's "shown": a launcher opened and closed between two specs
+    /// is in it), by its name.
+    seen: alloc::collections::BTreeMap<String, Value>,
 }
 
 impl Cdpd {
@@ -72,6 +76,11 @@ impl Cdpd {
         let trees: Vec<(u32, Option<ax::Tree>)> =
             ws.windows.iter().map(|w| (w.window_id, self.tree(w.window_id))).collect();
         self.doc = Doc::build(&ws.windows, |id| trees.iter().find(|(w, _)| *w == id).and_then(|(_, t)| t.clone()));
+        for c in self.doc.inventory() {
+            let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let id = if s("testid").is_empty() { s("label") } else { s("testid") };
+            self.seen.entry(format!("{} {} {id}", s("owner"), s("role"))).or_insert(c);
+        }
         Ok(())
     }
 
@@ -122,7 +131,22 @@ impl Cdpd {
             }
             "Freally.inventory" => {
                 self.rebuild()?;
-                Ok(Value::obj([("nodes", Value::Arr(self.doc.inventory()))]))
+                let seen = self.seen.values().cloned().collect();
+                Ok(Value::obj([("nodes", Value::Arr(self.doc.inventory())), ("seen", Value::Arr(seen))]))
+            }
+            // The control under the pointer (a click's target), and the one
+            // with the keyboard (a key's): the inventory's "worked" half.
+            "Freally.nodeAt" => {
+                let p = self.stage()?.call::<_, st::PointerAt>(st::POINTER, &(), Vec::new(), deadline());
+                let (at, _) = p.map_err(|e| format!("stage: {e:?}"))?;
+                self.rebuild()?;
+                let node = self.doc.control_at(at.x, at.y).map_or(Value::Null, |i| self.doc.control(i));
+                Ok(Value::obj([("node", node)]))
+            }
+            "Freally.focusedNode" => {
+                self.rebuild()?;
+                let node = self.doc.focused_control().map_or(Value::Null, |i| self.doc.control(i));
+                Ok(Value::obj([("node", node)]))
             }
             "Freally.getProcesses" => {
                 let s = services()?;
@@ -362,7 +386,7 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     fstd::info!("cdpd: ready");
-    let mut d = Cdpd { stage: None, logger: None, doc: Doc::default() };
+    let mut d = Cdpd { stage: None, logger: None, doc: Doc::default(), seen: Default::default() };
     let mut clients: Vec<(Channel, String)> = Vec::new();
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];

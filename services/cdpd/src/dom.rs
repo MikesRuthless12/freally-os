@@ -212,26 +212,53 @@ impl Doc {
     /// The interactive nodes (the inventory's half from the trees): each with
     /// its window's owner, role, name and test id.
     pub fn inventory(&self) -> Vec<Value> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.role.is_some_and(ax::interactive))
-            .map(|(i, n)| {
-                let owner = self
-                    .nodes
-                    .iter()
-                    .find(|w| w.name == "WINDOW" && w.window == n.window)
-                    .and_then(|w| w.attr("data-owner"))
-                    .unwrap_or("");
-                Value::obj([
-                    ("nodeId", Value::from(i as u32 + 1)),
-                    ("owner", owner.into()),
-                    ("role", n.name.into()),
-                    ("label", n.attr("aria-label").unwrap_or("").into()),
-                    ("testid", n.attr("data-testid").unwrap_or("").into()),
-                ])
-            })
+        (0..self.nodes.len())
+            .filter(|&i| self.nodes[i].role.is_some_and(ax::interactive))
+            .map(|i| self.control(i))
             .collect()
+    }
+
+    /// One control as the inventory names it.
+    pub fn control(&self, i: usize) -> Value {
+        let n = &self.nodes[i];
+        let owner = self
+            .nodes
+            .iter()
+            .find(|w| w.name == "WINDOW" && w.window == n.window)
+            .and_then(|w| w.attr("data-owner"))
+            .unwrap_or("");
+        Value::obj([
+            ("nodeId", Value::from(i as u32 + 1)),
+            ("owner", owner.into()),
+            ("role", n.name.into()),
+            ("label", n.attr("aria-label").unwrap_or("").into()),
+            ("testid", n.attr("data-testid").unwrap_or("").into()),
+        ])
+    }
+
+    /// The control under (x, y) on the screen: in the topmost window there,
+    /// the deepest interactive node holding the point.
+    pub fn control_at(&self, x: i32, y: i32) -> Option<usize> {
+        let inside = |b: (i32, i32, u32, u32)| x >= b.0 && y >= b.1 && x < b.0 + b.2 as i32 && y < b.1 + b.3 as i32;
+        let top = self.nodes[0].children.iter().rev().copied().find(|&w| inside(self.nodes[w].bounds))?;
+        let window = self.nodes[top].window;
+        (0..self.nodes.len()).rev().find(|&i| {
+            self.nodes[i].window == window
+                && self.nodes[i].role.is_some_and(ax::interactive)
+                && inside(self.nodes[i].bounds)
+        })
+    }
+
+    /// The control with the keyboard: in the focused window, the
+    /// interactive node that says it's focused.
+    pub fn focused_control(&self) -> Option<usize> {
+        let w = self.nodes[0].children.iter().copied().find(|&w| self.nodes[w].attr("data-focused") == Some("true"))?;
+        let window = self.nodes[w].window;
+        (0..self.nodes.len()).find(|&i| {
+            self.nodes[i].window == window
+                && self.nodes[i].role.is_some_and(ax::interactive)
+                && self.nodes[i].attr("data-focused") == Some("true")
+        })
     }
 }
 
