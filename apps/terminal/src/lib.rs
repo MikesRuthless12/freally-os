@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Freally Terminal.
+//! Freally Terminal (TASK-060, FR-032): a VT/xterm subset in Freally Mono.
+//! This library is its logic, host-tested; `main.rs` is the app.
 //!
-//! Placeholder: this crate's first code lands in Phase 3.
+//! - `vt`: bytes to actions (DEC's parser);
+//! - `grid`: the screen those actions build, with 10,000 lines of scrollback;
+//! - `render`: the grid drawn in Freally Mono, the theme's colours, the cursor.
 #![no_std]
+
+extern crate alloc;
+
+pub mod grid;
+pub mod render;
+pub mod vt;
