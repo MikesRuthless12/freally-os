@@ -7,5 +7,15 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# The widget tree, layout, text, painting, strings and accessibility: they
+# allocate. Without it, fui is the colours, tokens and theme alone, which
+# the bootloader's screens use (it has no allocator).
+ui = ["dep:ffont", "dep:fimage"]
+
+[dependencies]
+ffont = { workspace = true, features = ["raster"], optional = true }
+fimage = { workspace = true, optional = true }
+
 [lints]
 workspace = true

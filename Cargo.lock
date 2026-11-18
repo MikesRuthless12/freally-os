@@ -205,6 +205,10 @@ dependencies = [
 [[package]]
 name = "fui"
 version = "0.1.0"
+dependencies = [
+ "ffont",
+ "fimage",
+]
 
 [[package]]
 name = "fwire"

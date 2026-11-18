@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Freally OS: the interface's words, English. Keys are what code names;
+# the words are what you read. Never put interface words in code.
+
+# The desktop
+rack.launcher = Apps
+rack.clock = Clock
+app.terminal = Terminal
+app.monitor = Monitor
+
+# Monitor
+monitor.processes = Processes
+monitor.boot = Boot
+monitor.faults = Faults
+monitor.log = Log
+
+# Common
+common.ok = OK
+common.cancel = Cancel
+common.apply = Apply
+common.restore-defaults = Restore Defaults
+common.close = Close
