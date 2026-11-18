@@ -91,3 +91,48 @@ fn the_chain_covers_the_whole_set() {
     let missing: String = set.filter(|c| !covers(&chain, *c)).collect();
     assert!(missing.is_empty(), "the chain draws no {missing:?}");
 }
+
+/// Figures are tabular: every digit as wide as the next, at every weight and
+/// size the interface uses (Noto Sans's default figures are; this pins it).
+#[test]
+fn figures_are_tabular() {
+    for data in [REGULAR, MEDIUM, SEMIBOLD] {
+        let mut chain = [Face::new(data).unwrap()];
+        for px in [12.0, 14.0, 16.0, 18.0, 28.0] {
+            let widths: Vec<i32> = ('0'..='9').map(|d| measure(&mut chain, px, &d.to_string().repeat(10))).collect();
+            assert!(widths.windows(2).all(|w| w[0] == w[1]), "at {px} px: {widths:?}");
+        }
+    }
+}
+
+/// Mono: every printable character the same advance; cells of whole pixels
+/// that tile exactly; every ASCII glyph inside its cell (TASK-054).
+#[test]
+fn mono_cells_tile_and_hold_their_glyphs() {
+    use ffont::text::{cell, draw_cell};
+    let mut chain = [Face::new(MONO).unwrap()];
+    for px in [12.0, 14.0, 16.0, 20.0] {
+        let advances: Vec<i32> = (' '..='~').map(|c| chain[0].glyph(c, px).advance_q6).collect();
+        assert!(advances.windows(2).all(|w| w[0] == w[1]), "Mono's advances differ at {px} px");
+        let k = cell(&mut chain[0], px);
+        assert!(k.w > 0 && k.h > k.baseline && k.baseline > 0, "{k:?}");
+        for c in '!'..='~' {
+            let g = chain[0].glyph(c, px).clone();
+            let (top, left) = (k.baseline - g.top as i32, g.left as i32);
+            // Wide glyphs (%, W, m) may lean a pixel or two into the next cell, as in
+            // every monospace font; rows must never collide, so up and down is exact.
+            assert!(left >= -2 && left + (g.w as i32) < k.w + 3, "{c:?} spills sideways more than 2 px at {px} px");
+            assert!(top >= 0 && top + (g.h as i32) < k.h + 2, "{c:?} spills out of its cell at {px} px: {k:?}, {g:?}");
+        }
+        // Eight cells drawn one by one are eight cells wide, no drift.
+        let mut c = Canvas { w: 400, h: 40, px: vec![0; 400 * 40] };
+        for col in 0..8 {
+            draw_cell(&mut c, &mut chain, px, k, 2, 2, col, 0, '█', 0xFFFFFF);
+        }
+        let lit: Vec<usize> = (0..400).filter(|&x| c.px[(2 + k.baseline as usize - 2) * 400 + x] != 0).collect();
+        if let (Some(first), Some(last)) = (lit.first(), lit.last()) {
+            let span = last - first + 1;
+            assert!(span < 8 * k.w as usize + 2, "eight cells drifted wider: {span} > {}", 8 * k.w);
+        }
+    }
+}

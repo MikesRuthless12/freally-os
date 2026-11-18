@@ -2,7 +2,8 @@
 //! `cargo xtask specimen` (TASK-053): Noto Sans at 400, 500 and 600, drawn by
 //! ffont's run-time path (the one user space draws with: glyphs rendered on
 //! first use, blended in linear light), on both of the UI kit's grounds, for
-//! the owner's sign-off. Writes `target/specimen/noto-sans.{png,fimg}` and
+//! the owner's sign-off. Writes `target/specimen/noto-sans.{png,fimg}` (and
+//! `noto-mono.png`: Noto Sans Mono on the terminal's cell grid) and
 //! says which characters of the coverage set (ASCII, Latin-1, the PRD's
 //! specials) the font doesn't draw.
 
@@ -102,6 +103,7 @@ pub fn specimen_cmd(_args: &[String]) -> Result<(), String> {
     std::fs::write(out.join("noto-sans.fimg"), fimage::fimg::encode(w as u32, c.h as u32, 1, [0; 4], &bgra))
         .map_err(|e| e.to_string())?;
     println!("specimen: {}", out.join("noto-sans.png").display());
+    mono(&dir, &out)?;
 
     for ((label, _), chain) in WEIGHTS.iter().zip(&chains) {
         let missing: String = coverage().into_iter().filter(|c| !covers(chain, *c)).collect();
@@ -111,5 +113,42 @@ pub fn specimen_cmd(_args: &[String]) -> Result<(), String> {
             println!("specimen: {label}: draws no {missing} (its missing-glyph box)");
         }
     }
+    Ok(())
+}
+
+/// Noto Sans Mono on the terminal's cell grid (TASK-054), both grounds, at
+/// 14 and 16 px: every printable ASCII character in its cell.
+fn mono(dir: &std::path::Path, out: &std::path::Path) -> Result<(), String> {
+    use ffont::text::{cell, draw_cell};
+    let data = std::fs::read(dir.join("NotoSansMono-Regular.ttf")).map_err(|e| e.to_string())?;
+    let mut chain = [Face::new(&data).map_err(|e| format!("{e:?}"))?];
+    let ascii: Vec<char> = ('!'..='~').collect();
+    let (w, h) = (900usize, 520usize);
+    let mut c = Canvas { w, h, px: vec![0; w * h] };
+    let grounds = [
+        (dark::COLOR_BG.xrgb(), dark::COLOR_TEXT.xrgb(), dark::COLOR_PRIMARY_INK.xrgb()),
+        (light::COLOR_BG.xrgb(), light::COLOR_TEXT.xrgb(), light::COLOR_PRIMARY_INK.xrgb()),
+    ];
+    for (i, (bg, text, green)) in grounds.into_iter().enumerate() {
+        let y0 = i * h / 2;
+        c.px[y0 * w..(y0 + h / 2) * w].fill(bg);
+        let mut y = y0 as i32 + 16;
+        for px in [14.0f32, 16.0] {
+            let k = cell(&mut chain[0], px);
+            for (n, ch) in ascii.iter().enumerate() {
+                let (col, row) = (n as i32 % 47, n as i32 / 47);
+                draw_cell(&mut c, &mut chain, px, k, 24, y, col, row, *ch, text);
+            }
+            let prompt: Vec<char> = "freally:~$ cargo xtask ci".chars().collect();
+            for (col, ch) in prompt.iter().enumerate() {
+                draw_cell(&mut c, &mut chain, px, k, 24, y, col as i32, 2, *ch, if col < 10 { green } else { text });
+            }
+            y += 3 * k.h + 24;
+        }
+    }
+    let rgb: Vec<u8> = c.px.iter().flat_map(|&p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
+    std::fs::write(out.join("noto-mono.png"), fimage::png::encode(w as u32, h as u32, 3, &rgb))
+        .map_err(|e| e.to_string())?;
+    println!("specimen: {}", out.join("noto-mono.png").display());
     Ok(())
 }

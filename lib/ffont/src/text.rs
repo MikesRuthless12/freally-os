@@ -154,3 +154,40 @@ pub fn draw(t: &mut impl Target, faces: &mut [Face], px: f32, x: i32, y: i32, te
     }
     (pen + 32) >> 6
 }
+
+/// A terminal's character cell (TASK-054): whole pixels, so a grid of them
+/// never drifts. Width is the monospace face's advance; height its ascent
+/// plus descent plus line gap; the baseline sits `baseline` px down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cell {
+    pub w: i32,
+    pub h: i32,
+    pub baseline: i32,
+}
+
+/// The cell of a monospace `face` at `px`.
+pub fn cell(face: &mut Face, px: f32) -> Cell {
+    let w = (face.glyph('M', px).advance_q6 + 32) >> 6;
+    let (up, down, line) = face.metrics(px);
+    Cell { w: w.max(1), h: line.max(up + down), baseline: up }
+}
+
+/// Draws `c` in the cell at column `col`, row `row` of a grid whose top-left
+/// is (`x`, `y`): the glyph on the cell's baseline, wherever the previous
+/// cells' fractions would have put it.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_cell(
+    t: &mut impl Target,
+    faces: &mut [Face],
+    px: f32,
+    cell: Cell,
+    x: i32,
+    y: i32,
+    col: i32,
+    row: i32,
+    c: char,
+    rgb: u32,
+) {
+    let mut s = [0u8; 4];
+    draw(t, faces, px, x + col * cell.w, y + row * cell.h + cell.baseline, c.encode_utf8(&mut s), rgb);
+}
