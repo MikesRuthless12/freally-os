@@ -86,7 +86,10 @@ foreach ($line in Get-Content (Join-Path $ReleaseDir "SHA256SUMS.txt")) {
     if ($line -match '^([0-9a-f]{64})  (.+)$') { $sums[$Matches[2]] = $Matches[1] }
 }
 foreach ($name in $sums.Keys) {
-    $h = (Get-FileHash -Algorithm SHA256 (Join-Path $ReleaseDir $name)).Hash.ToLower()
+    if (-not $Places.ContainsKey($name)) { Fail "SHA256SUMS.txt lists $name, which isn't a Freally OS boot file" }
+    $file = Join-Path $ReleaseDir $name
+    if (-not (Test-Path $file)) { Fail "$name is missing from the release" }
+    $h = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower()
     if ($h -ne $sums[$name]) { Fail "$name in the release doesn't match SHA256SUMS.txt" }
 }
 Write-Host "install-release: release $ReleaseDir verified ($($sums.Count) files)."
