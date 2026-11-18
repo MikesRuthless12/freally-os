@@ -1,11 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "drv-gop-fb"
-description = "The UEFI GOP framebuffer driver."
+description = "drv-gop-fb: the firmware's framebuffer, write-combining, as a VMO."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "drv-gop-fb"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fstd.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

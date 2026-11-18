@@ -126,6 +126,24 @@ impl Door {
                 }
                 None => self.send("error: devmgr isn't ready"),
             },
+            "fbfill" => {
+                let rgb = u32::from_str_radix(arg, 16).unwrap_or(0);
+                match c.open_connection("drv-gop-fb", "test-door") {
+                    Some(ch) => {
+                        let mut client = fstd::ipc::Client::new(ch);
+                        match client.call::<_, ()>(
+                            fwire::proto::display::FILL,
+                            &fwire::proto::display::Fill { rgb },
+                            Vec::new(),
+                            Instant::after(Duration::from_secs(2)),
+                        ) {
+                            Ok(_) => self.send("ok"),
+                            Err(e) => self.send(&alloc::format!("error: {e:?}")),
+                        }
+                    }
+                    None => self.send("error: drv-gop-fb isn't ready"),
+                }
+            }
             "services" => {
                 let lines: Vec<String> =
                     c.services.iter().map(|s| alloc::format!("svc {} {:?}", s.m.name, s.state)).collect();

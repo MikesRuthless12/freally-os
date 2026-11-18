@@ -503,6 +503,28 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let aspace = proc::aspace_of(&p).ok_or(FErr::BadState)?;
             one(aspace.map(&Vmo::wrap(phys, len), 0, len, 0, perms)?)
         }
+        nr::VMO_CREATE_PHYSICAL => {
+            let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
+            let (phys, len) = (a1, a2);
+            if len == 0 || !phys.is_multiple_of(4096) || len > crate::mm::vmo::MAX_SIZE {
+                return Err(FErr::InvalidArgs);
+            }
+            if !crate::hw::covers(&r, crate::obj::ResourceKind::Mmio, phys, len)
+                || crate::hw::is_kernel_memory(phys, len)
+            {
+                return Err(FErr::AccessDenied);
+            }
+            let cache = match a3 & 3 {
+                fcore_abi::cache::WRITE_BACK => 0,
+                fcore_abi::cache::WRITE_COMBINING => crate::mm::aspace::perm::WRITE_COMBINING,
+                fcore_abi::cache::UNCACHED => crate::mm::aspace::perm::UNCACHED,
+                _ => return Err(FErr::InvalidArgs),
+            };
+            one(add_handle(
+                Arc::new(Object::Vmo(Vmo::physical(phys, len, cache))),
+                rights::READ | rights::WRITE | rights::MAP | rights::DUPLICATE | rights::TRANSFER,
+            )?)
+        }
         nr::INTERRUPT_BIND => {
             let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
             if !crate::hw::covers(&r, crate::obj::ResourceKind::Irq, a1, 1) || a1 > u32::MAX as u64 {

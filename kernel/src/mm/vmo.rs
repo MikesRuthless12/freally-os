@@ -16,6 +16,9 @@ pub const MAX_SIZE: u64 = 1 << 30;
 pub struct Vmo {
     pub size: u64,
     pub contiguous: bool,
+    /// The memory type every mapping of it uses (`aspace::perm::UNCACHED` or
+    /// `WRITE_COMBINING`; 0 for ordinary write-back RAM).
+    pub cache: u32,
     pages: SpinLock<Vec<u64>>,
 }
 
@@ -45,7 +48,15 @@ impl Vmo {
                 }
             }
         }
-        Ok(Arc::new(Vmo { size, contiguous, pages: SpinLock::new(pages) }))
+        Ok(Arc::new(Vmo { size, contiguous, cache: 0, pages: SpinLock::new(pages) }))
+    }
+
+    /// A VMO over device memory (`vmo_create_physical`): its frames aren't
+    /// the kernel's, and every mapping uses `cache`.
+    pub fn physical(phys: u64, size: u64, cache: u32) -> Arc<Vmo> {
+        let n = size.div_ceil(FRAME);
+        let pages = (0..n).map(|i| ((phys & !(FRAME - 1)) + i * FRAME) | WRAPPED).collect();
+        Arc::new(Vmo { size, contiguous: true, cache, pages: SpinLock::new(pages) })
     }
 
     /// A VMO over existing physical memory the kernel already owns (the image, BootInfo).
@@ -53,7 +64,7 @@ impl Vmo {
     pub fn wrap(phys: u64, size: u64) -> Arc<Vmo> {
         let n = size.div_ceil(FRAME);
         let pages = (0..n).map(|i| ((phys & !(FRAME - 1)) + i * FRAME) | WRAPPED).collect();
-        Arc::new(Vmo { size, contiguous: true, pages: SpinLock::new(pages) })
+        Arc::new(Vmo { size, contiguous: true, cache: 0, pages: SpinLock::new(pages) })
     }
 
     /// The physical page backing byte `off`.

@@ -2,7 +2,7 @@
 //! The service specs (`@services.*`, `@log.*`), driven through conductor's
 //! e2e test door on COM3 until cdpd exists (Phase 3).
 
-use crate::Ctx;
+use crate::{Ctx, Expect};
 
 /// `@services.restart`: every service that restarts is killed in turn, and
 /// conductor has it back (started and registered again) within 200 ms
@@ -91,4 +91,17 @@ pub fn pci(ctx: &mut Ctx) -> Result<(), String> {
         return Err(format!("devmgr found {ours:x?}; QEMU has {theirs:x?}"));
     }
     Ok(())
+}
+
+/// `@display.fill`: drv-gop-fb maps the framebuffer write-combining (a VMO over
+/// exactly the range devmgr granted); a client fills it with the UI kit's
+/// ground (`--color-bg`, #090c09), and the screen is that colour, every pixel
+/// (TASK-042).
+pub fn fill(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("[drv-gop-fb] drv-gop-fb: ")?;
+    let answer = ctx.door("fbfill 090c09")?;
+    if answer.first().map(String::as_str) != Some("ok") {
+        return Err(format!("fbfill: {answer:?}"));
+    }
+    ctx.expect_screen(Expect::Fill(0x09_0c_09))
 }

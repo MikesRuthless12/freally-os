@@ -221,3 +221,29 @@ pub mod devmgr {
         pub struct Resources { pub handles: Vec<(String, HandleRef)>, pub values: Vec<(String, u64)> }
     }
 }
+
+/// The framebuffer driver (TASK-042).
+pub mod display {
+    use crate::{HandleRef, wire_struct};
+
+    pub const INFO: u32 = 1;
+    pub const FILL: u32 = 2;
+
+    wire_struct! {
+        /// The framebuffer: its VMO (handle 0, write-combining), size and
+        /// layout; `format` 0 is BGRX (blue first), 1 RGBX.
+        pub struct Info {
+            pub vmo: HandleRef,
+            pub width: u32,
+            pub height: u32,
+            pub stride: u32,
+            pub format: u32,
+            pub edid_size: u32,
+        }
+    }
+
+    wire_struct! {
+        /// Fills the whole screen with one colour, `0xRRGGBB`.
+        pub struct Fill { pub rgb: u32 }
+    }
+}

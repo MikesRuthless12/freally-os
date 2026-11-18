@@ -200,3 +200,8 @@ pub fn outb(port: u16, v: u8) {
     // SAFETY: as `inb`.
     unsafe { core::arch::asm!("out dx, al", in("al") v, in("dx") port, options(nomem, nostack, preserves_flags)) };
 }
+
+/// Device memory (MMIO covered by `resource`) as a VMO whose mappings use `cache`.
+pub fn vmo_create_physical(resource: u32, phys: u64, len: u64, cache: u64) -> Result<u32, FErr> {
+    call1(nr::VMO_CREATE_PHYSICAL, [resource as u64, phys, len, cache, 0, 0]).map(|h| h as u32)
+}

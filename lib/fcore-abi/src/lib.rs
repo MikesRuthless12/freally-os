@@ -242,8 +242,10 @@ pub mod syscall {
     pub const UEFI_SET_VAR: u64 = 35;
     /// `parent_h, kind, base, len` → child_h: a narrower resource (MANAGE on the parent).
     pub const RESOURCE_CREATE: u64 = 36;
+    /// `resource_h, phys, len, cache` → vmo_h: device memory as a VMO (MMIO in the resource).
+    pub const VMO_CREATE_PHYSICAL: u64 = 37;
     /// One past the highest number.
-    pub const COUNT: u64 = 37;
+    pub const COUNT: u64 = 38;
 }
 
 #[cfg(test)]

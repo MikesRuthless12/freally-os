@@ -86,6 +86,13 @@
       "setup": "e2e",
       "spec": "e2e/os/specs/services.rs",
       "what": "devmgr reads the firmware's ACPI tables and finds every PCI function through MCFG's configuration space: exactly QEMU's own list."
+    },
+    {
+      "id": "display.fill",
+      "task": "TASK-042",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "drv-gop-fb offers the firmware's framebuffer as a write-combining VMO; filled with the UI kit's ground, the screen is that colour, every pixel."
     }
   ]
 }

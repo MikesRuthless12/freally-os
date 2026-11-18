@@ -51,6 +51,7 @@ pub struct Hardware {
     pub has_8042: bool,
     pub firmware: d::FirmwareTimes,
     framebuffer: (u64, u64, u32, u32, u32, u32),
+    edid_len: u64,
     madt: Vec<u8>,
 }
 
@@ -96,6 +97,7 @@ impl Hardware {
             has_8042,
             firmware,
             framebuffer: (fb.base, fb.size, fb.width, fb.height, fb.stride_px, fb.format as u32),
+            edid_len: bi.edid.len,
             madt,
         })
     }
@@ -134,6 +136,7 @@ impl Hardware {
                     ("height", h as u64),
                     ("stride", stride as u64),
                     ("format", format as u64),
+                    ("edid_size", self.edid_len),
                 ] {
                     values.push((String::from(k), v));
                 }

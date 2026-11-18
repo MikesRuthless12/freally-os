@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = drv-gop-fb
+binary      = /system/drivers/gop-fb
+description = Gives the desktop the screen the firmware set up, ready to draw on.
+start       = boot
+after       = logger, devmgr
+restart     = always
+class       = interactive
+flavours    = release, dev, e2e

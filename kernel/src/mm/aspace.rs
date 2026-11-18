@@ -116,7 +116,7 @@ impl AddressSpace {
     /// Maps `len` bytes of `vmo` from `vmo_off` at `hint` (or the first free
     /// place); returns the address.
     pub fn map(&self, vmo: &Arc<Vmo>, vmo_off: u64, len: u64, hint: u64, perms: u32) -> Result<u64, FErr> {
-        let flags = Self::flags(perms)?;
+        let flags = Self::flags(perms | vmo.cache)?;
         if len == 0
             || !vmo_off.is_multiple_of(FRAME)
             || vmo_off.checked_add(len).is_none_or(|e| e > vmo.size.next_multiple_of(FRAME))

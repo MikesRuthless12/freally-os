@@ -61,6 +61,11 @@ dependencies = [
 [[package]]
 name = "drv-gop-fb"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "drv-i8042"

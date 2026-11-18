@@ -44,6 +44,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("services.restart", services::restart),
     ("log.read", services::read),
     ("devices.pci", services::pci),
+    ("display.fill", services::fill),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -61,9 +62,17 @@ pub const SITE_SPECS: &[(&str, SiteSpec)] = &[
 
 /// A screen a spec expects, drawn on the host by `fscreen` to compare.
 pub enum Expect {
-    Title { note: &'static str },
-    Integrity { reason: &'static str },
-    Panic { lines: [String; 3] },
+    Title {
+        note: &'static str,
+    },
+    Integrity {
+        reason: &'static str,
+    },
+    Panic {
+        lines: [String; 3],
+    },
+    /// One colour everywhere, `0xRRGGBB`.
+    Fill(u32),
 }
 
 pub struct Ctx {
@@ -104,6 +113,10 @@ impl Ctx {
                 Expect::Integrity { reason } => fscreen::integrity(&mut c, reason),
                 Expect::Panic { ref lines } => {
                     fscreen::panic(&mut c, &[lines[0].as_str(), lines[1].as_str(), lines[2].as_str()])
+                }
+                Expect::Fill(rgb) => {
+                    c.px.fill(rgb);
+                    fscreen::Rect { x: 0, y: 0, w: w as i32, h: h as i32 }
                 }
             };
             let mut diff = 0usize;
