@@ -103,28 +103,33 @@ impl Door {
     fn cdpd(&mut self, c: &mut Conductor, arg: &str) -> String {
         use fwire::proto::cdpd as cd;
         let (method, params) = arg.split_once(' ').unwrap_or((arg, "{}"));
-        if self.cdpd.is_none() {
-            self.cdpd = c.open_connection("cdpd", "conductor").map(fstd::ipc::Client::new);
-        }
-        let Some(cl) = self.cdpd.as_mut() else { return String::from("error: cdpd isn't up") };
         let call = cd::Call { method: String::from(method), params: String::from(params) };
-        // cdpd asks conductor (the services, the boot, connections) while
-        // conductor waits for its answer: serve its requests meanwhile.
-        let Some(i) = c.services.iter().position(|s| s.m.name == "cdpd") else {
-            return String::from("error: no cdpd in this image");
-        };
-        let Some(dir) = c.services[i].child.as_ref().map(|ch| ch.channel.0.raw()) else {
-            return String::from("error: cdpd isn't running");
-        };
-        let deadline = Instant::after(Duration::from_secs(5));
-        match cl.call_serving::<_, cd::Answer>(cd::CALL, &call, deadline, dir, || c.request(i)) {
-            Ok(a) => alloc::format!("json {}", a.result),
-            Err(fstd::ipc::CallError::Remote(_, why)) => alloc::format!("error: {why}"),
-            Err(e) => {
-                self.cdpd = None;
-                alloc::format!("error: {e:?}")
+        let mut said = String::from("error: cdpd isn't up");
+        // A cdpd restarted since the last call: connect to the new one, once.
+        for _ in 0..2 {
+            // cdpd asks conductor (the services, the boot, connections) while
+            // conductor waits for its answer: serve its requests meanwhile.
+            let Some(i) = c.services.iter().position(|s| s.m.name == "cdpd") else {
+                return String::from("error: no cdpd in this image");
+            };
+            let Some(dir) = c.services[i].child.as_ref().map(|ch| ch.channel.0.raw()) else {
+                return String::from("error: cdpd isn't running");
+            };
+            if self.cdpd.is_none() {
+                self.cdpd = c.open_connection("cdpd", "conductor").map(fstd::ipc::Client::new);
+            }
+            let Some(cl) = self.cdpd.as_mut() else { continue };
+            let deadline = Instant::after(Duration::from_secs(5));
+            match cl.call_serving::<_, cd::Answer>(cd::CALL, &call, deadline, dir, || c.request(i)) {
+                Ok(a) => return alloc::format!("json {}", a.result),
+                Err(fstd::ipc::CallError::Remote(_, why)) => return alloc::format!("error: {why}"),
+                Err(e) => {
+                    self.cdpd = None;
+                    said = alloc::format!("error: {e:?}");
+                }
             }
         }
+        said
     }
 
     /// Hands the outbox to the driver, as far as it takes it.

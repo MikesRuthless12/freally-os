@@ -185,7 +185,9 @@ pub mod logger {
     }
 
     wire_struct! {
-        pub struct Records { pub records: Vec<LogRecord>, pub next_cursor: u64 }
+        /// `next_cursor` 0 when nothing is left; `newest` the newest record's
+        /// number (0: none yet).
+        pub struct Records { pub records: Vec<LogRecord>, pub next_cursor: u64, pub newest: u64 }
     }
 }
 

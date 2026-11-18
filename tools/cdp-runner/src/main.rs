@@ -127,9 +127,94 @@ pub struct Ctx {
     allowed_errors: Vec<String>,
     /// The e2e test door (COM3's socket), when the setup has one.
     pub com3: Option<String>,
+    /// What the guard lets this spec do: restart services, file faults; and
+    /// whether it rebooted the VM (the guard's counts begin again).
+    allow_restarts: bool,
+    allow_faults: bool,
+    rebooted: bool,
+    /// Whether this setup's boot opened the test door (asked once).
+    door_open: Option<bool>,
 }
 
 impl Ctx {
+    /// This spec restarts services on purpose: the guard lets it.
+    pub fn allow_restarts(&mut self) {
+        self.allow_restarts = true;
+    }
+
+    /// This spec makes something crash on purpose: the guard lets it.
+    pub fn allow_faults(&mut self) {
+        self.allow_faults = true;
+    }
+
+    /// What the spec begins with, for the guard: nothing without an open
+    /// test door (a setup without one, or a boot not that far yet).
+    fn watch(&mut self) -> Option<guard::Watch> {
+        self.com3.as_ref()?;
+        const OPEN: &str = "conductor: test door open on COM3";
+        if self.door_open.is_none() {
+            // The first spec: give the boot up to 10 s to open the door (one
+            // that panics never will).
+            let start = Instant::now();
+            while !self.log().contains(OPEN) && start.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            self.door_open = Some(self.log().contains(OPEN));
+        }
+        if !self.log().contains(OPEN) {
+            return None;
+        }
+        let f = self.cdp.call("Freally.getFaults", Value::obj([("sinceSeq", 0u32.into())])).ok()?;
+        let p = self.cdp.call("Freally.getProcesses", Value::Obj(Vec::new())).ok()?;
+        let l = self.cdp.call("Log.read", Value::obj([("cursor", Value::Num(9e15)), ("limit", 1u32.into())])).ok()?;
+        Some(guard::Watch {
+            log: l.get("newest").and_then(Value::as_i64)? as u64 + 1,
+            fault: f.get("lastSeq").and_then(Value::as_i64)? as u64,
+            restarts: guard::restarts(&p),
+        })
+    }
+
+    /// The guard's half through cdpd: errors logged, kernel warnings, new
+    /// faults and restarts since `w`.
+    fn guard(&mut self, w: &guard::Watch) -> Result<(), String> {
+        let mut bad = Vec::new();
+        let mut cursor = w.log;
+        for _ in 0..20 {
+            let params =
+                Value::obj([("cursor", cursor.into()), ("limit", 500u32.into()), ("minLevel", "warning".into())]);
+            let r = self.cdp.call("Log.read", params).map_err(|e| format!("the guard: Log.read: {e}"))?;
+            let entries = r.get("entries").and_then(Value::as_array).unwrap_or_default().to_vec();
+            bad.extend(guard::bad_records(&entries, &self.allowed_errors));
+            let next = r.get("next").and_then(Value::as_i64).unwrap_or(0) as u64;
+            if entries.is_empty() || next <= cursor {
+                break;
+            }
+            cursor = next;
+        }
+        if !bad.is_empty() {
+            return Err(format!("the guard: logged {}", bad.join(" | ")));
+        }
+        if !self.allow_faults {
+            let f = self
+                .cdp
+                .call("Freally.getFaults", Value::obj([("sinceSeq", w.fault.into())]))
+                .map_err(|e| format!("the guard: getFaults: {e}"))?;
+            let new = f.get("faults").and_then(Value::as_array).unwrap_or_default();
+            if !new.is_empty() {
+                return Err(format!("the guard: new fault reports {}", Value::Arr(new.to_vec()).to_json()));
+            }
+        }
+        if !self.allow_restarts {
+            let p =
+                self.cdp.call("Freally.getProcesses", Value::Obj(Vec::new())).map_err(|e| format!("the guard: {e}"))?;
+            let again = guard::restarted(&w.restarts, &guard::restarts(&p));
+            if !again.is_empty() {
+                return Err(format!("the guard: restarted {}", again.join(", ")));
+            }
+        }
+        Ok(())
+    }
+
     /// `ERROR` lines containing any of `patterns` don't fail this spec.
     pub fn allow_errors(&mut self, patterns: &[&str]) {
         self.allowed_errors.extend(patterns.iter().map(|p| p.to_string()));
@@ -337,6 +422,7 @@ impl Ctx {
 
     /// A warm reboot (RAM kept), as a restart button does.
     pub fn reset(&mut self) -> Result<(), String> {
+        self.rebooted = true;
         self.cdp.call("Page.reload", Value::Obj(Vec::new())).map(|_| ())
     }
 
@@ -404,6 +490,10 @@ fn main() {
         spec: String::new(),
         allowed_errors: Vec::new(),
         com3: arg("--com3"),
+        allow_restarts: false,
+        allow_faults: false,
+        rebooted: false,
+        door_open: None,
     };
     // A cold host (WSL just restarted, its caches empty) can take far longer
     // than a spec's 10 s to start the VM: wait up to 60 s for the
@@ -422,10 +512,20 @@ fn main() {
         };
         ctx.spec = id.to_string();
         ctx.allowed_errors.clear();
+        (ctx.allow_restarts, ctx.allow_faults, ctx.rebooted) = (false, false, false);
+        let printed = ctx.log().len();
+        let watch = ctx.watch();
         let start = Instant::now();
         let mut result = f(&mut ctx);
         if result.is_ok() {
-            result = guard::check(&ctx.log(), &ctx.allowed_errors);
+            let log = ctx.log();
+            result = guard::check(log.get(printed..).unwrap_or(&log), &ctx.allowed_errors);
+        }
+        if result.is_ok()
+            && !ctx.rebooted
+            && let Some(w) = watch
+        {
+            result = ctx.guard(&w);
         }
         let secs = start.elapsed().as_secs_f64();
         match result {

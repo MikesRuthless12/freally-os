@@ -68,7 +68,13 @@ impl Logger {
         while let Some(i) = self.kernel_partial.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.kernel_partial.drain(..=i).collect();
             let text = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
-            let level = if text.contains("ERROR") { l::ERROR } else { l::INFO };
+            let level = if text.contains("ERROR") {
+                l::ERROR
+            } else if text.contains("WARNING") {
+                l::WARN
+            } else {
+                l::INFO
+            };
             self.ring.push(Instant::now().as_ns(), level, "kernel", text.trim_end());
         }
     }

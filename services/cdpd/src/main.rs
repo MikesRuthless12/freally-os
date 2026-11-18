@@ -44,12 +44,20 @@ impl Cdpd {
         self.stage.as_mut().ok_or_else(|| String::from("stage isn't up"))
     }
 
+    /// Stage's windows (connecting again, once, to a stage restarted since).
     fn windows(&mut self) -> Result<st::Windows, String> {
-        let r = self.stage()?.call::<_, st::Windows>(st::LIST_WINDOWS, &(), Vec::new(), deadline());
-        r.map(|(w, _)| w).map_err(|e| {
-            self.stage = None;
-            format!("stage: {e:?}")
-        })
+        let mut answer = Err(String::from("stage isn't up"));
+        for _ in 0..2 {
+            let Ok(cl) = self.stage() else { continue };
+            match cl.call::<_, st::Windows>(st::LIST_WINDOWS, &(), Vec::new(), deadline()) {
+                Ok((w, _)) => return Ok(w),
+                Err(e) => {
+                    self.stage = None;
+                    answer = Err(format!("stage: {e:?}"));
+                }
+            }
+        }
+        answer
     }
 
     fn tree(&mut self, window_id: u32) -> Option<ax::Tree> {
@@ -227,18 +235,35 @@ impl Cdpd {
 
     /// `Log.read {cursor, limit}`: records after `cursor`, and the next one.
     fn log(&mut self, params: &Value) -> Result<Value, String> {
-        if self.logger.is_none() {
-            self.logger = fstd::service::connect("logger").ok().map(Client::new);
-        }
-        let cl = self.logger.as_mut().ok_or("the logger isn't up")?;
         let cursor = params.get("cursor").and_then(Value::as_i64).unwrap_or(0).max(0) as u64;
         let limit = params.get("limit").and_then(Value::as_i64).unwrap_or(100).clamp(1, 500) as u16;
-        let read = l::Read { cursor, limit, filter: l::Filter { svc: None, min_level: None } };
-        let r = cl.call::<_, l::Records>(l::READ, &read, Vec::new(), deadline());
-        let (recs, _) = r.map_err(|e| {
-            self.logger = None;
-            format!("logger: {e:?}")
-        })?;
+        let svc = params.get("source").and_then(Value::as_str).map(String::from);
+        let min_level = match params.get("minLevel").and_then(Value::as_str) {
+            Some("error") => Some(l::ERROR),
+            Some("warning") => Some(l::WARN),
+            Some("info") => Some(l::INFO),
+            _ => None,
+        };
+        let read = l::Read { cursor, limit, filter: l::Filter { svc, min_level } };
+        // A logger restarted since the last call: connect again, once.
+        let mut answer = Err(String::from("the logger isn't up"));
+        for _ in 0..2 {
+            if self.logger.is_none() {
+                self.logger = fstd::service::connect("logger").ok().map(Client::new);
+            }
+            let Some(cl) = self.logger.as_mut() else { continue };
+            match cl.call::<_, l::Records>(l::READ, &read, Vec::new(), deadline()) {
+                Ok((r, _)) => {
+                    answer = Ok(r);
+                    break;
+                }
+                Err(e) => {
+                    self.logger = None;
+                    answer = Err(format!("logger: {e:?}"));
+                }
+            }
+        }
+        let recs = answer?;
         let level = |lv: u8| match lv {
             l::ERROR => "error",
             l::WARN => "warning",
@@ -258,7 +283,13 @@ impl Cdpd {
                 ])
             })
             .collect();
-        Ok(Value::obj([("entries", Value::Arr(entries)), ("next", recs.next_cursor.into())]))
+        // Where to go on: the next page, or past the last record given.
+        let next = match (recs.next_cursor, recs.records.last()) {
+            (0, Some(r)) => r.seq + 1,
+            (0, None) => cursor,
+            (n, _) => n,
+        };
+        Ok(Value::obj([("entries", Value::Arr(entries)), ("next", next.into()), ("newest", recs.newest.into())]))
     }
 }
 

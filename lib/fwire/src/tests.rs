@@ -122,6 +122,7 @@ fn every_logger_message_round_trips() {
                 msg: "é ✓".to_string(),
             }],
             next_cursor: 0,
+            newest: 9,
         },
     );
     round_trip(l::SUBSCRIBE, l::Filter { svc: None, min_level: Some(l::DEBUG) });

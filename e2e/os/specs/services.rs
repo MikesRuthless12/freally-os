@@ -8,6 +8,7 @@ use crate::{Ctx, Expect};
 /// conductor has it back (started and registered again) within 200 ms
 /// (TASK-038).
 pub fn restart(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.allow_restarts();
     ctx.expect_log("[logger] logger: ready")?;
     let listed = ctx.door("services")?;
     let restartable: Vec<String> = listed

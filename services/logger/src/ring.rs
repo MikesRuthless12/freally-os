@@ -67,7 +67,7 @@ impl Ring {
             out.push(r.clone());
         }
         let next_cursor = if more { out.last().map_or(0, |r| r.seq + 1) } else { 0 };
-        Records { records: out, next_cursor }
+        Records { records: out, next_cursor, newest: self.records.back().map_or(0, |r| r.seq) }
     }
 }
 
