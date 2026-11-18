@@ -163,8 +163,9 @@ pub fn call(
     max_handles: usize,
     deadline: u64,
 ) -> Result<Message, (FErr, usize, usize)> {
-    write(end, msg).map_err(|e| (e, 0, 0))?;
-    // The server runs next (it was woken by the write); then wait for its reply.
+    // A handoff: the server, woken by the write, runs as soon as we yield,
+    // with no timer forced to preempt us; then wait for its reply.
+    sched::handoff(|| write(end, msg)).map_err(|e| (e, 0, 0))?;
     sched::yield_now();
     loop {
         match read(end, max_bytes, max_handles) {
@@ -208,6 +209,46 @@ ktest!(ipc_limits_are_enforced, {
     let big = Message { bytes: alloc::vec![0; MAX_BYTES + 1], handles: Vec::new() };
     if write(&a, big).err() != Some(FErr::InvalidArgs) {
         return Err("a message over 64 KiB was accepted");
+    }
+    let ev: crate::obj::ObjectRef = Arc::new(crate::obj::Object::Event(Header::new()));
+    let many = (0..=MAX_HANDLES).map(|_| Handle { object: ev.clone(), rights: 0 }).collect();
+    if write(&a, Message { bytes: Vec::new(), handles: many }).err() != Some(FErr::InvalidArgs) {
+        return Err("a message with more than 16 handles was accepted");
+    }
+    if Arc::strong_count(&ev) != 1 {
+        return Err("a refused message kept its handles");
+    }
+    for _ in 0..MAX_QUEUED {
+        write(&a, Message { bytes: alloc::vec![0], handles: Vec::new() })?;
+    }
+    if write(&a, Message { bytes: alloc::vec![0], handles: Vec::new() }).err() != Some(FErr::Busy) {
+        return Err("a full channel took another message");
+    }
+    Ok(())
+});
+
+ktest!(ipc_handles_move_with_their_message, {
+    let (a, b) = channel_pair();
+    let ev: crate::obj::ObjectRef = Arc::new(crate::obj::Object::Event(Header::new()));
+    let h = Handle { object: ev.clone(), rights: fcore_abi::rights::WAIT | fcore_abi::rights::TRANSFER };
+    write(&a, Message { bytes: alloc::vec![1], handles: alloc::vec![h] })?;
+    if Arc::strong_count(&ev) != 2 {
+        return Err("the message doesn't hold the handle it carries");
+    }
+    // A reader with no room for the handle is told what it needs; the message stays.
+    if read(&b, 64, 0).err() != Some((FErr::BufferTooSmall, 1, 1)) {
+        return Err("a reader with no room for a handle wasn't told");
+    }
+    let m = read(&b, 64, 1).map_err(|_| "the message was lost")?;
+    if m.handles.len() != 1 || !Arc::ptr_eq(&m.handles[0].object, &ev) {
+        return Err("the handle didn't arrive as the same object");
+    }
+    if m.handles[0].rights != fcore_abi::rights::WAIT | fcore_abi::rights::TRANSFER {
+        return Err("the handle's rights changed in transit");
+    }
+    drop(m);
+    if Arc::strong_count(&ev) != 1 {
+        return Err("a read message left a reference behind");
     }
     Ok(())
 });

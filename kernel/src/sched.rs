@@ -122,6 +122,20 @@ static SCHED: SpinLock<Sched> = SpinLock::new(Sched {
 });
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
+/// Set while a `channel_call` writes its request: the caller yields the
+/// moment the write is done, so a wake needn't force a preemption through
+/// the timer (an MSR write, an early interrupt and its EOI: four VM exits
+/// under KVM). Per CPU with SMP (TASK-036).
+static HANDOFF: AtomicBool = AtomicBool::new(false);
+
+/// Runs `f` (a write that wakes the thread the caller is about to yield to)
+/// without the wake's forced preemption; the caller yields next.
+pub fn handoff<R>(f: impl FnOnce() -> R) -> R {
+    HANDOFF.store(true, Ordering::Relaxed);
+    let r = f();
+    HANDOFF.store(false, Ordering::Relaxed);
+    r
+}
 static STARTED: AtomicBool = AtomicBool::new(false);
 static XSAVE_SIZE: AtomicU64 = AtomicU64::new(512);
 /// The TSC deadline the timer is armed for (each MSR write is a VM exit; skip repeats).
@@ -533,8 +547,11 @@ pub fn wake(t: &ThreadRef) {
     }
     if (c as u8) < (cur as u8) {
         NEED_RESCHED.store(true, Ordering::Relaxed);
-        ARMED.store(0, Ordering::Relaxed);
-        crate::arch::apic::arm_deadline(cpu::rdtsc() + 1);
+        // A handoff yields at once; anything else is preempted by the timer.
+        if !HANDOFF.load(Ordering::Relaxed) {
+            ARMED.store(0, Ordering::Relaxed);
+            crate::arch::apic::arm_deadline(cpu::rdtsc() + 1);
+        }
     }
 }
 

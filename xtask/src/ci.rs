@@ -193,6 +193,15 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
         }),
     ));
     g.push((
+        "bench ipc",
+        Box::new(move || {
+            if container {
+                return Ok(String::from("SKIP: the container has no KVM to time against"));
+            }
+            crate::bench::ipc().map(|ns| format!("median round trip {ns} ns (target 5,000)"))
+        }),
+    ));
+    g.push((
         "validate",
         Box::new(move || {
             let lines = crate::validate::validate(!container)?;

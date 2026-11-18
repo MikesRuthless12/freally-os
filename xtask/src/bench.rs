@@ -12,6 +12,13 @@ pub fn bench_cmd(args: &[String]) -> Result<(), String> {
     if args.first().map(String::as_str) != Some("ipc") {
         return Err("cargo xtask bench ipc".into());
     }
+    let ns = ipc()?;
+    println!("bench ipc: median {ns} ns per round trip (10,000 calls)");
+    Ok(())
+}
+
+/// The median channel round trip (ns); an error above the 5 µs target.
+pub fn ipc() -> Result<u64, String> {
     let built = build::build_full(Flavour::Dev, true, &["bench-ipc"])?;
     let mut o = VmOptions::new(Flavour::Dev, "bench");
     o.headless = true;
@@ -31,10 +38,9 @@ pub fn bench_cmd(args: &[String]) -> Result<(), String> {
     }
     let log = std::fs::read_to_string(o.com1_log()).unwrap_or_default();
     let line = log.lines().find(|l| l.starts_with("bench ipc:")).ok_or("the kernel printed no result")?;
-    println!("{}", line.trim());
     let ns: u64 = line.split_whitespace().nth(3).and_then(|n| n.parse().ok()).ok_or("an unreadable result")?;
     if ns > 5_000 {
         return Err(format!("the median round trip is {ns} ns; the target is 5,000 ns"));
     }
-    Ok(())
+    Ok(ns)
 }
