@@ -111,6 +111,11 @@ dependencies = [
 [[package]]
 name = "freally-core"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "ffont",
+ "fscreen",
+]
 
 [[package]]
 name = "frt"

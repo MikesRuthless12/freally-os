@@ -14,6 +14,9 @@ pub struct Display {
     pub h: usize,
     pub stride: usize,
     pub format: u32,
+    /// The linear framebuffer (0 when the mode is Blt-only).
+    pub fb_base: u64,
+    pub fb_size: u64,
 }
 
 /// The firmware's graphics output, if it has one.
@@ -27,7 +30,8 @@ pub unsafe fn gop(bs: &BootServices) -> Option<(*mut GraphicsOutput, Display)> {
     }
     let g = g as *mut GraphicsOutput;
     // SAFETY: the firmware's GOP and its current mode.
-    let info = unsafe { &*(*(*g).mode).info };
+    let (mode, info) = unsafe { (&*(*g).mode, &*(*(*g).mode).info) };
+    let linear = info.pixel_format != 3;
     Some((
         g,
         Display {
@@ -35,6 +39,8 @@ pub unsafe fn gop(bs: &BootServices) -> Option<(*mut GraphicsOutput, Display)> {
             h: info.vertical_resolution as usize,
             stride: info.pixels_per_scan_line as usize,
             format: info.pixel_format,
+            fb_base: if linear { mode.frame_buffer_base } else { 0 },
+            fb_size: if linear { mode.frame_buffer_size as u64 } else { 0 },
         },
     ))
 }

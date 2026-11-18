@@ -266,3 +266,24 @@ mod tests {
         assert_eq!(Flavour::from_u32(3), None);
     }
 }
+
+/// The kernel's address-space layout (TASK-018).
+pub mod layout {
+    /// All physical memory is mapped here, read/write, never executable.
+    pub const DIRECT_MAP: u64 = 0xFFFF_8000_0000_0000;
+    /// Freally Core is linked here (the top 2 GiB, `-mcmodel=kernel`).
+    pub const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+    /// The kernel's boot stack (in the direct map), in bytes.
+    pub const BOOT_STACK: u64 = 64 * 1024;
+}
+
+/// UEFI memory types the bootloader allocates with (the OS-loader range,
+/// 0x8000_0000 and up), so the kernel can tell its own memory from free memory.
+pub mod memtype {
+    /// Freally Core's loaded segments.
+    pub const KERNEL: u32 = 0x8000_0001;
+    /// BootInfo, the memory map copy, the page tables and the boot stack.
+    pub const BOOT_DATA: u32 = 0x8000_0002;
+    /// The verified system image, kept for conductor.
+    pub const IMAGE: u32 = 0x8000_0003;
+}

@@ -7,8 +7,8 @@
 //! changed or damaged image gets the integrity screen instead, and nothing from
 //! it runs. There's no flag, variable or key that skips a check.
 //!
-//! Phase 0 stops at the title. Phase 1 loads Freally Core from the verified
-//! image, exits boot services and jumps (TASK-018).
+//! Then it loads Freally Core from the verified image, exits boot services and
+//! jumps to it (TASK-018, `handoff.rs`).
 #![no_std]
 #![no_main]
 
@@ -23,6 +23,7 @@ compile_error!("exactly one flavour");
 
 #[macro_use]
 mod console;
+mod handoff;
 mod keys;
 mod read;
 mod uefi;
@@ -65,12 +66,12 @@ fn halt() -> ! {
 
 /// What the screen will say.
 enum Outcome {
-    Verified { version: [u8; 32], note: &'static str },
+    Verified { version: [u8; 32], note: &'static str, image: &'static [u8], kernel: Option<&'static [u8]> },
     Refused(&'static str),
 }
 
 /// Checks the image the way `docs/fsi-format.md` says, plus the flavour rule.
-fn check(image: &[u8]) -> Outcome {
+fn check(image: &'static [u8]) -> Outcome {
     match fsi::verify(image, TRUSTED) {
         Ok(v) => {
             if FLAVOUR == Flavour::Release && v.header.flavour != Flavour::Release as u16 {
@@ -87,7 +88,7 @@ fn check(image: &[u8]) -> Outcome {
                 "dev" => "Every block checked. Signed by the dev key.",
                 _ => "Every block checked. Signed by the staging key.",
             };
-            Outcome::Verified { version: v.header.version, note }
+            Outcome::Verified { version: v.header.version, note, image, kernel: v.file("/system/kernel") }
         }
         Err(e) => {
             say!("freally-boot: ERROR image refused: {} ({:?})", e.describe(), e);
@@ -97,7 +98,7 @@ fn check(image: &[u8]) -> Outcome {
 }
 
 #[unsafe(export_name = "efi_main")]
-extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
+extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Status {
     let mut stamps = BootStamps { b0: rdtsc(), ..BootStamps::default() };
     // SAFETY: the firmware passes a valid system table and keeps it valid while
     // boot services run, which is all of this bootloader's life in Phase 0.
@@ -114,9 +115,14 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
         say!("freally-boot: display {}x{}, stride {}, pixel format {}", d.w, d.h, d.stride, d.format);
     }
     let mut edid: *mut c_void = null_mut();
+    let mut edid_bytes: Option<(*const u8, usize)> = None;
     if !is_error((bs.locate_protocol)(&EDID_ACTIVE_GUID, null_mut(), &mut edid)) && !edid.is_null() {
         // SAFETY: the firmware's EDID Active protocol.
-        say!("freally-boot: EDID {} bytes", unsafe { (*(edid as *mut EdidActive)).size_of_edid });
+        let e = unsafe { &*(edid as *mut EdidActive) };
+        say!("freally-boot: EDID {} bytes", e.size_of_edid);
+        if !e.edid.is_null() && e.size_of_edid > 0 {
+            edid_bytes = Some((e.edid as *const u8, e.size_of_edid as usize));
+        }
     }
     let (mut map_size, mut key, mut desc_size, mut desc_version) = (0usize, 0usize, 0usize, 0u32);
     let st_map = (bs.get_memory_map)(&mut map_size, null_mut(), &mut key, &mut desc_size, &mut desc_version);
@@ -126,13 +132,15 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
     // The ACPI 2.0+ RSDP, for the kernel (BootInfo.acpi_rsdp, Phase 1).
     // SAFETY: the firmware's configuration table has `number_of_table_entries` entries.
     let tables = unsafe { core::slice::from_raw_parts(st.configuration_table, st.number_of_table_entries) };
+    let mut acpi_rsdp = 0u64;
     if let Some(t) = tables.iter().find(|t| t.vendor_guid == ACPI_20_TABLE_GUID) {
-        say!("freally-boot: ACPI 2.0 RSDP at {:#x}", t.vendor_table as usize);
+        acpi_rsdp = t.vendor_table as u64;
+        say!("freally-boot: ACPI 2.0 RSDP at {:#x}", acpi_rsdp);
     }
 
     // Read, then verify.
     // SAFETY: boot services are running and `image` is our own handle.
-    let outcome = match unsafe { read::read_image(bs, image, read::SYSTEM_A) } {
+    let outcome = match unsafe { read::read_image(bs, image_handle, read::SYSTEM_A) } {
         Ok(bytes) => {
             stamps.b1 = rdtsc();
             let hdr = fsi::Header::parse(bytes).map(|h| h.version);
@@ -157,6 +165,22 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
         stamps.b2.saturating_sub(stamps.b1)
     );
 
+    // Load Freally Core from the verified image (images before Phase 1 have none).
+    let mut outcome = outcome;
+    let mut kernel = None;
+    if let Outcome::Verified { kernel: Some(elf), .. } = &outcome {
+        match handoff::load_kernel(bs, elf) {
+            Ok(k) => {
+                say!("freally-boot: Freally Core loaded, {} bytes, handing over", elf.len());
+                kernel = Some(k);
+            }
+            Err(why) => {
+                say!("freally-boot: ERROR {why}");
+                outcome = Outcome::Refused(why);
+            }
+        }
+    }
+
     // Paint. Nothing is printed after this, or the console would draw over it.
     let Some((gop, d)) = display else {
         say!("freally-boot: ERROR no graphics output; the console is all there is");
@@ -172,7 +196,7 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
     let px = unsafe { core::slice::from_raw_parts_mut(addr as *mut u32, d.w * d.h) };
     let mut canvas = fscreen::Canvas { px, w: d.w, h: d.h };
     match &outcome {
-        Outcome::Verified { version, note } => {
+        Outcome::Verified { version, note, .. } => {
             let end = version.iter().position(|&b| b == 0).unwrap_or(32);
             let v = core::str::from_utf8(&version[..end]).unwrap_or("?");
             say!("freally-boot: showing the title");
@@ -187,6 +211,23 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
     }
     // SAFETY: `gop` and `d` come from the firmware's current mode.
     unsafe { video::present(gop, d, canvas.px) };
+
+    // Hand over (TASK-018). It returns only if something failed before ExitBootServices.
+    if let (Some(k), Outcome::Verified { version, image, .. }) = (kernel, &outcome) {
+        let facts = handoff::Facts {
+            framebuffer: handoff::framebuffer(&d, d.fb_base, d.fb_size),
+            edid: edid_bytes,
+            acpi_rsdp,
+            image,
+            version: *version,
+            stamps,
+        };
+        // SAFETY: boot services are running; `st` and `image` are the firmware's.
+        let why = unsafe { handoff::handoff(st, image_handle, &k, facts) };
+        fscreen::integrity(&mut canvas, why);
+        // SAFETY: as above.
+        unsafe { video::present(gop, d, canvas.px) };
+    }
     halt();
 }
 

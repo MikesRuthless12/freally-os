@@ -1,11 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "freally-core"
-description = "Freally Core, the microkernel."
+description = "Freally Core, the microkernel (x86_64-unknown-none, linked at 0xFFFF_FFFF_8000_0000)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "freally-core"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+# Exactly one flavour, chosen by `cargo xtask build`.
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+# The in-kernel test harness (`cargo xtask test`): runs every #[ktest], then exits QEMU.
+ktest = []
+
+[dependencies]
+fcore-abi.workspace = true
+ffont.workspace = true
+fscreen.workspace = true
 
 [lints]
 workspace = true

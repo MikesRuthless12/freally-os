@@ -136,6 +136,15 @@ pub trait Target {
     fn size(&self) -> (usize, usize);
     fn get(&self, x: usize, y: usize) -> u32;
     fn set(&mut self, x: usize, y: usize, rgb: u32);
+    /// Paints every pixel `rgb`.
+    fn fill(&mut self, rgb: u32) {
+        let (w, h) = self.size();
+        for y in 0..h {
+            for x in 0..w {
+                self.set(x, y, rgb);
+            }
+        }
+    }
 }
 
 /// `src` over `dst` at coverage `a` (0–255), per channel, rounded.

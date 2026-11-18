@@ -35,6 +35,13 @@
       "setup": "release-with-dev-image",
       "spec": "e2e/os/specs/boot.rs",
       "what": "A release bootloader refuses a dev-signed image: a key this computer doesn't trust."
+    },
+    {
+      "id": "boot.handoff",
+      "task": "TASK-018",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "Boot services exit, the runtime services move to the direct map, and Freally Core is entered with a BootInfo it accepts, then paints its screen."
     }
   ]
 }

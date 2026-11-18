@@ -45,6 +45,9 @@ impl Target for Canvas<'_> {
     fn set(&mut self, x: usize, y: usize, rgb: u32) {
         self.px[y * self.w + x] = rgb;
     }
+    fn fill(&mut self, rgb: u32) {
+        self.px.fill(rgb);
+    }
 }
 
 /// A rectangle in pixels.
@@ -62,33 +65,33 @@ fn strikes() -> Option<(Strike<'static>, Strike<'static>)> {
 }
 
 /// Draws one centred line; returns its box (the strike's ascent to descent).
-fn centred(c: &mut Canvas, s: &Strike, baseline: i32, parts: &[&str], rgb: u32) -> Rect {
+fn centred(c: &mut impl Target, s: &Strike, baseline: i32, parts: &[&str], rgb: u32) -> Rect {
     let width = s.measure_parts(parts);
-    let x = (c.w as i32 - width) / 2;
+    let x = (c.size().0 as i32 - width) / 2;
     atlas::draw_parts(c, s, x, baseline, parts, rgb);
     Rect { x, y: baseline - s.ascent as i32, w: width, h: (s.ascent + s.descent) as i32 }
 }
 
 /// The boot title: *Freally OS vX.Y.Z* in Freally green, and a quiet line under it.
 /// Returns the title's box (what `@boot.title` compares).
-pub fn title(c: &mut Canvas, version: &str, note: &str) -> Rect {
-    c.px.fill(colours::BACKGROUND);
+pub fn title(c: &mut impl Target, version: &str, note: &str) -> Rect {
+    c.fill(colours::BACKGROUND);
     let Some((big, small)) = strikes() else {
         return Rect { x: 0, y: 0, w: 0, h: 0 };
     };
-    let baseline = c.h as i32 / 2;
+    let baseline = c.size().1 as i32 / 2;
     let r = centred(c, &big, baseline, &["Freally OS v", version], colours::PRIMARY);
     centred(c, &small, baseline + 2 * small.line_height as i32, &[note], colours::TEXT_MUTED);
     r
 }
 
 /// The integrity screen (wording: the owner, 2026-11-17).
-pub fn integrity(c: &mut Canvas, reason: &str) -> Rect {
-    c.px.fill(colours::BACKGROUND);
+pub fn integrity(c: &mut impl Target, reason: &str) -> Rect {
+    c.fill(colours::BACKGROUND);
     let Some((big, small)) = strikes() else {
         return Rect { x: 0, y: 0, w: 0, h: 0 };
     };
-    let baseline = c.h as i32 / 2 - big.line_height as i32 / 2;
+    let baseline = c.size().1 as i32 / 2 - big.line_height as i32 / 2;
     let r = centred(c, &big, baseline, &["Freally OS didn’t start"], colours::ERROR);
     let line = small.line_height as i32;
     centred(c, &small, baseline + 2 * line, &[reason], colours::TEXT);
@@ -99,5 +102,22 @@ pub fn integrity(c: &mut Canvas, reason: &str) -> Rect {
         &["Nothing from this image was run. Copy a fresh image to this drive to start again."],
         colours::TEXT_MUTED,
     );
+    r
+}
+
+/// The panic screen (FR-005): what stopped, where, and that nothing was lost
+/// that hadn't been saved. `lines` are drawn under the title, one per row.
+pub fn panic(c: &mut impl Target, lines: &[&str]) -> Rect {
+    c.fill(colours::BACKGROUND);
+    let Some((big, small)) = strikes() else {
+        return Rect { x: 0, y: 0, w: 0, h: 0 };
+    };
+    let line = small.line_height as i32;
+    let baseline = c.size().1 as i32 / 2 - (lines.len() as i32 * line) / 2;
+    let r = centred(c, &big, baseline, &["Freally OS stopped"], colours::ERROR);
+    for (i, l) in lines.iter().enumerate() {
+        let colour = if i == 0 { colours::TEXT } else { colours::TEXT_MUTED };
+        centred(c, &small, baseline + (2 + i as i32) * line, &[l], colour);
+    }
     r
 }

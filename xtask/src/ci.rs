@@ -48,6 +48,8 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
                     "--workspace",
                     "--exclude",
                     "freally-boot",
+                    "--exclude",
+                    "freally-core",
                     "--all-targets",
                     "--features",
                     HOST_FEATURES,
@@ -85,10 +87,47 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
             ));
         }
     }
+    if !fast {
+        for f in ["release", "dev", "e2e"] {
+            let name: &'static str = match f {
+                "release" => "clippy kernel/release",
+                "dev" => "clippy kernel/dev",
+                _ => "clippy kernel/e2e",
+            };
+            g.push((
+                name,
+                Box::new(move || {
+                    let feat = format!("flavour-{f}");
+                    quiet(cargo(&[
+                        "clippy",
+                        "-p",
+                        "freally-core",
+                        "--target",
+                        "x86_64-unknown-none",
+                        "--features",
+                        &feat,
+                        "--",
+                        "-D",
+                        "warnings",
+                    ]))
+                    .map(|_| "no warnings".into())
+                }),
+            ));
+        }
+    }
     g.push((
         "host tests",
         Box::new(move || {
-            let mut c = cargo(&["test", "--workspace", "--exclude", "freally-boot", "--features", HOST_FEATURES]);
+            let mut c = cargo(&[
+                "test",
+                "--workspace",
+                "--exclude",
+                "freally-boot",
+                "--exclude",
+                "freally-core",
+                "--features",
+                HOST_FEATURES,
+            ]);
             if slow {
                 c.env("FREALLY_FUZZ_ITERS", "2000");
             }

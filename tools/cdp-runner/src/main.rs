@@ -30,6 +30,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.integrity", boot::integrity),
     ("boot.release", boot::release),
     ("boot.seal", boot::seal),
+    ("boot.handoff", boot::handoff),
 ];
 
 /// A screen a spec expects, drawn on the host by `fscreen` to compare.

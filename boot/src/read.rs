@@ -66,7 +66,8 @@ pub unsafe fn read_image(bs: &BootServices, image: Handle, path: &[u16]) -> Resu
         }
         let pages = size.div_ceil(4096) as usize;
         let mut addr = 0u64;
-        if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, LOADER_DATA, pages, &mut addr)) {
+        // Kept after the handoff: conductor loads every service from it.
+        if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, fcore_abi::memtype::IMAGE, pages, &mut addr)) {
             return Err("There isn’t enough memory to read the system image.");
         }
         let mut done = 0u64;
