@@ -8,6 +8,9 @@
 //! - Every change (a present, a move, a focus, a theme) is damage; after each
 //!   batch of messages stage composes the damage and copies it to the screen.
 //! - S3: stamped with conductor once the first frame is on the screen.
+//! - The fleet cursor (TASK-058) is drawn over every present, never into the
+//!   back buffer, from the very first frame; it asks for frames only while
+//!   it moves.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -26,7 +29,9 @@ use fwire::proto::display as disp;
 use fwire::proto::input as inp;
 use fwire::proto::stage as st;
 use svc_stage::compose::{self, Back, Look, Pixels, Shared};
+use svc_stage::cursor::{self, Cursor, Inks, Kind as CursorKind};
 use svc_stage::input::{Desk, Effect, Event};
+use svc_stage::windows::Part;
 use svc_stage::windows::{Rect, Windows};
 
 fstd::program!(run);
@@ -59,6 +64,10 @@ struct Win {
     _vmo: Handle,
     map: (u64, u64),
     pixels: Shared,
+    /// What the pointer looks like over its surface (`set_cursor`).
+    cursor: CursorKind,
+    /// Its accessibility tree, as last published, and its length.
+    ax: Option<(Handle, u64)>,
 }
 
 struct Stage {
@@ -71,6 +80,10 @@ struct Stage {
     conns: Vec<Conn>,
     next_conn: u32,
     damage: Vec<Rect>,
+    /// Screen areas to put on the framebuffer again without composing:
+    /// where the cursor was and is.
+    refresh: Vec<Rect>,
+    cursor: Cursor,
     stamped: bool,
 }
 
@@ -136,6 +149,8 @@ fn run(_bootstrap: u32) -> i64 {
         conns: Vec::new(),
         next_conn: 1,
         damage: alloc::vec![Rect::new(0, 0, screen.w, screen.h)],
+        refresh: Vec::new(),
+        cursor: Cursor::new(screen.w as i32 / 2, screen.h as i32 / 2, Instant::now().as_ns()),
         stamped: false,
         screen,
     };
@@ -155,7 +170,10 @@ fn run(_bootstrap: u32) -> i64 {
         }
         let first_conn = items.len();
         items.extend(s.conns.iter().map(|c| [c.ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
-        match fstd::sys::wait_many(&items, u64::MAX) {
+        // Frames only while the cursor moves; otherwise sleep until something happens.
+        let until =
+            if s.cursor.moving(Instant::now().as_ns()) { Instant::after(Duration::from_millis(16)) } else { u64::MAX };
+        match fstd::sys::wait_many(&items, until) {
             Ok(0) => {
                 while let Ok(m) = listen.try_recv() {
                     s.incoming(m);
@@ -169,8 +187,10 @@ fn run(_bootstrap: u32) -> i64 {
                 }
             }
             Ok(k) => s.serve(k - first_conn),
+            Err(FErr::TimedOut) => {}
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),
         }
+        s.animate();
         s.flush();
     }
 }
@@ -241,6 +261,65 @@ impl Stage {
                     Ok((Vec::new(), Vec::new()))
                 })
             }
+            st::SET_CURSOR => {
+                fwire::from_payload::<st::SetCursor>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|c| {
+                    self.own(conn, c.window_id)?;
+                    let kind = CursorKind::from_u8(c.kind).ok_or((FErr::InvalidArgs, "no such cursor"))?;
+                    if let Some(w) = self.wins.iter_mut().find(|w| w.id == c.window_id) {
+                        w.cursor = kind;
+                    }
+                    self.point();
+                    Ok((Vec::new(), Vec::new()))
+                })
+            }
+            st::SET_SCALE => {
+                fwire::from_payload::<st::SetScale>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|sc| {
+                    if !matches!(name.as_str(), "settings" | "shell" | "cdpd" | "conductor") {
+                        return Err((FErr::AccessDenied, "only settings, the shell and cdpd set the scale"));
+                    }
+                    if !(100..=300).contains(&sc.pct) || sc.pct % 25 != 0 {
+                        return Err((FErr::InvalidArgs, "a scale from 100 to 300 %, in steps of 25"));
+                    }
+                    self.set_scale(sc.pct);
+                    Ok((Vec::new(), Vec::new()))
+                })
+            }
+            st::SCREENSHOT => {
+                fwire::from_payload::<st::Screenshot>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|s| {
+                    if !matches!(name.as_str(), "brain" | "cdpd") {
+                        return Err((FErr::AccessDenied, "only the Brain and cdpd take screenshots"));
+                    }
+                    self.screenshot(s.window_id)
+                })
+            }
+            st::INJECT_INPUT => {
+                fwire::from_payload::<st::Inject>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|inj| {
+                    let allowed = matches!((name.as_str(), fstd::service::flavour()), ("brain", 1) | ("cdpd", 2));
+                    if !allowed {
+                        return Err((FErr::AccessDenied, "only the Brain (dev) and cdpd (e2e) inject input"));
+                    }
+                    if let Some(k) = inj.key {
+                        self.key(k);
+                    }
+                    if let Some(m) = inj.mouse {
+                        self.mouse(m);
+                    }
+                    Ok((Vec::new(), Vec::new()))
+                })
+            }
+            st::PUBLISH_AX_TREE => {
+                let tree = m.handles.into_iter().next();
+                fwire::from_payload::<st::AxTree>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|a| {
+                    self.own(conn, a.window_id)?;
+                    let tree = tree.ok_or((FErr::InvalidArgs, "no tree VMO"))?;
+                    let mut len = [0u8; 8];
+                    fstd::sys::vmo_read(tree.raw(), 0, &mut len).map_err(|_| (FErr::InvalidArgs, "unreadable tree"))?;
+                    if let Some(w) = self.wins.iter_mut().find(|w| w.id == a.window_id) {
+                        w.ax = Some((tree, u64::from_le_bytes(len)));
+                    }
+                    Ok((Vec::new(), Vec::new()))
+                })
+            }
             st::SET_THEME => {
                 fwire::from_payload::<st::SetTheme>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|t| {
                     if !matches!(name.as_str(), "settings" | "shell" | "cdpd" | "conductor") {
@@ -296,7 +375,7 @@ impl Stage {
             self.desk.close(id, &mut ignore);
             return Err((FErr::NoMemory, "no room for the surface"));
         };
-        self.wins.push(Win { id, events, _vmo: vmo, map, pixels });
+        self.wins.push(Win { id, events, _vmo: vmo, map, pixels, cursor: CursorKind::Arrow, ax: None });
         self.apply(out);
         let reply = fwire::to_payload(&st::Created { window_id: id, surface: HandleRef(0), events: HandleRef(1) });
         Ok((reply, alloc::vec![theirs, their_events]))
@@ -356,6 +435,44 @@ impl Stage {
         }
     }
 
+    fn set_scale(&mut self, pct: u16) {
+        self.theme.scale = pct as f32 / 100.0;
+        self.desk.windows.set_strip(self.theme.px(fui::tokens_os::TITLE_STRIP_H));
+        self.damage(self.back.rect());
+        for w in &self.wins {
+            if let Ok(e) = fwire::event(st::EV_SCALE, &st::SetScale { pct }) {
+                let _ = w.events.send(&e, Vec::new());
+            }
+        }
+        self.point();
+    }
+
+    /// The screen as it shows, cursor and all (or one window's frame of it),
+    /// in a VMO of its own.
+    fn screenshot(&self, window: Option<u32>) -> Reply {
+        let r = match window {
+            Some(id) => self.desk.windows.get(id).ok_or((FErr::NotFound, "no such window"))?.frame,
+            None => self.back.rect(),
+        }
+        .intersect(&self.back.rect());
+        let mut px: Vec<u32> = Vec::with_capacity((r.w * r.h) as usize);
+        for y in r.y..r.bottom() {
+            let at = (y as u32 * self.back.w + r.x as u32) as usize;
+            px.extend_from_slice(&self.back.px[at..at + r.w as usize]);
+        }
+        let mut s = fimage::blit::Surface { px: &mut px, width: r.w, height: r.h, stride: r.w };
+        cursor::draw(&self.cursor, &mut s, (r.x, r.y), self.inks());
+        let bytes: Vec<u8> = px.iter().flat_map(|p| p.to_le_bytes()).collect();
+        let vmo = fstd::sys::vmo_create(bytes.len().max(1) as u64)
+            .ok()
+            .and_then(Handle::from_raw)
+            .ok_or((FErr::NoMemory, "no room for the picture"))?;
+        fstd::sys::vmo_write(vmo.raw(), 0, &bytes).map_err(|_| (FErr::NoMemory, "no room for the picture"))?;
+        let theirs =
+            vmo.duplicate(rights::READ | rights::MAP | rights::TRANSFER).map_err(|_| (FErr::NoMemory, "no handle"))?;
+        Ok((fwire::to_payload(&st::Shot { vmo: HandleRef(0), w: r.w, h: r.h }), alloc::vec![theirs]))
+    }
+
     #[cfg(feature = "flavour-e2e")]
     fn list(&self) -> st::Windows {
         let focused = self.desk.windows.focused();
@@ -373,30 +490,48 @@ impl Stage {
                 focused: focused == Some(w.id),
                 z: z as u32,
                 owner: w.owner.clone(),
+                ax_bytes: self.wins.iter().find(|x| x.id == w.id).and_then(|x| x.ax.as_ref()).map_or(0, |a| a.1),
             })
             .collect();
         let theme = if self.theme.mode == Mode::Light { st::Theme::Light } else { st::Theme::Dark };
-        st::Windows { windows, theme }
+        st::Windows { windows, theme, scale_pct: (self.theme.scale * 100.0 + 0.5) as u16 }
     }
 
     /// One message from drv-i8042.
     fn input(&mut self, bytes: &[u8]) {
         let Ok((h, p)) = fwire::parse(bytes) else { return };
-        let mut out = Vec::new();
         match h.ordinal {
             inp::KEY => {
                 if let Ok(k) = fwire::from_payload::<inp::Key>(p) {
-                    let key = st::Key { usage: k.usage, down: k.down, ch: k.ch, modifiers: k.modifiers };
-                    self.desk.key(key, &mut out);
+                    self.key(k);
                 }
             }
             inp::MOUSE => {
                 if let Ok(m) = fwire::from_payload::<inp::Mouse>(p) {
-                    self.desk.mouse(m.dx as i32, m.dy as i32, m.wheel as i32, m.buttons, &mut out);
+                    self.mouse(m);
                 }
             }
             _ => {}
         }
+    }
+
+    /// A key, from drv-i8042 or injected.
+    fn key(&mut self, k: inp::Key) {
+        let mut out = Vec::new();
+        let key = st::Key { usage: k.usage, down: k.down, ch: k.ch, modifiers: k.modifiers };
+        self.desk.key(key, &mut out);
+        self.apply(out);
+    }
+
+    /// A mouse report, from drv-i8042 or injected.
+    fn mouse(&mut self, m: inp::Mouse) {
+        let mut out = Vec::new();
+        let was = self.desk.buttons;
+        self.desk.mouse(m.dx as i32, m.dy as i32, m.wheel as i32, m.buttons, &mut out);
+        if (was ^ m.buttons) & 1 != 0 {
+            self.cursor.press(m.buttons & 1 != 0, Instant::now().as_ns());
+        }
+        self.point();
         self.apply(out);
     }
 
@@ -422,6 +557,68 @@ impl Stage {
         }
     }
 
+    /// The cursor follows the pointer, and takes the look of what's under
+    /// it: a window's chosen kind over its surface, the hover over the
+    /// close button or a window's Hand, the ring elsewhere.
+    fn point(&mut self) {
+        let before = self.cursor.bounds();
+        self.cursor.move_to(self.desk.x, self.desk.y);
+        let (kind, hover) = match self.desk.windows.hit(self.desk.x, self.desk.y) {
+            Some((_, Part::Close)) => (CursorKind::Hand, true),
+            Some((id, Part::Surface { .. })) => {
+                let k = self.wins.iter().find(|w| w.id == id).map_or(CursorKind::Arrow, |w| w.cursor);
+                (k, k == CursorKind::Hand)
+            }
+            _ => (CursorKind::Arrow, false),
+        };
+        self.cursor.kind = kind;
+        self.cursor.hover = hover;
+        self.refresh.push(before);
+        self.refresh.push(self.cursor.bounds());
+    }
+
+    /// One frame of the cursor's motion, if it's moving.
+    fn animate(&mut self) {
+        let now = Instant::now().as_ns();
+        if !self.cursor.moving(now) {
+            return;
+        }
+        let before = self.cursor.bounds();
+        self.cursor.tick(now);
+        self.refresh.push(before);
+        self.refresh.push(self.cursor.bounds());
+    }
+
+    fn inks(&self) -> Inks {
+        let c = |t| self.theme.colour(t);
+        use fui::theme::Tok;
+        Inks { ring: c(Tok::PrimaryInk), glyph: c(Tok::Text), edge: c(Tok::Bg), stop: c(Tok::Error) }
+    }
+
+    /// Puts `r` of the back buffer on the screen, the cursor drawn over it.
+    fn show(&self, r: Rect) {
+        let r = r.intersect(&self.back.rect());
+        if r.is_empty() {
+            return;
+        }
+        // SAFETY: the framebuffer stays mapped; it's h rows of `stride` pixels.
+        unsafe { compose::present(&self.back, r, self.screen.px, self.screen.stride, self.screen.format) };
+        let o = r.intersect(&self.cursor.bounds());
+        if o.is_empty() {
+            return;
+        }
+        let mut px: Vec<u32> = Vec::with_capacity((o.w * o.h) as usize);
+        for y in o.y..o.bottom() {
+            let at = (y as u32 * self.back.w + o.x as u32) as usize;
+            px.extend_from_slice(&self.back.px[at..at + o.w as usize]);
+        }
+        let mut s = fimage::blit::Surface { px: &mut px, width: o.w, height: o.h, stride: o.w };
+        cursor::draw(&self.cursor, &mut s, (o.x, o.y), self.inks());
+        let patch = Back { w: o.w, h: o.h, px };
+        // SAFETY: as above; `o` lies inside the screen.
+        unsafe { compose::present_at(&patch, (o.x, o.y), self.screen.px, self.screen.stride, self.screen.format) };
+    }
+
     fn damage(&mut self, r: Rect) {
         let r = r.intersect(&self.back.rect());
         if r.is_empty() {
@@ -437,16 +634,27 @@ impl Stage {
 
     /// Composes the damage and puts it on the screen; the first time, S3.
     fn flush(&mut self) {
-        if self.damage.is_empty() {
+        if self.damage.is_empty() && self.refresh.is_empty() {
             return;
         }
-        let wins = &self.wins;
-        let surface = |id: u32| wins.iter().find(|w| w.id == id).map(|w| &w.pixels as &dyn Pixels);
-        let mut look = Look { theme: self.theme, fonts: &mut self.fonts };
-        for r in core::mem::take(&mut self.damage) {
-            compose::compose(&mut self.back, r, &self.desk.windows, &surface, &mut look);
-            // SAFETY: the framebuffer stays mapped; it's h rows of `stride` pixels.
-            unsafe { compose::present(&self.back, r, self.screen.px, self.screen.stride, self.screen.format) };
+        let damage = core::mem::take(&mut self.damage);
+        {
+            let wins = &self.wins;
+            let surface = |id: u32| wins.iter().find(|w| w.id == id).map(|w| &w.pixels as &dyn Pixels);
+            let mut look = Look { theme: self.theme, fonts: &mut self.fonts };
+            for r in &damage {
+                compose::compose(&mut self.back, *r, &self.desk.windows, &surface, &mut look);
+            }
+        }
+        // What changed, and where the cursor was and is: on the screen, cursor on top.
+        let mut shown = damage;
+        shown.append(&mut self.refresh);
+        if shown.len() > MAX_DAMAGE {
+            let all = shown.drain(..).fold(Rect::default(), |a, b| a.union(&b));
+            shown.push(all);
+        }
+        for r in shown {
+            self.show(r);
         }
         if !self.stamped {
             self.stamped = true;

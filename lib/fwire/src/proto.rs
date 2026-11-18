@@ -389,6 +389,13 @@ pub mod stage {
         pub struct ById { pub window_id: u32 }
     }
 
+    wire_struct! {
+        /// `set_cursor`: 0 Arrow, 1 Hand, 2 Text, 3 ResizeEW, 4 ResizeNS,
+        /// 5 ResizeNWSE, 6 ResizeNESW, 7 Move, 8 Crosshair, 9 Grab, 10
+        /// NotAllowed. Arrow and Hand are the fleet cursor (the ring and dot).
+        pub struct SetCursor { pub window_id: u32, pub kind: u8 }
+    }
+
     wire_enum! {
         pub enum Theme {
             Dark = 0,
@@ -398,6 +405,35 @@ pub mod stage {
 
     wire_struct! {
         pub struct SetTheme { pub theme: Theme }
+    }
+
+    wire_struct! {
+        /// `set_scale`: 100 to 300 %, in steps of 25 (FR-031).
+        pub struct SetScale { pub pct: u16 }
+    }
+
+    wire_struct! {
+        /// `screenshot` (brain and cdpd only): the whole screen, or one
+        /// window's frame.
+        pub struct Screenshot { pub window_id: Option<u32> }
+    }
+
+    wire_struct! {
+        /// The picture (handle 0): `w × h` pixels, 0x00RRGGBB, one u32 each,
+        /// the cursor in it, as the screen shows.
+        pub struct Shot { pub vmo: HandleRef, pub w: u32, pub h: u32 }
+    }
+
+    wire_struct! {
+        /// `inject_input` (brain in dev images, cdpd in e2e images): a key or
+        /// a mouse report, as if drv-i8042 had sent it.
+        pub struct Inject { pub key: Option<crate::proto::input::Key>, pub mouse: Option<crate::proto::input::Mouse> }
+    }
+
+    wire_struct! {
+        /// `publish_ax_tree`: the window's accessibility tree (handle 0), a
+        /// VMO holding its length (u64, little-endian) and then the tree.
+        pub struct AxTree { pub window_id: u32, pub tree: HandleRef }
     }
 
     wire_struct! {
@@ -412,11 +448,13 @@ pub mod stage {
             pub focused: bool,
             pub z: u32,
             pub owner: String,
+            /// The accessibility tree it last published, in bytes (0: none yet).
+            pub ax_bytes: u64,
         }
     }
 
     wire_struct! {
-        pub struct Windows { pub windows: Vec<WindowInfo>, pub theme: Theme }
+        pub struct Windows { pub windows: Vec<WindowInfo>, pub theme: Theme, pub scale_pct: u16 }
     }
 
     wire_struct! {

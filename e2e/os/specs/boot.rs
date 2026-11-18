@@ -23,7 +23,7 @@ pub fn integrity(ctx: &mut Ctx) -> Result<(), String> {
 pub fn release(ctx: &mut Ctx) -> Result<(), String> {
     // A release image's logs stay off COM1: the screen is the proof it came
     // up, stage's first frame (the ground; the desktop's wallpaper, TASK-059).
-    ctx.expect_screen(Expect::Fill(fui::tokens_gen::dark::COLOR_BG.xrgb()))?;
+    ctx.expect_screen(Expect::Desktop(fui::tokens_gen::dark::COLOR_BG.xrgb()))?;
     ctx.expect_log("freally-boot 0.1.0 (release)")?;
     ctx.expect_log("signed by the staging key")
 }
@@ -58,13 +58,14 @@ pub fn conductor(ctx: &mut Ctx) -> Result<(), String> {
     desktop(ctx)
 }
 
-/// Stage's first frame is on the screen: the dark ground, everywhere (the
-/// desktop's wallpaper and Rack join it in TASK-059). From S3 the screen is
-/// stage's; the bootloader's title stays only in `@boot.title`'s image,
-/// which has no stage.
+/// Stage's first frame is on the screen: the dark ground everywhere, and
+/// the fleet cursor's ring at the centre (never an arrow; the desktop's
+/// wallpaper and Rack join them in TASK-059). From S3 the screen is stage's;
+/// the bootloader's title stays only in `@boot.title`'s image, which has no
+/// stage.
 fn desktop(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("stage: first frame")?;
-    ctx.expect_screen(Expect::Fill(fui::tokens_gen::dark::COLOR_BG.xrgb()))
+    ctx.expect_screen(Expect::Desktop(fui::tokens_gen::dark::COLOR_BG.xrgb()))
 }
 
 pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {

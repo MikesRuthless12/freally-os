@@ -33,6 +33,9 @@ fn list(ctx: &Ctx) -> Result<(Vec<Win>, String), String> {
             theme = t.to_string();
             continue;
         }
+        if l.starts_with("scale ") {
+            continue;
+        }
         let num = |n: &str| field(l, n).and_then(|v| v.parse::<i64>().ok()).ok_or(format!("no {n} in {l:?}"));
         out.push(Win {
             id: num("id")? as u32,
@@ -250,7 +253,7 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
 
     // Alt+F4 asks Beta to close; the door closes it.
     alt(ctx, "F4")?;
-    until(ctx, "Beta closed by Alt+F4", |ws| ws.len() == 1 && ws[0].id == a && ws[0].focused)?;
+    until(ctx, "Beta closed by Alt+F4", |ws| win(ws, b).is_err() && win(ws, a).is_ok_and(|w| w.focused))?;
     if !events(ctx)?.contains(&format!("event {b} close")) {
         return Err("Beta wasn't asked to close".into());
     }
@@ -259,7 +262,7 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
     move_to(ctx, moved.x + moved.w - 16, moved.y + 16)?;
     button(ctx, true)?;
     button(ctx, false)?;
-    until(ctx, "Alpha closed by its button", |ws| ws.is_empty())?;
+    until(ctx, "Alpha closed by its button", |ws| win(ws, a).is_err())?;
     expect_pixels(ctx, &[(moved.x + 20, moved.y + 60, dark::COLOR_BG.xrgb(), "the ground where Alpha was")])?;
 
     // The light theme: the ground and the strip follow it.
@@ -279,6 +282,138 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
     }
     ok(ctx, "stage theme dark")?;
     ok(ctx, &format!("stage close {c}"))?;
-    until(ctx, "Gamma closed", |ws| ws.is_empty())?;
+    until(ctx, "Gamma closed", |ws| win(ws, c).is_err())?;
     expect_pixels(ctx, &[(5, 5, dark::COLOR_BG.xrgb(), "the dark ground again")])
+}
+
+/// The screen's pixel at (x, y), 0xRRGGBB.
+fn pixel(ctx: &mut Ctx, x: i32, y: i32) -> Result<u32, String> {
+    let shot = ctx.screenshot()?;
+    let i = (y as usize * shot.w as usize + x as usize) * 3;
+    Ok((shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32)
+}
+
+fn green(p: u32) -> bool {
+    crate::greenish((p >> 16) as u8, (p >> 8) as u8, p as u8)
+}
+
+/// Waits up to 10 s for the pixels at (x + dx, y + dy) around the pointer at
+/// (x, y) to be green (`true`) or not (`false`): the ring at each radius.
+fn expect_ring(ctx: &mut Ctx, (x, y): (i32, i32), want: &[(i32, bool)], what: &str) -> Result<(), String> {
+    let start = Instant::now();
+    loop {
+        let mut wrong = Vec::new();
+        for &(r, on) in want {
+            for (dx, dy) in [(r, 0), (-r, 0), (0, r), (0, -r)] {
+                let p = pixel(ctx, x + dx, y + dy)?;
+                if green(p) != on {
+                    wrong.push(format!("{p:06x} at ({dx}, {dy}) is {}green", if on { "not " } else { "" }));
+                }
+            }
+        }
+        if wrong.is_empty() {
+            return Ok(());
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(format!("{what}: {}", wrong.join("; ")));
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// `@ui.cursor`: the fleet cursor, drawn by stage from its first frame (the
+/// boot specs see it at the centre): the ring (radius 17) round the dot,
+/// following the real mouse; over the close button it grows (×1.45) with a
+/// faint fill; held down it shrinks (×0.78), and comes back when let go; a
+/// window that asks for the text cursor gets the I-beam, and the ring steps
+/// aside (TASK-058, FR-029).
+pub fn cursor(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("stage: first frame")?;
+    ok(ctx, "stage theme dark")?;
+    ok(ctx, "stage scale 100")?;
+    let ground = dark::COLOR_BG.xrgb();
+    // On the ground: the ring at 16, nothing inside it but the dot.
+    move_to(ctx, 300, 300)?;
+    expect_ring(ctx, (300, 300), &[(16, true), (8, false), (22, false)], "the ring at rest")?;
+    if !green(pixel(ctx, 300, 300)?) {
+        return Err("no dot at the pointer".into());
+    }
+    // It follows the mouse; where it was is the ground again.
+    move_to(ctx, 420, 300)?;
+    expect_ring(ctx, (420, 300), &[(16, true), (8, false)], "the ring where it went")?;
+    expect_pixels(ctx, &[(300 + 16, 300, ground, "where the ring was"), (300, 300, ground, "where the dot was")])?;
+
+    // Over the close button: bigger, with a faint fill.
+    let w = open(ctx, 360, 240, 0x2050A0, "Cursor")?;
+    let f = win(&list(ctx)?.0, w)?;
+    let close = (f.x + f.w - 16, f.y + 16);
+    move_to(ctx, close.0, close.1)?;
+    expect_ring(ctx, close, &[(24, true), (16, false)], "the ring over the close button")?;
+    let strip = dark::COLOR_SURFACE_2.xrgb();
+    let filled = pixel(ctx, close.0 - 10, close.1)?;
+    if filled == strip || green(filled) {
+        return Err(format!("no faint fill over the close button: {filled:06x}"));
+    }
+
+    // Held down on the surface: smaller, then back.
+    let mid = (f.x + f.w / 2, f.y + 32 + (f.h - 32) / 2);
+    move_to(ctx, mid.0, mid.1)?;
+    expect_ring(ctx, mid, &[(16, true)], "the ring over the surface")?;
+    button(ctx, true)?;
+    expect_ring(ctx, mid, &[(12, true), (16, false)], "the ring held down")?;
+    button(ctx, false)?;
+    expect_ring(ctx, mid, &[(16, true), (12, false)], "the ring let go")?;
+
+    // The text cursor: an I-beam, and no ring.
+    ok(ctx, &format!("stage cursor {w} 2"))?;
+    move_to(ctx, mid.0 + 1, mid.1)?;
+    let at = (mid.0 + 1, mid.1);
+    expect_pixels(ctx, &[(at.0, at.1 - 5, dark::COLOR_TEXT.xrgb(), "the I-beam's stem")])?;
+    expect_ring(ctx, at, &[(16, false)], "no ring with the I-beam")?;
+    ok(ctx, &format!("stage close {w}"))?;
+    until(ctx, "the cursor's window closed", |ws| win(ws, w).is_err())?;
+    Ok(())
+}
+
+/// `@stage.doors`: screenshots and injected input are the Brain's and
+/// cdpd's only (the test door is refused both); a published accessibility
+/// tree is kept with its window; the UI scale reaches stage and every
+/// window, the title strip growing with it, and a scale off the 25 % steps
+/// is refused (TASK-058, FR-028, FR-031).
+pub fn doors(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("stage: first frame")?;
+    for (cmd, refusal) in [
+        ("stage shot", "only the Brain and cdpd take screenshots"),
+        ("stage inject", "only the Brain (dev) and cdpd (e2e) inject input"),
+    ] {
+        let said = ctx.door(cmd)?.join(" ");
+        if !said.contains(refusal) {
+            return Err(format!("{cmd} wasn't refused: {said}"));
+        }
+    }
+    let w = open(ctx, 300, 200, 0x804020, "Doors")?;
+    ok(ctx, &format!("stage ax {w} 1234"))?;
+    let lines = ctx.door("stage list")?;
+    if !lines.iter().any(|l| l.contains(&format!("id={w} ")) && l.contains(" ax=1234 ")) {
+        return Err(format!("the accessibility tree wasn't kept: {lines:?}"));
+    }
+    events(ctx)?;
+    ok(ctx, "stage scale 150")?;
+    let f = win(&until(ctx, "the strip at 150 %", |ws| win(ws, w).is_ok_and(|x| x.h == 200 + 48))?, w)?;
+    if !ctx.door("stage list")?.iter().any(|l| l == "scale 150") {
+        return Err("stage doesn't say 150 %".into());
+    }
+    if !events(ctx)?.contains(&format!("event {w} scale 150")) {
+        return Err("the window wasn't told the scale".into());
+    }
+    expect_pixels(ctx, &[(f.x + f.w - 80, f.y + 40, dark::COLOR_SURFACE_2.xrgb(), "the 48 px strip")])?;
+    let bad = ctx.door("stage scale 110")?.join(" ");
+    if !bad.contains("steps of 25") {
+        return Err(format!("110 % wasn't refused: {bad}"));
+    }
+    ok(ctx, "stage scale 100")?;
+    until(ctx, "the strip back at 100 %", |ws| win(ws, w).is_ok_and(|x| x.h == 232))?;
+    ok(ctx, &format!("stage close {w}"))?;
+    until(ctx, "the doors' window closed", |ws| win(ws, w).is_err())?;
+    Ok(())
 }

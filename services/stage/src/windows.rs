@@ -138,6 +138,15 @@ impl Windows {
         }
     }
 
+    /// A new title strip height (the UI scale changed): normal windows keep
+    /// their surfaces and grow or shrink their frames.
+    pub fn set_strip(&mut self, strip: u32) {
+        for w in self.list.iter_mut().filter(|w| w.kind == Kind::Normal) {
+            w.frame.h = w.h + strip;
+        }
+        self.strip = strip;
+    }
+
     pub fn screen(&self) -> Rect {
         Rect::new(0, 0, self.screen.0, self.screen.1)
     }

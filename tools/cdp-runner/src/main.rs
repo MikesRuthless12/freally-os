@@ -56,6 +56,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.fallback", boot::fallback),
     ("boot.trial", boot::trial),
     ("stage.windows", stage::windows),
+    ("ui.cursor", stage::cursor),
+    ("stage.doors", stage::doors),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -84,6 +86,17 @@ pub enum Expect {
     },
     /// One colour everywhere, `0xRRGGBB`.
     Fill(u32),
+    /// Stage's first frame: the ground everywhere but the fleet cursor's
+    /// square at the screen's centre, where the ring must show (TASK-058).
+    Desktop(u32),
+}
+
+/// The fleet cursor's square, centred on the screen: 64 × 64.
+const CURSOR_BOX: usize = 32;
+
+/// Clearly Freally green: green the strongest, well above blue, clear of red.
+pub fn greenish(r: u8, g: u8, b: u8) -> bool {
+    g as u32 >= r as u32 + 30 && g as u32 > b as u32 + 60
 }
 
 pub struct Ctx {
@@ -125,17 +138,30 @@ impl Ctx {
                 Expect::Panic { ref lines } => {
                     fscreen::panic(&mut c, &[lines[0].as_str(), lines[1].as_str(), lines[2].as_str()])
                 }
-                Expect::Fill(rgb) => {
+                Expect::Fill(rgb) | Expect::Desktop(rgb) => {
                     c.px.fill(rgb);
                     fscreen::Rect { x: 0, y: 0, w: w as i32, h: h as i32 }
                 }
             };
+            let (cx, cy) = (w / 2, h / 2);
+            let cursor = matches!(e, Expect::Desktop(_));
             let mut diff = 0usize;
             for (i, p) in px.iter().enumerate() {
+                if cursor && (i % w).abs_diff(cx) < CURSOR_BOX && (i / w).abs_diff(cy) < CURSOR_BOX {
+                    continue;
+                }
                 let a = &shot.pixels[i * 3..i * 3 + 3];
                 if [(p >> 16) as u8, (p >> 8) as u8, *p as u8] != [a[0], a[1], a[2]] {
                     diff += 1;
                 }
+            }
+            // The ring, 16 px right of the centre (its line at radius 15.5 to 17).
+            let ring = |x: usize, y: usize| {
+                let i = (y * w + x) * 3;
+                greenish(shot.pixels[i], shot.pixels[i + 1], shot.pixels[i + 2])
+            };
+            if cursor && !(ring(cx + 16, cy) && ring(cx - 16, cy) && ring(cx, cy + 16) && ring(cx, cy - 16)) {
+                diff += 1;
             }
             if diff == 0 {
                 return Ok(());

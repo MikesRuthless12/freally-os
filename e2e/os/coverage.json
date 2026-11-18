@@ -120,6 +120,20 @@
       "what": "Stage's windows on the real screen: opened centred and cascaded, raised and focused by a press, moved by their strip, Alt+Tab, Alt+F4 and the close button, keys to the focused window only, in both themes."
     },
     {
+      "id": "ui.cursor",
+      "task": "TASK-058",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/stage.rs",
+      "what": "The fleet cursor from stage's first frame: the ring round the dot following the real mouse, bigger with a faint fill over the close button, smaller while held, the I-beam (and no ring) where a window asks for text."
+    },
+    {
+      "id": "stage.doors",
+      "task": "TASK-058",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/stage.rs",
+      "what": "Screenshots and injected input for the Brain and cdpd only; a window's accessibility tree kept; the UI scale reaching stage and every window, the strip growing with it, off-step scales refused."
+    },
+    {
       "id": "input.absent",
       "task": "TASK-043",
       "setup": "e2e-no-ps2",

@@ -287,6 +287,37 @@ fn fit(fonts: &mut Fonts, theme: Theme, title: &str, room: u32) -> String {
     String::new()
 }
 
+/// Puts the whole of `patch` on the framebuffer with its top-left at `at`.
+///
+/// # Safety
+/// As `present`: `fb` maps the screen, and the patch lies inside it.
+pub unsafe fn present_at(patch: &Back, at: (i32, i32), fb: *mut u32, stride: u32, format: u32) {
+    for y in 0..patch.h {
+        let row = &patch.px[(y * patch.w) as usize..][..patch.w as usize];
+        // SAFETY: the caller's promise.
+        unsafe { put_row(row, fb, stride, format, at.0 as u32, at.1 as u32 + y) };
+    }
+}
+
+/// One row to the framebuffer at (x, y).
+///
+/// # Safety
+/// `fb` maps the screen; the row fits on it.
+unsafe fn put_row(row: &[u32], fb: *mut u32, stride: u32, format: u32, x: u32, y: u32) {
+    // SAFETY: the caller's promise.
+    let to = unsafe { fb.add((y * stride + x) as usize) };
+    if format == 0 {
+        // SAFETY: as above; the row and the framebuffer never overlap.
+        unsafe { core::ptr::copy_nonoverlapping(row.as_ptr(), to, row.len()) };
+    } else {
+        for (i, &p) in row.iter().enumerate() {
+            let swapped = (p & 0xFF00) | (p >> 16 & 0xFF) | (p & 0xFF) << 16;
+            // SAFETY: as above.
+            unsafe { core::ptr::write_volatile(to.add(i), swapped) };
+        }
+    }
+}
+
 /// Copies `area` of the back buffer to the framebuffer; `format` 0 is BGRX
 /// (as the back buffer), 1 RGBX.
 ///
@@ -297,17 +328,7 @@ pub unsafe fn present(back: &Back, area: Rect, fb: *mut u32, stride: u32, format
     for y in area.y..area.bottom() {
         let from = &back.px[(y as u32 * back.w + area.x as u32) as usize..][..area.w as usize];
         // SAFETY: the row lies inside the framebuffer (the caller's promise).
-        let to = unsafe { fb.add((y as u32 * stride + area.x as u32) as usize) };
-        if format == 0 {
-            // SAFETY: as above; the back buffer and the framebuffer never overlap.
-            unsafe { core::ptr::copy_nonoverlapping(from.as_ptr(), to, from.len()) };
-        } else {
-            for (i, &p) in from.iter().enumerate() {
-                let swapped = (p & 0xFF00) | (p >> 16 & 0xFF) | (p & 0xFF) << 16;
-                // SAFETY: as above.
-                unsafe { core::ptr::write_volatile(to.add(i), swapped) };
-            }
-        }
+        unsafe { put_row(from, fb, stride, format, area.x as u32, y as u32) };
     }
 }
 
