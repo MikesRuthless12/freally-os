@@ -20,6 +20,8 @@ flavour-dev = []
 flavour-e2e = []
 # Test only (CDP setups): end initialisation with a deliberate invalid instruction.
 crash-ud2 = []
+# `cargo xtask bench ipc`: run the channel round-trip benchmark, print it, exit QEMU.
+bench-ipc = []
 # The in-kernel test harness (`cargo xtask test`): runs every #[ktest], then exits QEMU.
 ktest = []
 

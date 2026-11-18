@@ -24,11 +24,22 @@ mod test;
 mod acpi_early;
 mod arch;
 mod exceptions;
+mod fault;
 mod fb;
 mod fmtbuf;
+mod futex;
+mod ipc;
 mod mm;
+mod obj;
+mod proc;
+mod rand;
+mod sched;
 mod sync;
+mod syscall;
+#[cfg(feature = "ktest")]
+mod syscall_tests;
 mod time;
+mod timeline;
 mod timer;
 
 use arch::cpu;
@@ -51,8 +62,10 @@ pub fn acpi() -> Option<&'static acpi_early::Tables> {
     if p.is_null() { None } else { Some(unsafe { &*p }) }
 }
 
-/// The scheduler's hook on every timer interrupt (TASK-026 fills it in).
-pub fn sched_tick() {}
+/// The scheduler's hook on every timer interrupt.
+pub fn sched_tick() {
+    sched::tick();
+}
 
 /// BootInfo, once the kernel has checked it.
 pub fn boot_info() -> Option<&'static BootInfo> {
@@ -133,6 +146,32 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
         time::ticks_to_ns(K2.load(Ordering::Relaxed) - K1.load(Ordering::Relaxed)) / 1000
     );
     ACPI.store(alloc::boxed::Box::leak(alloc::boxed::Box::new(tables)), Ordering::Release);
+    for (id, t) in [
+        (timeline::B0, bi.tsc.b0),
+        (timeline::B1, bi.tsc.b1),
+        (timeline::B2, bi.tsc.b2),
+        (timeline::B3, bi.tsc.b3),
+        (timeline::K0, K0.load(Ordering::Relaxed)),
+        (timeline::K1, K1.load(Ordering::Relaxed)),
+        (timeline::K2, K2.load(Ordering::Relaxed)),
+    ] {
+        timeline::stamp(id, t);
+    }
+
+    // TASK-024–028: protections, system calls, the scheduler.
+    let (smep, smap, pcid) = mm::aspace::init_cpu_protections();
+    syscall::init();
+    if let Err(e) = sched::init() {
+        exceptions::stop(e, "Freally Core couldn't start its scheduler.");
+    }
+    klog!("freally-core: scheduler ready (SMEP {smep}, SMAP {smap}, PCID {pcid})");
+
+    #[cfg(feature = "bench-ipc")]
+    {
+        let median = ipc::bench();
+        klog!("bench ipc: median {} ns per round trip (10,000 calls)", median);
+        cpu::qemu_exit(0x10);
+    }
 
     #[cfg(feature = "ktest")]
     test::run_all();

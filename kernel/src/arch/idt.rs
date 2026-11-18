@@ -75,6 +75,11 @@ unsafe extern "C" {
 
 core::arch::global_asm!(
     "isr_common:",
+    // From ring 3: swap to the kernel's GS (the per-CPU data) on the way in and back on the way out.
+    "    test qword ptr [rsp + 24], 3",
+    "    jz 1f",
+    "    swapgs",
+    "1:",
     "    push rax",
     "    push rbx",
     "    push rcx",
@@ -108,6 +113,10 @@ core::arch::global_asm!(
     "    pop rcx",
     "    pop rbx",
     "    pop rax",
+    "    test qword ptr [rsp + 24], 3",
+    "    jz 2f",
+    "    swapgs",
+    "2:",
     "    add rsp, 16",
     "    iretq",
     dispatch = sym dispatch,

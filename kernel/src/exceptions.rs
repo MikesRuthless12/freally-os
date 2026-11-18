@@ -66,7 +66,15 @@ fn fixup(rip: u64) -> Option<u64> {
     None
 }
 
+/// Armed by `try_exec`: an instruction-fetch page fault resumes at the probe's fix-up.
+static EXEC_PROBE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub fn exception(f: &mut Frame) {
+    if f.vector == 14 && f.error & 0x10 != 0 && EXEC_PROBE.swap(false, Ordering::SeqCst) {
+        LAST_FIXED_VECTOR.store(14, Ordering::Relaxed);
+        f.rip = probe_exec_fix as *const () as u64;
+        return;
+    }
     if let Some(to) = fixup(f.rip) {
         LAST_FIXED_VECTOR.store(f.vector, Ordering::Relaxed);
         f.rip = to;
@@ -142,6 +150,7 @@ core::arch::global_asm!(
     "probe_exec_back:",
     "    xor eax, eax",
     "    ret",
+    ".global probe_exec_fix",
     "probe_exec_fix:",
     "    add rsp, 8",
     "    mov eax, 1",
@@ -156,6 +165,18 @@ core::arch::global_asm!(
 unsafe extern "C" {
     fn probe_read(addr: u64) -> u32;
     fn probe_write(addr: u64) -> u32;
+    fn probe_exec(addr: u64) -> u32;
+    fn probe_exec_fix();
+}
+
+/// `Ok` if the kernel can run code at `addr` (it should hold a `ret`), else
+/// the fault's vector. Used to prove SMEP and NX.
+pub fn try_exec(addr: u64) -> Result<(), u64> {
+    EXEC_PROBE.store(true, Ordering::SeqCst);
+    // SAFETY: a fault on the jump target resumes at probe_exec_fix.
+    let r = unsafe { probe_exec(addr) };
+    EXEC_PROBE.store(false, Ordering::SeqCst);
+    if r == 0 { Ok(()) } else { Err(LAST_FIXED_VECTOR.load(Ordering::Relaxed)) }
 }
 
 /// `Ok` if the kernel can read `addr`, else the fault's vector.

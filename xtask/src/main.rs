@@ -3,6 +3,7 @@
 //! outside this workspace.
 
 mod atlas;
+mod bench;
 mod build;
 mod cdp;
 mod ci;
@@ -40,6 +41,7 @@ cargo xtask <command>
   target-clean                   prune the build cache (refuses if a kept release is incomplete)
   showcase [tour]                film the real OS from showcase/tours/*.ron into an MP4
   test [--timeout=S]             the kernel's own tests (ktest), in QEMU, one line each
+  bench ipc                      the channel round-trip benchmark (target: 5 us median)
   gate <name>                    one gate: third-party, no-ai, denylist, spdx, private-docs, ladder
 ";
 
@@ -79,6 +81,7 @@ fn main() -> ExitCode {
         Some("target-clean") => release::target_clean_cmd(rest),
         Some("showcase") => showcase::showcase_cmd(rest),
         Some("test") => ktest::test_cmd(rest),
+        Some("bench") => bench::bench_cmd(rest),
         Some("gate") => match rest.first().map(String::as_str) {
             Some("third-party") => gates::third_party::check().map(|s| println!("third-party: {s}")),
             Some("no-ai") => gates::content::no_ai().map(|s| println!("no-AI: {s}")),

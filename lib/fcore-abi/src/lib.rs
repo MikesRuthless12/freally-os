@@ -287,3 +287,75 @@ pub mod memtype {
     /// The verified system image, kept for conductor.
     pub const IMAGE: u32 = 0x8000_0003;
 }
+
+/// Handles every process is started with.
+pub mod well_known {
+    /// The channel the process was started with (to conductor, for services).
+    pub const BOOTSTRAP: u32 = 1;
+    /// The process itself (READ, MANAGE over its own threads).
+    pub const SELF_PROCESS: u32 = 2;
+    /// The process's own address space (MAP).
+    pub const SELF_ASPACE: u32 = 3;
+}
+
+/// `clock_get` clocks.
+pub mod clock {
+    pub const MONOTONIC: u64 = 0;
+    pub const BOOT: u64 = 1;
+    pub const UTC: u64 = 2;
+}
+
+/// `system_info` topics.
+pub mod topic {
+    pub const CPU: u64 = 0;
+    pub const MEMORY: u64 = 1;
+    pub const BOOT_TIMELINE: u64 = 2;
+    pub const FIRMWARE_TIMES: u64 = 3;
+    pub const KERNEL_LOG: u64 = 4;
+    pub const FAULTS: u64 = 5;
+}
+
+/// `vm_map` / `vm_protect` permissions.
+pub mod perm {
+    pub const READ: u64 = 1;
+    pub const WRITE: u64 = 2;
+    pub const EXEC: u64 = 4;
+}
+
+/// Grants: what a process may ask the kernel for beyond its own objects.
+pub mod grant {
+    pub const PROCESS_CREATE: u32 = 1 << 0;
+    pub const REALTIME: u32 = 1 << 1;
+    pub const DMA: u32 = 1 << 2;
+    pub const FAULTS: u32 = 1 << 3;
+}
+
+impl FErr {
+    /// A short, plain description.
+    pub fn describe(self) -> &'static str {
+        match self {
+            FErr::BadHandle => "a handle that doesn't exist",
+            FErr::WrongType => "the wrong kind of object",
+            FErr::AccessDenied => "not allowed",
+            FErr::InvalidArgs => "invalid arguments",
+            FErr::NoMemory => "out of memory",
+            FErr::TimedOut => "timed out",
+            FErr::PeerClosed => "the other end closed",
+            FErr::ShouldWait => "nothing yet; wait",
+            FErr::BufferTooSmall => "the buffer is too small",
+            FErr::NotFound => "not found",
+            FErr::AlreadyExists => "already exists",
+            FErr::NotSupported => "not supported",
+            FErr::Busy => "busy",
+            FErr::BadState => "not in a state to do that",
+            FErr::Integrity => "a signature or hash didn't match",
+            FErr::Internal => "an internal error",
+        }
+    }
+}
+
+impl From<FErr> for &'static str {
+    fn from(e: FErr) -> &'static str {
+        e.describe()
+    }
+}
