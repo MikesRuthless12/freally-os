@@ -13,6 +13,10 @@ use ffont::text::{Face, cell};
 use fui::theme::{Mode, Theme};
 use std::time::{Duration, Instant};
 
+/// What `version` says in this e2e image.
+static VERSION_LINE: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("Freally OS {} (e2e)", env!("CARGO_PKG_VERSION")));
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -173,7 +177,7 @@ pub fn vt(ctx: &mut Ctx) -> Result<(), String> {
         key(ctx, k, false)?;
     }
     let start = Instant::now();
-    while !screen_text(ctx)?.contains("Freally OS 0.1.0 (e2e)") {
+    while !screen_text(ctx)?.contains(VERSION_LINE.as_str()) {
         if start.elapsed() > Duration::from_secs(10) {
             return Err(format!("typing `version` on the keyboard gave: {}", screen_text(ctx)?));
         }
@@ -210,7 +214,7 @@ fn expect(ctx: &Ctx, line: &str, want: &[&str]) -> Result<String, String> {
 pub fn builtins(ctx: &mut Ctx) -> Result<(), String> {
     open(ctx)?;
     expect(ctx, "help", &["Commands", "log [service] [-f]", "theme dark|light"])?;
-    expect(ctx, "version", &["Freally OS 0.1.0 (e2e)"])?;
+    expect(ctx, "version", &[VERSION_LINE.as_str()])?;
     expect(ctx, "ps", &["SERVICE", "STATE", "stage", "Running", "terminal"])?;
     expect(ctx, "boot", &["B0", "S4", "B0 to S4:"])?;
     expect(ctx, "mem", &["MiB used of", "MiB ("])?;
@@ -257,7 +261,7 @@ pub fn builtins(ctx: &mut Ctx) -> Result<(), String> {
     feed(ctx, "type", b"clear\r")?;
     feed(ctx, "type", b"xversin\x1b[Do\x1b[H\x1b[3~\r")?;
     let start = Instant::now();
-    while !screen_text(ctx)?.contains("Freally OS 0.1.0 (e2e)") {
+    while !screen_text(ctx)?.contains(VERSION_LINE.as_str()) {
         if start.elapsed() > Duration::from_secs(5) {
             return Err(format!("editing didn't make `version`: {}", screen_text(ctx)?));
         }
@@ -266,7 +270,7 @@ pub fn builtins(ctx: &mut Ctx) -> Result<(), String> {
     // History: after `clear`, Up twice is `version` again.
     feed(ctx, "type", b"clear\r\x1b[A\x1b[A\r")?;
     let start = Instant::now();
-    while !screen_text(ctx)?.contains("Freally OS 0.1.0 (e2e)") {
+    while !screen_text(ctx)?.contains(VERSION_LINE.as_str()) {
         if start.elapsed() > Duration::from_secs(5) {
             return Err(format!("Up didn't bring the line back: {}", screen_text(ctx)?));
         }

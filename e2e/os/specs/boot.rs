@@ -24,7 +24,7 @@ pub fn release(ctx: &mut Ctx) -> Result<(), String> {
     // A release image's logs stay off COM1: the screen is the proof it came
     // up, stage's first frame (the ground; the desktop's wallpaper, TASK-059).
     ctx.expect_screen(Expect::Desktop)?;
-    ctx.expect_log("freally-boot 0.1.0 (release)")?;
+    ctx.expect_log(&format!("freally-boot {} (release)", env!("CARGO_PKG_VERSION")))?;
     ctx.expect_log("signed by the staging key")
 }
 
@@ -73,7 +73,7 @@ pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("freally-boot: boot services exited")?;
     ctx.expect_log("freally-boot: runtime services moved")?;
     ctx.expect_log("freally-boot: jumping to Freally Core")?;
-    ctx.expect_log("freally-core 0.1.0 entered")?;
+    ctx.expect_log(&format!("freally-core {} entered", env!("CARGO_PKG_VERSION")))?;
     ctx.expect_log("freally-core: memory ready")?;
     desktop(ctx)
 }

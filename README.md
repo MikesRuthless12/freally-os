@@ -6,7 +6,7 @@ Press power and the desktop is up before you've sat down. Nothing runs that you 
 
 Freally OS is written from the first instruction by Mike, the maker of the Freally music software. That covers its own UEFI bootloader, its own microkernel (Freally Core), its own drivers, its own compositor and toolkit, and every app. It's written in Rust, with Blender-rendered visuals in the Freally studio-hardware style.
 
-> **Status: Phase 0 of the road to `v1.0.0`.** Nothing is downloadable yet, and nothing will be before `v1.0.0`. This repository is where the work happens in the open.
+> **Status: `v0.4.0`, First Light: the desktop, on the road to `v1.0.0`.** Nothing is downloadable yet, and nothing will be before `v1.0.0`. This repository is where the work happens in the open.
 
 ## What makes it different
 
