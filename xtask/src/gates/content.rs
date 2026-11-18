@@ -82,11 +82,20 @@ const PRIVATE_PATTERNS: &[&str] = &[
     "gtm.md",
     "vision.json",
     "live-to-do",
-    "handoff",
+    // The handoff note (HANDOFF.md, HANDOFF-*.md), never the bootloader's
+    // `handoff.rs`.
+    "handoff.md",
+    "handoff-",
     "claude.md",
     "docs/research/",
     "private/",
 ];
+
+/// A path one of the private documents would have (any case).
+fn is_private_path(path: &str) -> bool {
+    let s = path.to_lowercase();
+    PRIVATE_PATTERNS.iter().any(|p| s.contains(p))
+}
 
 fn tracked() -> Result<Vec<PathBuf>, String> {
     util::git_files()
@@ -212,8 +221,7 @@ pub fn private_docs() -> Result<String, String> {
     let mut found = Vec::new();
     let files = tracked()?;
     for f in &files {
-        let s = f.to_string_lossy().to_lowercase();
-        if PRIVATE_PATTERNS.iter().any(|p| s.contains(p)) {
+        if is_private_path(&f.to_string_lossy()) {
             found.push(format!("{} is trackable", f.display()));
         }
     }
@@ -273,6 +281,15 @@ pub fn private_docs() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_private_documents_are_caught_and_source_that_shares_a_word_is_not() {
+        for private in ["HANDOFF.md", "docs/product-roadmap.md", "Live-To-Do.md", "handoff-2026.md", "CLAUDE.md"] {
+            assert!(is_private_path(private), "{private}");
+        }
+        // The bootloader's handoff to the kernel (it was kept out of the repo).
+        assert!(!is_private_path("boot/src/handoff.rs"));
+    }
 
     #[test]
     fn the_scrubbed_names_are_caught_by_hash_and_the_instrument_is_allowed() {
