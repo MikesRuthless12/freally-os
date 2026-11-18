@@ -79,6 +79,13 @@
       "setup": "e2e",
       "spec": "e2e/os/specs/services.rs",
       "what": "Conductor starts services from their manifests; each one that restarts is killed in turn and is back within 200 ms."
+    },
+    {
+      "id": "devices.pci",
+      "task": "TASK-041",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "devmgr reads the firmware's ACPI tables and finds every PCI function through MCFG's configuration space: exactly QEMU's own list."
     }
   ]
 }

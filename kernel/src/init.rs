@@ -104,7 +104,12 @@ pub fn start_conductor() -> Result<(), &'static str> {
         let add = |inner: &mut crate::proc::Inner, at: u32, object: Object, rights: u32| {
             inner.handles.add_at(at, Handle { object: Arc::new(object), rights }).map_err(|e| e.describe())
         };
-        add(&mut inner, well_known::ROOT_RESOURCE, Object::Resource(root), rights::MANAGE | rights::DUPLICATE)?;
+        add(
+            &mut inner,
+            well_known::ROOT_RESOURCE,
+            Object::Resource(root),
+            rights::MANAGE | rights::DUPLICATE | rights::TRANSFER,
+        )?;
         add(&mut inner, well_known::IMAGE_VMO, Object::Vmo(Vmo::wrap(bi.image.base, bi.image.len)), ro)?;
         add(&mut inner, well_known::BOOTINFO_VMO, Object::Vmo(bi_vmo), ro)?;
         inner

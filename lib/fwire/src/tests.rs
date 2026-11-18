@@ -181,3 +181,33 @@ fn random_bytes_never_panic() {
         let _ = from_payload::<l::Records>(&bytes);
     }
 }
+
+#[test]
+fn every_devmgr_message_round_trips() {
+    use crate::proto::devmgr as d;
+    round_trip(
+        d::LIST,
+        d::Devices {
+            pci: vec![d::PciDevice {
+                segment: 0,
+                bus: 0,
+                device: 31,
+                function: 2,
+                vendor: 0x8086,
+                id: 0x2922,
+                class: 1,
+                subclass: 6,
+                prog_if: 1,
+            }],
+        },
+    );
+    round_trip(d::TABLES, d::Tables { tables: vec![("APIC".to_string(), (0x3fb7_d000, 120))] });
+    round_trip(d::FIRMWARE_TIMES, d::FirmwareTimes { reset_end: 1, os_loader_start: 2 });
+    round_trip(
+        d::RESOURCES,
+        d::Resources {
+            handles: vec![("framebuffer".to_string(), HandleRef(0))],
+            values: vec![("width".to_string(), 1280)],
+        },
+    );
+}

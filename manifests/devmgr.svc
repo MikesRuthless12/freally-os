@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = devmgr
+binary      = /system/services/devmgr
+description = Finds the computer's hardware and gives each driver exactly the parts it may use.
+start       = boot
+after       = logger
+restart     = always
+class       = normal
+grants      = devices
+flavours    = release, dev, e2e

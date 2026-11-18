@@ -103,21 +103,20 @@ impl Conductor {
     /// The handles a manifest's grants carry, by name.
     fn granted_handles(&self, m: &Manifest) -> Vec<(String, Handle)> {
         let mut out = Vec::new();
-        for g in &m.grants {
-            let h = match g.as_str() {
-                "devices" => fstd::sys::call1(
-                    fcore_abi::syscall::HANDLE_DUPLICATE,
-                    [
-                        well_known::ROOT_RESOURCE as u64,
-                        (rights::MANAGE | rights::DUPLICATE | rights::TRANSFER) as u64,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ],
-                )
+        let dup = |h: u32, r: u32| {
+            fstd::sys::call1(fcore_abi::syscall::HANDLE_DUPLICATE, [h as u64, r as u64, 0, 0, 0, 0])
                 .ok()
-                .and_then(|v| Handle::from_raw(v as u32)),
+                .and_then(|v| Handle::from_raw(v as u32))
+        };
+        for g in &m.grants {
+            // devmgr reads the ACPI root and the framebuffer from BootInfo.
+            if g == "devices"
+                && let Some(b) = dup(well_known::BOOTINFO_VMO, rights::READ | rights::MAP | rights::TRANSFER)
+            {
+                out.push((String::from("bootinfo"), b));
+            }
+            let h = match g.as_str() {
+                "devices" => dup(well_known::ROOT_RESOURCE, rights::MANAGE | rights::DUPLICATE | rights::TRANSFER),
                 // COM1, for the log's mirror: never in a release image.
                 "serial" if self.image.flavour != 0 => {
                     fstd::sys::resource_create(well_known::ROOT_RESOURCE, fcore_abi::resource::IO_PORT, 0x3F8, 8)

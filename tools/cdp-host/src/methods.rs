@@ -15,6 +15,8 @@ pub fn call(qmp: &mut Qmp, shot_dir: &Path, method: &str, params: &Value) -> Res
         // A warm reboot: QMP `system_reset` keeps RAM (the last-panic page survives it).
         "Page.reload" => qmp.execute("system_reset", None).map(|_| Value::Obj(Vec::new())).map_err(|e| (-32000, e)),
         "Target.getTargets" => Ok(Value::obj([("targetInfos", Value::Arr(vec![desktop_target()]))])),
+        // The harness's view of QEMU's PCI bus (QMP query-pci), to check devmgr's.
+        "Freally.qemuPci" => qmp.execute("query-pci", None).map_err(|e| (-32000, e)),
         "Freally.quit" => {
             let _ = qmp.execute("quit", None);
             Ok(Value::Obj(Vec::new()))

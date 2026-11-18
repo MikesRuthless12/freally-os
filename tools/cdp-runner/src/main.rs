@@ -43,6 +43,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.conductor", boot::conductor),
     ("services.restart", services::restart),
     ("log.read", services::read),
+    ("devices.pci", services::pci),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

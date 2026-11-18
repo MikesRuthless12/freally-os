@@ -97,6 +97,35 @@ impl Door {
                     None => self.send("error: the logger isn't ready"),
                 }
             }
+            "devices" => match c.open_connection("devmgr", "test-door") {
+                Some(ch) => {
+                    let mut client = fstd::ipc::Client::new(ch);
+                    match client.call::<_, fwire::proto::devmgr::Devices>(
+                        fwire::proto::devmgr::LIST,
+                        &(),
+                        Vec::new(),
+                        Instant::after(Duration::from_secs(2)),
+                    ) {
+                        Ok((list, _)) => {
+                            for p in list.pci {
+                                self.send(&alloc::format!(
+                                    "pci {:02x}:{:02x}.{} {:04x}:{:04x} {:02x}.{:02x}.{:02x}",
+                                    p.bus,
+                                    p.device,
+                                    p.function,
+                                    p.vendor,
+                                    p.id,
+                                    p.class,
+                                    p.subclass,
+                                    p.prog_if
+                                ));
+                            }
+                        }
+                        Err(e) => self.send(&alloc::format!("error: {e:?}")),
+                    }
+                }
+                None => self.send("error: devmgr isn't ready"),
+            },
             "services" => {
                 let lines: Vec<String> =
                     c.services.iter().map(|s| alloc::format!("svc {} {:?}", s.m.name, s.state)).collect();

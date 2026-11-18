@@ -173,3 +173,51 @@ pub mod logger {
         pub struct Records { pub records: Vec<LogRecord>, pub next_cursor: u64 }
     }
 }
+
+/// devmgr (TASK-041): the hardware it found, and each driver's resources.
+pub mod devmgr {
+    use crate::{HandleRef, wire_struct};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    pub const LIST: u32 = 1;
+    pub const TABLES: u32 = 2;
+    pub const FIRMWARE_TIMES: u32 = 3;
+    /// A driver asks for its device's resources (devmgr knows it by the
+    /// name conductor gave its connection).
+    pub const RESOURCES: u32 = 4;
+
+    wire_struct! {
+        pub struct PciDevice {
+            pub segment: u16,
+            pub bus: u8,
+            pub device: u8,
+            pub function: u8,
+            pub vendor: u16,
+            pub id: u16,
+            pub class: u8,
+            pub subclass: u8,
+            pub prog_if: u8,
+        }
+    }
+
+    wire_struct! {
+        pub struct Devices { pub pci: Vec<PciDevice> }
+    }
+
+    wire_struct! {
+        /// Each ACPI table: its signature, physical address and length.
+        pub struct Tables { pub tables: Vec<(String, (u64, u32))> }
+    }
+
+    wire_struct! {
+        /// FPDT's boot record, in ns since reset (0 when the firmware has none).
+        pub struct FirmwareTimes { pub reset_end: u64, pub os_loader_start: u64 }
+    }
+
+    wire_struct! {
+        /// A driver's resources, by name (handles in the message), and numbers
+        /// that go with them (a framebuffer's size and format, an IRQ's GSI...).
+        pub struct Resources { pub handles: Vec<(String, HandleRef)>, pub values: Vec<(String, u64)> }
+    }
+}

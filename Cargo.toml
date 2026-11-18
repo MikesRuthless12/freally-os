@@ -27,6 +27,7 @@ ffont = { path = "lib/ffont" }
 fscreen = { path = "lib/fscreen" }
 fimage = { path = "lib/fimage" }
 fjson = { path = "lib/fjson" }
+facpi = { path = "lib/facpi" }
 felf = { path = "lib/felf" }
 fsvc = { path = "lib/fsvc" }
 frt = { path = "lib/frt" }

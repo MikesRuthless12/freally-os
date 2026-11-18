@@ -79,6 +79,10 @@ name = "drv-xhci"
 version = "0.1.0"
 
 [[package]]
+name = "facpi"
+version = "0.1.0"
+
+[[package]]
 name = "fcore-abi"
 version = "0.1.0"
 
@@ -208,6 +212,12 @@ version = "0.1.0"
 [[package]]
 name = "svc-devmgr"
 version = "0.1.0"
+dependencies = [
+ "facpi",
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "svc-ffs"

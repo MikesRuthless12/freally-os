@@ -94,6 +94,7 @@ pub struct UserProgram {
 pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "svc-conductor", bin: "conductor", path: "/system/conductor", kind: fsi::Kind::Conductor },
     UserProgram { package: "svc-logger", bin: "logger", path: "/system/services/logger", kind: fsi::Kind::Service },
+    UserProgram { package: "svc-devmgr", bin: "devmgr", path: "/system/services/devmgr", kind: fsi::Kind::Service },
 ];
 
 /// Test images (`cargo xtask test`) add these.

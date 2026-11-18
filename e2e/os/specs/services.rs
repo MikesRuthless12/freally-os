@@ -55,3 +55,40 @@ pub fn read(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `@devices.pci`: devmgr's PCI list (found through ACPI's MCFG and the PCIe
+/// configuration space) is exactly QEMU's own (QMP `query-pci`) (TASK-041).
+pub fn pci(ctx: &mut Ctx) -> Result<(), String> {
+    use fjson::Value;
+    ctx.expect_log("[devmgr] devmgr: ")?;
+    let ours: std::collections::BTreeSet<(u64, u64, u64, u64, u64)> = ctx
+        .door("devices")?
+        .iter()
+        .filter_map(|l| l.strip_prefix("pci "))
+        .filter_map(|l| {
+            let mut parts = l.split(' ');
+            let (bdf, ids) = (parts.next()?, parts.next()?);
+            let (bus, rest) = bdf.split_once(':')?;
+            let (dev, func) = rest.split_once('.')?;
+            let (vendor, id) = ids.split_once(':')?;
+            let hex = |s: &str| u64::from_str_radix(s, 16).ok();
+            Some((hex(bus)?, hex(dev)?, func.parse().ok()?, hex(vendor)?, hex(id)?))
+        })
+        .collect();
+    let q = ctx.cdp.call("Freally.qemuPci", Value::Obj(Vec::new()))?;
+    let mut theirs = std::collections::BTreeSet::new();
+    for bus in q.as_array().ok_or("query-pci gave no list")? {
+        for d in bus.get("devices").and_then(Value::as_array).map(<[Value]>::to_vec).unwrap_or_default() {
+            let n = |k: &str| d.get(k).and_then(Value::as_i64).unwrap_or(-1) as u64;
+            let id = |k: &str| d.get("id").and_then(|i| i.get(k)).and_then(Value::as_i64).unwrap_or(-1) as u64;
+            theirs.insert((n("bus"), n("slot"), n("function"), id("vendor"), id("device")));
+        }
+    }
+    if theirs.is_empty() {
+        return Err("QEMU reported no PCI devices".into());
+    }
+    if ours != theirs {
+        return Err(format!("devmgr found {ours:x?}; QEMU has {theirs:x?}"));
+    }
+    Ok(())
+}
