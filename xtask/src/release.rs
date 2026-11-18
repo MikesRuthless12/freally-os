@@ -96,7 +96,7 @@ pub fn release_local_cmd(args: &[String]) -> Result<(), String> {
     times.sort_by(|a, b| a.total_cmp(b));
     let median = times[2];
     println!(
-        "▶ five boots … pass ({:.1}s)\n    QEMU start to the title, median {:.0} ms (firmware included; the boot gate's B0→S4 arrives in Phase 3)",
+        "▶ five boots … pass ({:.1}s)\n    QEMU start to the title, median {:.0} ms (firmware included; `cargo xtask boot-check` times B0→S4)",
         times.iter().sum::<f64>(),
         median * 1000.0
     );
