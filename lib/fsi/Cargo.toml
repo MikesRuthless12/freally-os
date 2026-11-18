@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fsi"
+description = "The Freally system image (.fsi): header, TOC, Merkle tree; verification (no_std, no allocation) and building (alloc)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# The builder needs `alloc`; the bootloader only verifies and doesn't enable it.
+build = []
+
+[dependencies]
+fcrypto.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "image"
+required-features = ["build"]

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "ffont"
+description = "Freally's own font code: a TrueType parser, an anti-aliased coverage rasterizer, and the glyph atlas the bootloader draws from."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# The parser and the rasterizer allocate; the atlas reader and text drawing don't.
+raster = []
+
+[lints]
+workspace = true

@@ -59,11 +59,21 @@ name = "fcrypto"
 version = "0.1.0"
 
 [[package]]
+name = "ffont"
+version = "0.1.0"
+
+[[package]]
+name = "fimage"
+version = "0.1.0"
+
+[[package]]
 name = "freally-boot"
 version = "0.1.0"
 dependencies = [
  "fcore-abi",
  "fcrypto",
+ "fscreen",
+ "fsi",
 ]
 
 [[package]]
@@ -73,6 +83,20 @@ version = "0.1.0"
 [[package]]
 name = "frt"
 version = "0.1.0"
+
+[[package]]
+name = "fscreen"
+version = "0.1.0"
+dependencies = [
+ "ffont",
+]
+
+[[package]]
+name = "fsi"
+version = "0.1.0"
+dependencies = [
+ "fcrypto",
+]
 
 [[package]]
 name = "fstd"
@@ -144,4 +168,8 @@ version = "0.1.0"
 dependencies = [
  "fcore-abi",
  "fcrypto",
+ "ffont",
+ "fimage",
+ "fscreen",
+ "fsi",
 ]

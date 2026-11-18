@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fimage"
+description = "Freally's own image code: the PNG encoder (stored deflate) and its decoder, PPM reading; FIMG, blits and 9-slice come in Phase 3."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

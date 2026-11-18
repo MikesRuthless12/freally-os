@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fscreen"
+description = "The screens drawn before the desktop exists (the boot title, the integrity screen, later the panic screen), in Noto from a pre-rendered atlas."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ffont.workspace = true
+
+[lints]
+workspace = true

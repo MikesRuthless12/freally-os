@@ -9,6 +9,8 @@ This file covers, wherever they appear in this repository:
 - `assets/os/` — Freally OS's own renders, wallpapers and icons;
 - the Freally name, logo and wordmark in any form.
 
+It does **not** cover `assets/fonts/noto/`: the Noto fonts (and the boot atlas rendered from them) are under the SIL Open Font License 1.1, in `assets/fonts/noto/OFL.txt`.
+
 They are **not** licensed under the Apache License 2.0 that covers Freally OS's code. You may redistribute them **only unmodified, and only as part of an official Freally OS build** signed with Mike's release key. Any other use, modification or redistribution needs written permission.
 
 Forks must remove them and use their own (see [`TRADEMARKS.md`](../TRADEMARKS.md)).

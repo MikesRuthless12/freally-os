@@ -16,6 +16,8 @@ flavour-e2e = []
 [dependencies]
 fcore-abi.workspace = true
 fcrypto.workspace = true
+fsi.workspace = true
+fscreen.workspace = true
 
 [lints]
 workspace = true
