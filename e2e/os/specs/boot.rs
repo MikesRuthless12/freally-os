@@ -150,3 +150,43 @@ pub fn trial(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `@boot.timeline`: conductor's one `boot:` line holds every stage from B0
+/// to S2, in order, each no earlier than the one before, B0 at 0 (K3, all
+/// CPUs online, joins with SMP: TASK-036); and the firmware's own times from
+/// the FPDT, F0 before F1, or that there's no FPDT (TASK-047, FR-004).
+pub fn timeline(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("conductor: boot: ")?;
+    let line = ctx.log_line_with("conductor: boot: ").ok_or("no boot line")?;
+    let body = line.split("conductor: boot: ").nth(1).unwrap_or_default();
+    let (stages, firmware) = body.split_once("ms after B0; firmware ").ok_or(format!("unreadable: {line}"))?;
+    let mut seen: Vec<(String, f64)> = Vec::new();
+    for pair in stages.split_whitespace() {
+        let (name, ms) = pair.split_once('=').ok_or(format!("unreadable stage {pair:?} in {line}"))?;
+        let ms: f64 = ms.parse().map_err(|_| format!("unreadable time {pair:?} in {line}"))?;
+        seen.push((name.to_string(), ms));
+    }
+    let want = ["B0", "B1", "B2", "B3", "K0", "K1", "K2", "C0", "S1", "S2"];
+    let names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).filter(|n| *n != "K3").collect();
+    if names != want {
+        return Err(format!("the stages are {names:?}, not {want:?}: {line}"));
+    }
+    if seen[0].1 != 0.0 {
+        return Err(format!("B0 isn't 0: {line}"));
+    }
+    if let Some(w) = seen.windows(2).find(|w| w[1].1 < w[0].1) {
+        return Err(format!("{} ({} ms) comes before {} ({} ms): {line}", w[1].0, w[1].1, w[0].0, w[0].1));
+    }
+    if firmware != "times: no FPDT" {
+        let t: Vec<f64> = firmware
+            .trim_end_matches(" ms on its own clock")
+            .split_whitespace()
+            .filter_map(|p| p.split_once('=').and_then(|(_, v)| v.parse().ok()))
+            .collect();
+        if t.len() != 2 || t[0] > t[1] {
+            return Err(format!("the firmware's times don't add up: {line}"));
+        }
+    }
+    println!("    {body}");
+    Ok(())
+}

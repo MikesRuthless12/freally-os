@@ -51,6 +51,8 @@ pub struct Conductor {
     pub door_out: Vec<String>,
     /// The A/B record (TASK-045).
     pub boot: crate::bootctl::Boot,
+    /// The FPDT's reset end and OS-loader start (ns, the firmware's clock), if any.
+    pub firmware: Option<(u64, u64)>,
 }
 
 fn rdtsc() -> u64 {
@@ -87,7 +89,7 @@ impl Conductor {
             })
             .collect();
         let boot = crate::bootctl::Boot::new(image.slot, &image.bootctl);
-        Conductor { image, services, faults: Kept::new(), s1: 0, s2: 0, door_out: Vec::new(), boot }
+        Conductor { image, services, faults: Kept::new(), s1: 0, s2: 0, door_out: Vec::new(), boot, firmware: None }
     }
 
     /// Queues every boot service, in dependency order.
@@ -188,6 +190,7 @@ impl Conductor {
         if !restart {
             fstd::info!("conductor: {} ended ({code})", s.m.name);
             s.state = ServiceState::Stopped;
+            self.check_s2();
             return;
         }
         match backoff(&mut s.crashes, now) {
@@ -291,21 +294,41 @@ impl Conductor {
         Ok((Vec::new(), Vec::new()))
     }
 
-    /// S2: every boot service is running. The system is up: a trial slot's
-    /// 10 s start (until the desktop's input-ready mark, Phase 3).
-    fn check_s2(&mut self) {
+    /// S2 (PRD § 3): the framebuffer and input drivers are ready, an input
+    /// driver that found no hardware and ended cleanly counting as ready. The
+    /// system is up: a trial slot's 10 s start (until the desktop's
+    /// input-ready mark, Phase 3), and conductor says the boot so far.
+    pub fn check_s2(&mut self) {
         if self.s2 != 0 {
             return;
         }
-        let all = self
-            .services
-            .iter()
-            .filter(|s| s.m.start == fsvc::Start::Boot && s.m.name != "conductor")
-            .all(|s| s.state == ServiceState::Running);
-        if all {
+        let ready = |name: &str, or_stopped: bool| {
+            self.services
+                .iter()
+                .find(|s| s.m.name == name)
+                .is_none_or(|s| s.state == ServiceState::Running || (or_stopped && s.state == ServiceState::Stopped))
+        };
+        if ready("drv-gop-fb", false) && ready("drv-i8042", true) {
             self.s2 = rdtsc();
             self.boot.up();
+            self.firmware = self.firmware_times();
+            fstd::info!("conductor: boot: {}", boot_line(&self.stages()));
         }
+    }
+
+    /// The firmware's own times from the ACPI FPDT (devmgr reads it), if any.
+    fn firmware_times(&self) -> Option<(u64, u64)> {
+        let ch = self.open_connection("devmgr", "conductor")?;
+        let deadline = Instant::after(fstd::time::Duration::from_secs(2));
+        let (t, _) = fstd::ipc::Client::new(ch)
+            .call::<_, fwire::proto::devmgr::FirmwareTimes>(
+                fwire::proto::devmgr::FIRMWARE_TIMES,
+                &(),
+                Vec::new(),
+                deadline,
+            )
+            .ok()?;
+        (t.reset_end != 0 || t.os_loader_start != 0).then_some((t.reset_end, t.os_loader_start))
     }
 
     /// Conductor's own lines go to the logger once it's up.
@@ -316,7 +339,6 @@ impl Conductor {
             self.boot.announce();
         }
     }
-
     /// S1: the logger (and devmgr, once it exists) registered.
     fn check_s1(&mut self) {
         if self.s1 != 0 {
@@ -379,10 +401,16 @@ impl Conductor {
         if hz == 0 {
             return Vec::new();
         }
-        stamps
+        let mut out: Vec<(u8, u64)> = stamps
             .into_iter()
             .map(|(id, t)| (id, ((t.saturating_sub(b0)) as u128 * 1_000_000_000 / hz as u128) as u64))
-            .collect()
+            .collect();
+        // F0/F1: the firmware's own times (ns on its clock), from the FPDT.
+        if let Some((f0, f1)) = self.firmware {
+            out.insert(0, (1, f1));
+            out.insert(0, (0, f0));
+        }
+        out
     }
 
     fn timeline(&self, _txid: u32) -> Result<Vec<u8>, (FErr, String)> {
@@ -419,6 +447,25 @@ pub enum Wake {
     Faults,
     Exited(usize),
     Request(usize),
+}
+
+/// The boot so far, for the log (the specs read it until cdpd exists):
+/// each stage in ms after B0, then the firmware's own times when the FPDT
+/// gives them (on its own clock: shown apart, never added in).
+pub fn boot_line(stages: &[(u8, u64)]) -> String {
+    const NAMES: [&str; 15] =
+        ["F0", "F1", "B0", "B1", "B2", "B3", "K0", "K1", "K2", "K3", "C0", "S1", "S2", "S3", "S4"];
+    let ms = |ns: u64| alloc::format!("{}.{}", ns / 1_000_000, ns / 100_000 % 10);
+    let mut line = String::new();
+    for (id, ns) in stages.iter().filter(|(id, _)| *id >= 2) {
+        line.push_str(&alloc::format!("{}={} ", NAMES.get(*id as usize).unwrap_or(&"?"), ms(*ns)));
+    }
+    line.push_str("ms after B0; firmware ");
+    match (stages.iter().find(|s| s.0 == 0), stages.iter().find(|s| s.0 == 1)) {
+        (Some(f0), Some(f1)) => line.push_str(&alloc::format!("F0={} F1={} ms on its own clock", ms(f0.1), ms(f1.1))),
+        _ => line.push_str("times: no FPDT"),
+    }
+    line
 }
 
 #[cfg(test)]

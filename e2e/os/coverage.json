@@ -133,6 +133,13 @@
       "what": "A command sent the moment the VM restarts, before the serial driver or the door exists, is still answered: nothing that arrives before a client opens the port is lost."
     },
     {
+      "id": "boot.timeline",
+      "task": "TASK-047",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "Every boot stage from B0 to S2 is stamped, in order, and conductor says them in one line; the firmware's own FPDT times are shown apart, or their absence said."
+    },
+    {
       "id": "boot.fallback",
       "task": "TASK-045",
       "setup": "e2e-ab",

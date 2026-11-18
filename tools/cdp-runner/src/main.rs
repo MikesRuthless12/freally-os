@@ -50,6 +50,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("input.absent", services::absent),
     ("serial.echo", services::echo),
     ("serial.early", services::early),
+    ("boot.timeline", boot::timeline),
     ("boot.fallback", boot::fallback),
     ("boot.trial", boot::trial),
 ];
