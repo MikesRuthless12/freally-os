@@ -329,3 +329,18 @@ pub fn echo(ctx: &mut Ctx) -> Result<(), String> {
     println!("    {} KB echoed without loss in {secs:.1} s, a 4 s stall included", n / 1024);
     Ok(())
 }
+
+/// `@serial.early`: a command sent the moment the VM restarts, before
+/// drv-uart16550 or the door exists, is still answered: what arrives before a
+/// client opens the port waits in the UART (the driver doesn't read a port no
+/// one has opened, and keeps a byte already there when it turns the FIFO on)
+/// (TASK-044).
+pub fn early(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("conductor: test door open on COM3")?;
+    ctx.reset()?;
+    let answer = ctx.door("services").map_err(|e| format!("a command sent during boot was lost: {e}"))?;
+    if !answer.iter().any(|l| l.starts_with("svc logger ")) {
+        return Err(format!("a command sent during boot came back wrong: {answer:?}"));
+    }
+    Ok(())
+}

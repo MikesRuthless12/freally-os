@@ -9,8 +9,12 @@ use core::ptr::null_mut;
 /// The largest image the bootloader will read (the GPT slots are 512 MiB).
 const MAX_IMAGE: u64 = 512 << 20;
 
-/// `\FREALLY\SYSTEM_A.FSI` as NUL-terminated UTF-16.
+/// `\FREALLY\SYSTEM_A.FSI` and `SYSTEM_B.FSI` as NUL-terminated UTF-16.
 pub const SYSTEM_A: &[u16] = &utf16::<22>("\\FREALLY\\SYSTEM_A.FSI");
+pub const SYSTEM_B: &[u16] = &utf16::<22>("\\FREALLY\\SYSTEM_B.FSI");
+
+/// The image isn't on the drive (the A/B rules then try the other slot).
+pub const MISSING: &str = "There’s no Freally OS system image on this drive.";
 
 const fn utf16<const N: usize>(s: &str) -> [u16; N] {
     let b = s.as_bytes();
@@ -51,7 +55,7 @@ pub unsafe fn read_image(bs: &BootServices, image: Handle, path: &[u16]) -> Resu
     if is_error(st) {
         // SAFETY: `root` is open.
         unsafe { ((*root).close)(root) };
-        return Err("There’s no \\FREALLY\\SYSTEM_A.FSI on this drive.");
+        return Err(MISSING);
     }
     let result = (|| {
         let mut size = 0u64;

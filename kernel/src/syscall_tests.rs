@@ -198,3 +198,62 @@ ktest!(hardware_access_stays_inside_each_grant, {
     proc::terminate(&p, 0);
     result
 });
+
+ktest!(uefi_set_var_writes_freallybootctl_and_nothing_else, {
+    use fcore_abi::grant;
+    let p = proc::create("bootctl-test", grant::BOOT_CONTROL)?;
+    let plain = proc::create("plain-test", 0)?;
+    let me = crate::sched::current().ok_or("no current thread")?;
+    let run = |p: &crate::obj::ObjectRef, f: &dyn Fn() -> Result<(), &'static str>| {
+        *me.process.lock() = Some(p.clone());
+        proc::aspace_of(p).ok_or("no address space")?.activate();
+        let r = (|| {
+            let (vmo, _) = call(nr::VMO_CREATE, 4096, 0, 0, 0, 0, 0)?;
+            call(nr::VM_MAP, well_known::SELF_ASPACE as u64, vmo, 0, 4096, BUF, perm::READ | perm::WRITE)?;
+            f()
+        })();
+        crate::mm::aspace::activate_kernel();
+        *me.process.lock() = None;
+        r
+    };
+    let name = fbootctl::NAME.as_bytes();
+    let record = fbootctl::BootCtl::fresh("ktest").encode();
+    let put = |name: &[u8], data: &[u8]| -> Result<(), &'static str> {
+        crate::mm::user::copy_to_user(BUF, name)?;
+        crate::mm::user::copy_to_user(BUF + 64, data)?;
+        Ok(())
+    };
+    // Without the grant: refused.
+    run(&plain, &|| {
+        put(name, &record)?;
+        match e(call(nr::UEFI_SET_VAR, BUF, name.len() as u64, BUF + 64, 32, 0, 0)) {
+            Some(FErr::AccessDenied) => Ok(()),
+            _ => Err("uefi_set_var without the boot-control grant"),
+        }
+    })?;
+    run(&p, &|| {
+        // Another variable, a wrong length, a damaged record: refused.
+        put(b"BootOrder", &record)?;
+        if e(call(nr::UEFI_SET_VAR, BUF, 9, BUF + 64, 32, 0, 0)) != Some(FErr::AccessDenied) {
+            return Err("uefi_set_var wrote a variable other than FreallyBootCtl");
+        }
+        put(name, &record)?;
+        if e(call(nr::UEFI_SET_VAR, BUF, name.len() as u64, BUF + 64, 31, 0, 0)) != Some(FErr::InvalidArgs) {
+            return Err("uefi_set_var took a record of the wrong size");
+        }
+        let mut bad = record;
+        bad[9] ^= 1;
+        put(name, &bad)?;
+        if e(call(nr::UEFI_SET_VAR, BUF, name.len() as u64, BUF + 64, 32, 0, 0)) != Some(FErr::InvalidArgs) {
+            return Err("uefi_set_var took a damaged record");
+        }
+        // The real thing, through the firmware's runtime SetVariable.
+        put(name, &record)?;
+        call(nr::UEFI_SET_VAR, BUF, name.len() as u64, BUF + 64, 32, 0, 0)
+            .map(|_| ())
+            .map_err(|_| "the firmware's SetVariable failed")
+    })?;
+    proc::terminate(&p, 0);
+    proc::terminate(&plain, 0);
+    Ok(())
+});

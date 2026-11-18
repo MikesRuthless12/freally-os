@@ -35,6 +35,8 @@ pub struct VmOptions {
     pub image_override: Option<PathBuf>,
     /// Test only: no PS/2 controller (`@input.absent`).
     pub no_ps2: bool,
+    /// Slot B's image (`@boot.fallback`, `@boot.trial`); without one, the ESP has none.
+    pub slot_b: Option<PathBuf>,
 }
 
 impl VmOptions {
@@ -50,6 +52,7 @@ impl VmOptions {
             tamper_byte: None,
             image_override: None,
             no_ps2: false,
+            slot_b: None,
         }
     }
 
@@ -95,8 +98,17 @@ pub fn lay_out(o: &VmOptions, built: &Built) -> Result<PathBuf, String> {
     }
     copy(&built.efi, &esp.join("EFI/BOOT/BOOTX64.EFI"))?;
     copy(&built.image, &esp.join("FREALLY/SYSTEM_A.FSI"))?;
+    // Slot B only when asked for: a leftover would boot as soon as the record said so.
+    match &o.slot_b {
+        Some(b) => copy(b, &esp.join("FREALLY/SYSTEM_B.FSI"))?,
+        None => {
+            let _ = std::fs::remove_file(esp.join("FREALLY/SYSTEM_B.FSI"));
+        }
+    }
     let vars = dir.join("OVMF_VARS_4M.fd");
-    if !vars.exists() {
+    // A VM with a slot B starts from fresh firmware variables: its A/B record
+    // is rebuilt on the first boot, so no earlier run decides how this one starts.
+    if !vars.exists() || o.slot_b.is_some() {
         copy(Path::new(OVMF_VARS), &vars)?;
     }
     Ok(esp)

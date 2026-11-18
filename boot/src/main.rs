@@ -26,6 +26,7 @@ mod console;
 mod handoff;
 mod keys;
 mod read;
+mod slots;
 mod uefi;
 mod video;
 
@@ -66,8 +67,15 @@ fn halt() -> ! {
 
 /// What the screen will say.
 enum Outcome {
-    Verified { version: [u8; 32], note: &'static str, image: &'static [u8], kernel: Option<&'static [u8]> },
+    Verified {
+        version: [u8; 32],
+        note: &'static str,
+        image: &'static [u8],
+        kernel: Option<&'static [u8]>,
+    },
     Refused(&'static str),
+    /// Neither slot can start (FR-003): the panic screen, with both slots' states.
+    NoSlot,
 }
 
 /// Checks the image the way `docs/fsi-format.md` says, plus the flavour rule.
@@ -138,14 +146,21 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
         say!("freally-boot: ACPI 2.0 RSDP at {:#x}", acpi_rsdp);
     }
 
-    // Read, then verify.
+    // Which slot (A/B, TASK-045), then read and verify its image.
     // SAFETY: boot services are running and `image` is our own handle.
-    let outcome = match unsafe { read::read_image(bs, image_handle, read::SYSTEM_A) } {
-        Ok(bytes) => {
+    let chosen = unsafe { slots::choose(st, bs, image_handle) };
+    let (slot, mut ctl) = match &chosen {
+        Ok(c) => (c.slot, c.ctl),
+        Err(ctl) => (0, *ctl),
+    };
+    let outcome = match chosen.map(|c| c.image) {
+        Err(_) => Outcome::NoSlot,
+        Ok(Ok(bytes)) => {
             stamps.b1 = rdtsc();
             let hdr = fsi::Header::parse(bytes).map(|h| h.version);
             say!(
-                "freally-boot: read SYSTEM_A.FSI, {} bytes, header version {}",
+                "freally-boot: read SYSTEM_{}.FSI, {} bytes, header version {}",
+                fbootctl::slot_name(slot),
                 bytes.len(),
                 hdr.as_ref().map_or("?", |v| core::str::from_utf8(&v[..v.iter().position(|&b| b == 0).unwrap_or(32)])
                     .unwrap_or("?"))
@@ -154,11 +169,20 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
             stamps.b2 = rdtsc();
             o
         }
-        Err(why) => {
+        Ok(Err(why)) => {
             say!("freally-boot: ERROR {why}");
             Outcome::Refused(why)
         }
     };
+    // A rebuilt record learns the version slot A holds, once it's verified.
+    if let Outcome::Verified { version, .. } = &outcome
+        && ctl.slot[slot as usize].version() == ""
+    {
+        let end = version.iter().position(|&b| b == 0).unwrap_or(32);
+        ctl.slot[slot as usize].version = fbootctl::version_bytes(core::str::from_utf8(&version[..end]).unwrap_or(""));
+        // SAFETY: boot services are running.
+        unsafe { slots::save(st.runtime_services, &ctl) };
+    }
     say!(
         "freally-boot: read {} ticks, verified {} ticks",
         stamps.b1.saturating_sub(stamps.b0),
@@ -208,6 +232,19 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
             console::hide_cursor();
             fscreen::integrity(&mut canvas, why);
         }
+        Outcome::NoSlot => {
+            say!("freally-boot: showing the panic screen: neither slot can start");
+            console::hide_cursor();
+            let states = slots::states(&ctl);
+            fscreen::panic(
+                &mut canvas,
+                &[
+                    "Neither copy of Freally OS on this drive can start.",
+                    states.as_str(),
+                    "Install Freally OS again from a USB stick to carry on.",
+                ],
+            );
+        }
     }
     // SAFETY: `gop` and `d` come from the firmware's current mode.
     unsafe { video::present(gop, d, canvas.px) };
@@ -221,6 +258,8 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
             image,
             version: *version,
             stamps,
+            slot,
+            bootctl: ctl.encode(),
         };
         // SAFETY: boot services are running; `st` and `image` are the firmware's.
         let why = unsafe { handoff::handoff(st, image_handle, &k, facts) };

@@ -250,6 +250,14 @@ pub struct EdidActive {
 pub const EDID_ACTIVE_GUID: Guid =
     Guid::new(0xBD8C_1056, 0x9F36, 0x44EC, [0x92, 0xA8, 0xA6, 0x33, 0x7F, 0x81, 0x79, 0x86]);
 
+/// The Memory Attributes Table: the firmware's runtime images split into
+/// read-only code and no-execute data (UEFI 2.6+).
+pub const MEMORY_ATTRIBUTES_TABLE_GUID: Guid =
+    Guid::new(0xDCFA_911D, 0x26EB, 0x469F, [0xA2, 0x20, 0x38, 0xB7, 0xDC, 0x46, 0x12, 0x20]);
+/// Memory attribute bits.
+pub const MEMORY_RO: u64 = 0x2_0000;
+pub const MEMORY_XP: u64 = 0x4000;
+
 /// ACPI 2.0+ RSDP in the configuration table.
 pub const ACPI_20_TABLE_GUID: Guid =
     Guid::new(0x8868_E871, 0xE4F1, 0x11D3, [0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81]);

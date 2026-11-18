@@ -49,6 +49,9 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("input.mouse", services::mouse),
     ("input.absent", services::absent),
     ("serial.echo", services::echo),
+    ("serial.early", services::early),
+    ("boot.fallback", boot::fallback),
+    ("boot.trial", boot::trial),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

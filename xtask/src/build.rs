@@ -206,6 +206,15 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> R
 
 pub fn build_cmd(args: &[String]) -> Result<(), String> {
     let flavour = pack::flavour_arg(args)?;
+    if args.iter().any(|a| a == "--crash-test") {
+        let b = crash_test(flavour)?;
+        println!(
+            "build: {} crash test (a slot-B image that panics before the desktop) → {}",
+            flavour.name(),
+            b.display()
+        );
+        return Ok(());
+    }
     let b = build(flavour)?;
     let efi = std::fs::read(&b.efi).map_err(|e| e.to_string())?;
     let img = std::fs::read(&b.image).map_err(|e| e.to_string())?;
@@ -213,6 +222,17 @@ pub fn build_cmd(args: &[String]) -> Result<(), String> {
     println!("  BOOTX64.EFI   {:>9} bytes  sha256 {}", efi.len(), util::hex(&fcrypto::sha2::sha256(&efi)));
     println!("  SYSTEM_A.FSI  {:>9} bytes  sha256 {}", img.len(), util::hex(&fcrypto::sha2::sha256(&img)));
     Ok(())
+}
+
+/// A slot-B image that panics in Freally Core, before conductor (TASK-045's
+/// `@boot.fallback`): `target/freally/<flavour>-crash-test/SYSTEM_B.FSI`.
+pub fn crash_test(flavour: Flavour) -> Result<PathBuf, String> {
+    let b = build_full(flavour, true, &["crash-ud2"])?;
+    let dir = util::target_dir().join("freally").join(format!("{}-crash-test", flavour.name()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join("SYSTEM_B.FSI");
+    std::fs::copy(&b.image, &out).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(out)
 }
 
 /// The reproducibility hashes of a build: the bootloader's SHA-256, and the

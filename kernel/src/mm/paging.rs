@@ -143,6 +143,35 @@ fn sym(s: &u8) -> u64 {
     s as *const u8 as u64
 }
 
+/// The 4 KiB entry for `virt` in the direct map, splitting the 1 GiB and
+/// 2 MiB pages above it (each part keeps the huge page's flags).
+fn split_to_4k(pml4: u64, virt: u64) -> Result<&'static mut u64, &'static str> {
+    let mut table = next(pml4, (virt >> 39) & 511, false)?;
+    for shift in [30u64, 21] {
+        // SAFETY: page-table frames, reached through the direct map.
+        unsafe {
+            let e = entries(table).add(((virt >> shift) & 511) as usize);
+            if *e & PRESENT == 0 {
+                return Err("the direct map has a hole");
+            }
+            if *e & HUGE != 0 {
+                let sub = frames::alloc_zeroed().ok_or("out of memory for page tables")?;
+                let base = *e & ADDR & !((1 << shift) - 1);
+                let step = 1u64 << (shift - 9);
+                // A 2 MiB part stays huge; a 4 KiB one can't be (and has no HUGE bit).
+                let flags = *e & !ADDR & if shift == 30 { !0 } else { !HUGE };
+                for i in 0..512 {
+                    *entries(sub).add(i as usize) = (base + i * step) | flags;
+                }
+                *e = sub | PRESENT | WRITABLE;
+            }
+            table = *e & ADDR;
+        }
+    }
+    // SAFETY: a page table, reached through the direct map.
+    Ok(unsafe { &mut *entries(table).add(((virt >> 12) & 511) as usize) })
+}
+
 /// Builds the kernel's tables and switches to them.
 pub fn init(info: &BootInfo, regions: &[MemRegion]) -> Result<(), &'static str> {
     let pml4 = frames::alloc_zeroed().ok_or("out of memory")?;
@@ -166,6 +195,16 @@ pub fn init(info: &BootInfo, regions: &[MemRegion]) -> Result<(), &'static str> 
                 }
                 *e = pd | PRESENT | WRITABLE;
             }
+        }
+    }
+    // The firmware's runtime code (TASK-045): read-only and executable in the
+    // direct map, where everything else is no-execute. The bootloader reports
+    // it from the Memory Attributes Table, its data apart, so W^X holds.
+    for r in regions.iter().filter(|r| r.kind == fcore_abi::MemKind::RuntimeCode) {
+        let mut v = (DIRECT_MAP + r.base) & !0xFFF;
+        while v < DIRECT_MAP + r.base + r.len {
+            *split_to_4k(pml4, v)? = ((v - DIRECT_MAP) & ADDR) | PRESENT | GLOBAL;
+            v += 4096;
         }
     }
     // The kernel's sections, at the physical place the bootloader loaded them.
@@ -197,6 +236,23 @@ pub fn init(info: &BootInfo, regions: &[MemRegion]) -> Result<(), &'static str> 
     }
     Ok(())
 }
+
+ktest!(paging_firmware_runtime_code_is_executable_and_read_only, {
+    let regions = crate::boot_info().ok_or("no BootInfo")?.memory_map;
+    // SAFETY: BootInfo's memory map, in the direct map.
+    let regions = unsafe { core::slice::from_raw_parts(regions.ptr, regions.len as usize) };
+    let code: alloc::vec::Vec<_> = regions.iter().filter(|r| r.kind == fcore_abi::MemKind::RuntimeCode).collect();
+    if code.is_empty() {
+        return Err("no runtime code reported (OVMF has a Memory Attributes Table)");
+    }
+    for r in code {
+        let (_, f) = translate(kernel_pml4(), DIRECT_MAP + r.base).ok_or("runtime code unmapped")?;
+        if f & NX != 0 || f & WRITABLE != 0 {
+            return Err("runtime code isn't read-only and executable");
+        }
+    }
+    Ok(())
+});
 
 ktest!(paging_kernel_text_is_read_only_and_data_is_not_executable, {
     // SAFETY: linker symbols.

@@ -145,7 +145,7 @@ pub struct BootStamps {
 }
 
 pub const BOOTINFO_MAGIC: u64 = u64::from_le_bytes(*b"FRLYBOOT");
-pub const BOOTINFO_VERSION: u32 = 1;
+pub const BOOTINFO_VERSION: u32 = 2;
 
 /// Handed from the bootloader to the kernel in RDI (PRD § 3).
 #[repr(C)]
@@ -163,6 +163,9 @@ pub struct BootInfo {
     pub kernel: KernelLoc,
     pub tsc: BootStamps,
     pub cmdline: [u8; 256],
+    /// `FreallyBootCtl` as the bootloader left it this boot (v2): conductor
+    /// reads which slot is on trial and whether one fell back.
+    pub bootctl: [u8; 32],
 }
 
 /// Error codes (negative in `rax`).

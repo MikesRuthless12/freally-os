@@ -26,6 +26,7 @@ bench-ipc = []
 ktest = []
 
 [dependencies]
+fbootctl.workspace = true
 fcore-abi.workspace = true
 fcrypto.workspace = true
 felf.workspace = true

@@ -8,7 +8,9 @@
     "release": { "flavour": "release" },
     "release-with-dev-image": { "flavour": "release", "image_from": "dev" },
     "e2e-crash-ud2": { "flavour": "e2e", "kernel_features": ["crash-ud2"] },
-    "e2e-no-ps2": { "flavour": "e2e", "no_ps2": true }
+    "e2e-no-ps2": { "flavour": "e2e", "no_ps2": true },
+    "e2e-ab": { "flavour": "e2e", "slot_b": "crash-test" },
+    "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" }
   },
   "features": [
     {
@@ -122,6 +124,27 @@
       "setup": "e2e",
       "spec": "e2e/os/specs/services.rs",
       "what": "Bytes through COM3 and back without losing one, while the door stalls so the driver must hold the line: 256 KB each run, 10 MB with --slow."
+    },
+    {
+      "id": "serial.early",
+      "task": "TASK-044",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "A command sent the moment the VM restarts, before the serial driver or the door exists, is still answered: nothing that arrives before a client opens the port is lost."
+    },
+    {
+      "id": "boot.fallback",
+      "task": "TASK-045",
+      "setup": "e2e-ab",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "Slot B on trial with an image that crashes before conductor: three trial boots, then the fourth lands on slot A, and the log says the update didn't start."
+    },
+    {
+      "id": "boot.trial",
+      "task": "TASK-045",
+      "setup": "e2e-ab-good",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "Slot B on trial with a good image: it boots with a try spent, and conductor marks it Good through UEFI SetVariable 10 s after every boot service is running."
     }
   ]
 }

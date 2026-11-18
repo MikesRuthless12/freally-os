@@ -43,6 +43,7 @@ mod syscall_tests;
 mod time;
 mod timeline;
 mod timer;
+mod uefi;
 
 use arch::cpu;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};

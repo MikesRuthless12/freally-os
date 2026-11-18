@@ -64,3 +64,89 @@ pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("freally-core: memory ready")?;
     ctx.expect_screen(Expect::Title { note: "Freally Core is running." })
 }
+
+/// Resets the VM (QMP system_reset, as a restart button does) and waits for
+/// the `n`th line containing `text`.
+fn reset_until(ctx: &mut Ctx, text: &str, n: usize) -> Result<(), String> {
+    ctx.reset()?;
+    let start = std::time::Instant::now();
+    while ctx.log_count(text) < n {
+        if start.elapsed() > std::time::Duration::from_secs(60) {
+            return Err(format!("after a restart, COM1 said {text:?} {} times, not {n}", ctx.log_count(text)));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Ok(())
+}
+
+/// `@boot.fallback`: slot B on trial, its image crashing in Freally Core
+/// before conductor, crashes three times; the fourth boot lands on slot A,
+/// and the log says the update didn't start (TASK-045, FR-003).
+pub fn fallback(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.allow_errors(&["freally-core: ERROR", "showing the panic screen", "can't start", "didn't start"]);
+    ctx.expect_log("[conductor] conductor: started from slot A")?;
+    let answer = ctx.door("bootctl trial b")?;
+    if answer != ["ok"] {
+        return Err(format!("bootctl trial b: {answer:?}"));
+    }
+    let fell_back = "freally-boot: slot B can't start (Bad); booting slot A";
+    let gave_up = ctx.log_count(fell_back);
+    for left in [2, 1, 0] {
+        let crashes = ctx.log_count("freally-core: ERROR");
+        reset_until(ctx, &format!("freally-boot: booting slot B (trial, {left} tries left)"), 1)?;
+        reset_wait_crash(ctx, crashes + 1)?;
+    }
+    let said = ctx.log_count("didn't start, so Freally OS went back to");
+    reset_until(ctx, fell_back, gave_up + 1)?;
+    ctx.expect_log_count("didn't start, so Freally OS went back to", said + 1)?;
+    let state = ctx.door("bootctl")?;
+    for want in ["active A", "booted A"] {
+        if !state.iter().any(|l| l == want) {
+            return Err(format!("after the fallback the record says {state:?}, wanted {want:?}"));
+        }
+    }
+    if !state.iter().any(|l| l.starts_with("slot B Bad 0")) {
+        return Err(format!("slot B isn't Bad after three failed trial boots: {state:?}"));
+    }
+    Ok(())
+}
+
+/// Waits for the crash-test kernel's panic (the `n`th ERROR line).
+fn reset_wait_crash(ctx: &mut Ctx, n: usize) -> Result<(), String> {
+    ctx.expect_log_count("freally-core: ERROR", n).map_err(|e| format!("the trial image didn't crash: {e}"))
+}
+
+/// `@boot.trial`: slot B on trial with a good image boots with a try spent,
+/// and conductor marks it Good through UEFI SetVariable once every boot
+/// service has run for 10 s; the next boot stays on B, no try spent
+/// (TASK-045, FR-003).
+pub fn trial(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("[conductor] conductor: started from slot")?;
+    let answer = ctx.door("bootctl trial b")?;
+    if answer != ["ok"] {
+        return Err(format!("bootctl trial b: {answer:?}"));
+    }
+    let booted = ctx.log_count("freally-boot: booting slot B (trial, 2 tries left)");
+    reset_until(ctx, "freally-boot: booting slot B (trial, 2 tries left)", booted + 1)?;
+    let marked = "started cleanly: marked Good";
+    let start = std::time::Instant::now();
+    while ctx.log_count(marked) == 0 {
+        if start.elapsed() > std::time::Duration::from_secs(30) {
+            return Err("conductor never marked the trial slot Good".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let state = ctx.door("bootctl")?;
+    if !state.iter().any(|l| l.starts_with("slot B Good")) || !state.iter().any(|l| l == "booted B") {
+        return Err(format!("after the mark the record says {state:?}"));
+    }
+    // A Good slot boots with no try spent, and isn't marked again.
+    let plain = ctx.log_count("freally-boot: booting slot B");
+    let trials = ctx.log_count("freally-boot: booting slot B (trial");
+    reset_until(ctx, "freally-boot: booting slot B", plain + 1)?;
+    ctx.expect_log("conductor: started from slot B (Good")?;
+    if ctx.log_count("freally-boot: booting slot B (trial") != trials {
+        return Err("a slot already Good was booted as a trial".into());
+    }
+    Ok(())
+}

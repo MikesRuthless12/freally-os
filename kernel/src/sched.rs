@@ -252,6 +252,20 @@ fn fpu_ptr(t: &Thread) -> Option<*mut u8> {
     })
 }
 
+/// Runs `f` with the running thread's FPU and vector state saved around it
+/// (firmware runtime calls may use SSE; the kernel itself never does).
+pub fn with_fpu_saved<R>(f: impl FnOnce() -> R) -> R {
+    let t = current();
+    if let Some(t) = &t {
+        save_fpu(t);
+    }
+    let r = f();
+    if let Some(t) = &t {
+        restore_fpu(t);
+    }
+    r
+}
+
 fn save_fpu(t: &Thread) {
     if let Some(p) = fpu_ptr(t) {
         // SAFETY: a 64-byte aligned area of XSAVE_SIZE (or 512 for FXSAVE) bytes.

@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+mod bootctl;
 #[cfg(feature = "flavour-e2e")]
 mod door;
 mod faults;
@@ -65,7 +66,7 @@ fn run(_bootstrap: u32) -> i64 {
         // The door's port: an answer starts as soon as its command arrives.
         #[cfg(feature = "flavour-e2e")]
         items.extend(door.wait_item());
-        let mut deadline = c.next_start().unwrap_or(u64::MAX);
+        let mut deadline = c.next_start().unwrap_or(u64::MAX).min(c.boot.deadline().unwrap_or(u64::MAX));
         if cfg!(feature = "flavour-e2e") {
             deadline = deadline.min(Instant::after(Duration::from_millis(20)));
         }
@@ -86,6 +87,7 @@ fn run(_bootstrap: u32) -> i64 {
                 fstd::time::sleep(Duration::from_millis(100));
             }
         }
+        c.boot.tick();
         #[cfg(feature = "flavour-e2e")]
         door.poll(&mut c);
     }

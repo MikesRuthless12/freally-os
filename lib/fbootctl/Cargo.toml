@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fbootctl"
+description = "fbootctl: FreallyBootCtl, the A/B slot record, and the rules the bootloader and conductor follow."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcrypto.workspace = true
+
+[lints]
+workspace = true

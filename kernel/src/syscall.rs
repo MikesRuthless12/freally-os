@@ -463,6 +463,30 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let p = proc::current().ok_or(FErr::BadState)?;
             one(proc::as_process(&p)?.inner.lock().handles.duplicate(a0 as u32, a1 as u32)? as u64)
         }
+        // FreallyBootCtl and nothing else: conductor (the boot-control grant)
+        // writes the A/B record; the kernel refuses any malformed one.
+        nr::UEFI_SET_VAR => {
+            if grants() & grant::BOOT_CONTROL == 0 {
+                return Err(FErr::AccessDenied);
+            }
+            let mut name = [0u8; 32];
+            if a1 as usize > name.len() {
+                return Err(FErr::AccessDenied);
+            }
+            copy_from_user(&mut name[..a1 as usize], a0)?;
+            if &name[..a1 as usize] != fbootctl::NAME.as_bytes() {
+                return Err(FErr::AccessDenied);
+            }
+            let mut data = [0u8; fbootctl::SIZE];
+            if a3 as usize != data.len() {
+                return Err(FErr::InvalidArgs);
+            }
+            copy_from_user(&mut data, a2)?;
+            if fbootctl::BootCtl::decode(&data).is_none() {
+                return Err(FErr::InvalidArgs);
+            }
+            crate::uefi::set_boot_ctl(&data).map(|_| (0, 0))
+        }
         nr::RESOURCE_CREATE => {
             let parent = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
             let kind = match a1 {

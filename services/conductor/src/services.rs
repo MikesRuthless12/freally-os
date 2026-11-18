@@ -49,6 +49,8 @@ pub struct Conductor {
     pub s2: u64,
     /// Lines for the test door to send (e2e): the restart reports.
     pub door_out: Vec<String>,
+    /// The A/B record (TASK-045).
+    pub boot: crate::bootctl::Boot,
 }
 
 fn rdtsc() -> u64 {
@@ -84,7 +86,8 @@ impl Conductor {
                 killed_at: None,
             })
             .collect();
-        Conductor { image, services, faults: Kept::new(), s1: 0, s2: 0, door_out: Vec::new() }
+        let boot = crate::bootctl::Boot::new(image.slot, &image.bootctl);
+        Conductor { image, services, faults: Kept::new(), s1: 0, s2: 0, door_out: Vec::new(), boot }
     }
 
     /// Queues every boot service, in dependency order.
@@ -284,7 +287,25 @@ impl Conductor {
             self.attach_log();
         }
         self.check_s1();
+        self.check_s2();
         Ok((Vec::new(), Vec::new()))
+    }
+
+    /// S2: every boot service is running. The system is up: a trial slot's
+    /// 10 s start (until the desktop's input-ready mark, Phase 3).
+    fn check_s2(&mut self) {
+        if self.s2 != 0 {
+            return;
+        }
+        let all = self
+            .services
+            .iter()
+            .filter(|s| s.m.start == fsvc::Start::Boot && s.m.name != "conductor")
+            .all(|s| s.state == ServiceState::Running);
+        if all {
+            self.s2 = rdtsc();
+            self.boot.up();
+        }
     }
 
     /// Conductor's own lines go to the logger once it's up.
@@ -292,6 +313,7 @@ impl Conductor {
         if let Some(ch) = self.open_connection("logger", "conductor") {
             fstd::log::attach(ch);
             fstd::info!("conductor: logger ready");
+            self.boot.announce();
         }
     }
 

@@ -8,6 +8,8 @@
 //! - `log <n>`: the logger's newest `n` records, one `rec <svc> <msg>` each.
 //! - `services`: one `svc <name> <state>` per service.
 //! - `devices`, `fbfill <rrggbb>`: devmgr's PCI list; a whole-screen fill.
+//! - `bootctl`: the A/B record (`slot A Good 0.4.0`, `active A`, `booted A`);
+//!   `bootctl trial b`: slot B on trial from the next boot (`@boot.fallback`).
 //! - `echo <n> [ms]`: `ok`, then the next `n` bytes that arrive go straight
 //!   back. With `ms`, the door first stops reading for that long, so the
 //!   driver's channel fills and it has to hold the line (`@serial.echo`).
@@ -243,6 +245,31 @@ impl Door {
                     }
                 }
                 _ => self.send("error: echo takes a byte count (at most 64 MiB) and a stall (at most 60,000 ms)"),
+            },
+            "bootctl" => match (arg, c.boot.ctl) {
+                ("", Some(ctl)) => {
+                    for s in 0..2u8 {
+                        let slot = &ctl.slot[s as usize];
+                        self.send(&alloc::format!(
+                            "slot {} {} {} {}",
+                            fbootctl::slot_name(s),
+                            slot.state.name(),
+                            slot.tries_left,
+                            slot.version()
+                        ));
+                    }
+                    self.send(&alloc::format!("active {}", fbootctl::slot_name(ctl.active)));
+                    self.send(&alloc::format!("booted {}", fbootctl::slot_name(c.boot.slot)));
+                }
+                ("trial b", Some(_)) => {
+                    let version = c.image.version.clone();
+                    match c.boot.start_trial(1, &version) {
+                        Ok(()) => self.send("ok"),
+                        Err(e) => self.send(&alloc::format!("error: {}", e.describe())),
+                    }
+                }
+                (_, None) => self.send("error: no A/B record"),
+                _ => self.send("error: bootctl, or bootctl trial b"),
             },
             "services" => {
                 let lines: Vec<String> =

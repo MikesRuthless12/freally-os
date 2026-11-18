@@ -116,6 +116,15 @@ pub fn interrupts_off() {
     unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
 }
 
+/// Whether interrupts are on (RFLAGS.IF).
+#[inline]
+pub fn interrupts_enabled() -> bool {
+    let f: u64;
+    // SAFETY: reads RFLAGS.
+    unsafe { core::arch::asm!("pushfq; pop {}", out(reg) f, options(nomem, preserves_flags)) };
+    f & (1 << 9) != 0
+}
+
 #[inline]
 pub fn interrupts_on() {
     // SAFETY: the IDT is loaded before anything turns interrupts on.

@@ -11,6 +11,9 @@ pub struct Image {
     bytes: &'static [u8],
     pub flavour: u8,
     pub version: String,
+    /// The slot booted (0 = A, 1 = B) and the A/B record as the bootloader left it.
+    pub slot: u8,
+    pub bootctl: [u8; 32],
 }
 
 /// Maps `len` bytes of `vmo` read-only into conductor.
@@ -36,6 +39,8 @@ impl Image {
                 _ => 0,
             },
             version: String::from_utf8_lossy(&info.image.version[..end]).into_owned(),
+            slot: info.image.slot as u8,
+            bootctl: info.bootctl,
         })
     }
 

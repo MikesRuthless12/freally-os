@@ -126,6 +126,18 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         o.port_offset = PORT_OFFSET;
         o.tamper_byte = s.get("tamper").and_then(Value::as_i64).map(|b| b as usize);
         o.no_ps2 = s.get("no_ps2").and_then(Value::as_bool).unwrap_or(false);
+        // Slot B: a crashing image, or this build's own (kept apart: the next build reuses the folder).
+        o.slot_b = match s.get("slot_b").and_then(Value::as_str) {
+            Some("crash-test") => Some(build::crash_test(flavour)?),
+            Some("same") => {
+                let b = build::build_full(flavour, true, &[])?;
+                let out = b.dir.join("SYSTEM_B.FSI");
+                std::fs::copy(&b.image, &out).map_err(|e| e.to_string())?;
+                Some(out)
+            }
+            Some(other) => return Err(format!("setup {setup}: slot_b is crash-test or same, not {other:?}")),
+            None => None,
+        };
         if let Some(from) = s.get("image_from").and_then(Value::as_str) {
             o.image_override = Some(build::build(crate::pack::parse_flavour(from)?)?.image);
         }

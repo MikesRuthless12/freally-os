@@ -99,6 +99,13 @@ name = "facpi"
 version = "0.1.0"
 
 [[package]]
+name = "fbootctl"
+version = "0.1.0"
+dependencies = [
+ "fcrypto",
+]
+
+[[package]]
 name = "fcore-abi"
 version = "0.1.0"
 
@@ -130,6 +137,7 @@ version = "0.1.0"
 name = "freally-boot"
 version = "0.1.0"
 dependencies = [
+ "fbootctl",
  "fcore-abi",
  "fcrypto",
  "fscreen",
@@ -140,6 +148,7 @@ dependencies = [
 name = "freally-core"
 version = "0.1.0"
 dependencies = [
+ "fbootctl",
  "fcore-abi",
  "fcrypto",
  "felf",
@@ -216,6 +225,7 @@ version = "0.1.0"
 name = "svc-conductor"
 version = "0.1.0"
 dependencies = [
+ "fbootctl",
  "fcore-abi",
  "fcrypto",
  "felf",

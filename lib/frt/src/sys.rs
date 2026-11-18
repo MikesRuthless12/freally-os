@@ -205,3 +205,9 @@ pub fn outb(port: u16, v: u8) {
 pub fn vmo_create_physical(resource: u32, phys: u64, len: u64, cache: u64) -> Result<u32, FErr> {
     call1(nr::VMO_CREATE_PHYSICAL, [resource as u64, phys, len, cache, 0, 0]).map(|h| h as u32)
 }
+
+/// Writes the UEFI variable `name` (conductor only: `FreallyBootCtl`, 32 bytes).
+pub fn uefi_set_var(name: &str, data: &[u8]) -> Result<(), FErr> {
+    call1(nr::UEFI_SET_VAR, [name.as_ptr() as u64, name.len() as u64, data.as_ptr() as u64, data.len() as u64, 0, 0])
+        .map(|_| ())
+}

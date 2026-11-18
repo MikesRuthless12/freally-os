@@ -55,21 +55,29 @@ impl Port {
         self.base + r
     }
 
-    /// 115,200 8N1, FIFOs on and cleared (trigger at 14), OUT2 (the PC's IRQ
-    /// gate) on. False if no UART answers here.
+    /// 115,200 8N1, FIFOs on (trigger at 14), OUT2 (the PC's IRQ gate) on.
+    /// False if no UART answers here. Turning the FIFO on clears it, so a
+    /// byte already waiting is kept first: nothing sent before the driver
+    /// started is lost.
     fn init(&mut self) -> bool {
         fstd::sys::outb(self.reg(7), 0x5A);
         if fstd::sys::inb(self.reg(7)) != 0x5A {
             return false;
         }
         fstd::sys::outb(self.reg(1), 0);
+        for _ in 0..16 {
+            if fstd::sys::inb(self.reg(5)) & 0x01 == 0 {
+                break;
+            }
+            self.rx.push(fstd::sys::inb(self.reg(0)));
+        }
         fstd::sys::outb(self.reg(3), 0x80);
         fstd::sys::outb(self.reg(0), 1);
         fstd::sys::outb(self.reg(1), 0);
         fstd::sys::outb(self.reg(3), 0x03);
         fstd::sys::outb(self.reg(2), 0xC7);
         fstd::sys::outb(self.reg(4), 0x0B);
-        self.set_ier(0x01);
+        self.update_ier();
         true
     }
 
@@ -127,19 +135,20 @@ impl Port {
         }
     }
 
-    /// Receive interrupts unless held; send interrupts while there's more to send.
+    /// Receive interrupts while a client has the port and isn't behind (a
+    /// port no one has opened isn't read: what arrives waits in the UART, and
+    /// the sender is held back); send interrupts while there's more to send.
     fn update_ier(&mut self) {
-        let rx_on = if self.held || self.rx.len() >= CHUNK * 4 { 0 } else { 0x01 };
+        let reading = self.client.is_some() && !self.held && self.rx.len() < CHUNK * 4;
+        let rx_on = if reading { 0x01 } else { 0 };
         let tx_on = if self.tx.is_empty() { 0 } else { 0x02 };
         self.set_ier(rx_on | tx_on);
     }
 
     /// Gives the client what has arrived. A client that's behind holds the port.
     fn deliver(&mut self) {
-        let Some(ch) = &self.client else {
-            self.rx.clear();
-            return;
-        };
+        // No client: what arrived waits for the next one.
+        let Some(ch) = &self.client else { return };
         while !self.rx.is_empty() {
             let n = self.rx.len().min(CHUNK);
             let Ok(m) = fwire::event(s::DATA, &s::Bytes { data: self.rx[..n].to_vec() }) else { return };
@@ -152,11 +161,11 @@ impl Port {
                     return;
                 }
                 Err(_) => {
-                    // The client is gone: the port is free for the next one.
+                    // The client is gone: the port is free for the next one,
+                    // which gets what it didn't.
                     self.client = None;
-                    self.rx.clear();
                     self.tx.clear();
-                    break;
+                    return;
                 }
             }
         }
