@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fcore-abi"
+description = "The Freally Core ABI: GUIDs, the version, BootInfo, errors, rights and syscall numbers, shared by the bootloader, the kernel and user space."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

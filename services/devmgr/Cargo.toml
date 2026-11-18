@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "svc-devmgr"
+description = "devmgr: ACPI, PCIe and the hardware resources handed to drivers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

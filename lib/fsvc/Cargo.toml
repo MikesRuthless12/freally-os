@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fsvc"
+description = "fsvc: the service manifest parser."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

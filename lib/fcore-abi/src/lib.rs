@@ -1,0 +1,268 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The Freally Core ABI (PRD § 3 *Constants*, *BootInfo*; § 4 *System calls*).
+//!
+//! Everything here is shared by the bootloader, the kernel and user space, so
+//! every structure is `#[repr(C)]`, little-endian, with explicit padding.
+#![no_std]
+
+/// The version of this build of Freally OS (the workspace version).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// A UEFI-style GUID, in its in-memory (mixed-endian) layout.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Guid {
+    pub data1: u32,
+    pub data2: u16,
+    pub data3: u16,
+    pub data4: [u8; 8],
+}
+
+impl Guid {
+    pub const fn new(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> Guid {
+        Guid { data1, data2, data3, data4 }
+    }
+}
+
+/// UEFI variables (`FreallyBootCtl`): 960E8856-D6AF-4DCC-B684-E79C91B69B15.
+pub const FREALLY_VENDOR_GUID: Guid =
+    Guid::new(0x960E_8856, 0xD6AF, 0x4DCC, [0xB6, 0x84, 0xE7, 0x9C, 0x91, 0xB6, 0x9B, 0x15]);
+/// GPT type of a Freally system slot: 681F2A69-CE1E-49CC-9B6D-6BC3C0CF4345.
+pub const PART_TYPE_FREALLY_SYSTEM: Guid =
+    Guid::new(0x681F_2A69, 0xCE1E, 0x49CC, [0x9B, 0x6D, 0x6B, 0xC3, 0xC0, 0xCF, 0x43, 0x45]);
+/// GPT type of the Freally data partition: 2F8C112F-817E-4E65-AE8A-48BE3F1AE32C.
+pub const PART_TYPE_FREALLY_DATA: Guid =
+    Guid::new(0x2F8C_112F, 0x817E, 0x4E65, [0xAE, 0x8A, 0x48, 0xBE, 0x3F, 0x1A, 0xE3, 0x2C]);
+
+/// The block size of system images and FreallyFS.
+pub const BLOCK: usize = 4096;
+
+/// The three build flavours. They are mutually exclusive.
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Flavour {
+    Release = 0,
+    Dev = 1,
+    E2e = 2,
+}
+
+impl Flavour {
+    pub const fn from_u32(v: u32) -> Option<Flavour> {
+        match v {
+            0 => Some(Flavour::Release),
+            1 => Some(Flavour::Dev),
+            2 => Some(Flavour::E2e),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Flavour::Release => "release",
+            Flavour::Dev => "dev",
+            Flavour::E2e => "e2e",
+        }
+    }
+}
+
+/// A pointer and a length, as the bootloader hands them to the kernel.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Slice<T> {
+    pub ptr: *const T,
+    pub len: u64,
+}
+
+/// What a range of physical memory is.
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemKind {
+    Usable = 0,
+    Reserved = 1,
+    AcpiReclaim = 2,
+    AcpiNvs = 3,
+    Mmio = 4,
+    Image = 5,
+    BootInfo = 6,
+    RuntimeCode = 7,
+    RuntimeData = 8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MemRegion {
+    pub base: u64,
+    pub len: u64,
+    pub kind: MemKind,
+    pub _pad: u32,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PixelFormat {
+    Bgrx8888 = 0,
+    Rgbx8888 = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Framebuffer {
+    pub base: u64,
+    pub size: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride_px: u32,
+    pub format: PixelFormat,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ImageLoc {
+    pub base: u64,
+    pub len: u64,
+    /// 0 = A, 1 = B.
+    pub slot: u32,
+    pub _pad: u32,
+    pub version: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KernelLoc {
+    pub phys: u64,
+    pub virt: u64,
+    pub len: u64,
+}
+
+/// Raw TSC readings: B0 entry, B1 image read, B2 verified, B3 ExitBootServices.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BootStamps {
+    pub b0: u64,
+    pub b1: u64,
+    pub b2: u64,
+    pub b3: u64,
+}
+
+pub const BOOTINFO_MAGIC: u64 = u64::from_le_bytes(*b"FRLYBOOT");
+pub const BOOTINFO_VERSION: u32 = 1;
+
+/// Handed from the bootloader to the kernel in RDI (PRD § 3).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BootInfo {
+    pub magic: u64,
+    pub version: u32,
+    pub flavour: u32,
+    pub memory_map: Slice<MemRegion>,
+    pub framebuffer: Framebuffer,
+    pub edid: Slice<u8>,
+    pub acpi_rsdp: u64,
+    pub uefi_runtime: u64,
+    pub image: ImageLoc,
+    pub kernel: KernelLoc,
+    pub tsc: BootStamps,
+    pub cmdline: [u8; 256],
+}
+
+/// Error codes (negative in `rax`).
+#[repr(i64)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FErr {
+    BadHandle = -1,
+    WrongType = -2,
+    AccessDenied = -3,
+    InvalidArgs = -4,
+    NoMemory = -5,
+    TimedOut = -6,
+    PeerClosed = -7,
+    ShouldWait = -8,
+    BufferTooSmall = -9,
+    NotFound = -10,
+    AlreadyExists = -11,
+    NotSupported = -12,
+    Busy = -13,
+    BadState = -14,
+    /// A signature or hash failed.
+    Integrity = -15,
+    Internal = -99,
+}
+
+/// Rights on a handle (bit flags).
+pub mod rights {
+    pub const DUPLICATE: u32 = 1 << 0;
+    pub const TRANSFER: u32 = 1 << 1;
+    pub const READ: u32 = 1 << 2;
+    pub const WRITE: u32 = 1 << 3;
+    pub const MAP: u32 = 1 << 4;
+    pub const EXECUTE: u32 = 1 << 5;
+    pub const WAIT: u32 = 1 << 6;
+    pub const SIGNAL: u32 = 1 << 7;
+    pub const MANAGE: u32 = 1 << 8;
+}
+
+/// System call numbers, Freally Core v0.4 (PRD § 4). Number in `rax`.
+pub mod syscall {
+    /// Dev flavour only: compiled out of release.
+    pub const DEBUG_LOG: u64 = 0;
+    pub const PROCESS_CREATE: u64 = 1;
+    pub const PROCESS_START: u64 = 2;
+    pub const PROCESS_EXIT: u64 = 3;
+    pub const PROCESS_KILL: u64 = 4;
+    pub const PROCESS_INFO: u64 = 5;
+    pub const THREAD_CREATE: u64 = 6;
+    pub const THREAD_START: u64 = 7;
+    pub const THREAD_EXIT: u64 = 8;
+    pub const THREAD_SET_CLASS: u64 = 9;
+    pub const VMO_CREATE: u64 = 10;
+    pub const VMO_READ: u64 = 11;
+    pub const VMO_WRITE: u64 = 12;
+    pub const VMO_PHYS: u64 = 13;
+    pub const VM_MAP: u64 = 14;
+    pub const VM_UNMAP: u64 = 15;
+    pub const VM_PROTECT: u64 = 16;
+    pub const CHANNEL_CREATE: u64 = 17;
+    pub const CHANNEL_WRITE: u64 = 18;
+    pub const CHANNEL_READ: u64 = 19;
+    pub const CHANNEL_CALL: u64 = 20;
+    pub const OBJECT_WAIT_ONE: u64 = 21;
+    pub const OBJECT_WAIT_MANY: u64 = 22;
+    pub const OBJECT_SIGNAL: u64 = 23;
+    pub const EVENT_CREATE: u64 = 24;
+    pub const HANDLE_CLOSE: u64 = 25;
+    pub const HANDLE_DUPLICATE: u64 = 26;
+    pub const INTERRUPT_BIND: u64 = 27;
+    pub const INTERRUPT_ACK: u64 = 28;
+    pub const MMIO_MAP: u64 = 29;
+    pub const IOPORT_GRANT: u64 = 30;
+    pub const CLOCK_GET: u64 = 31;
+    pub const FUTEX_WAIT: u64 = 32;
+    pub const FUTEX_WAKE: u64 = 33;
+    pub const SYSTEM_INFO: u64 = 34;
+    pub const UEFI_SET_VAR: u64 = 35;
+    /// One past the highest number.
+    pub const COUNT: u64 = 36;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootinfo_magic_spells_frlyboot() {
+        assert_eq!(&BOOTINFO_MAGIC.to_le_bytes(), b"FRLYBOOT");
+    }
+
+    #[test]
+    fn guid_is_sixteen_bytes() {
+        assert_eq!(core::mem::size_of::<Guid>(), 16);
+    }
+
+    #[test]
+    fn flavours_round_trip() {
+        for f in [Flavour::Release, Flavour::Dev, Flavour::E2e] {
+            assert_eq!(Flavour::from_u32(f as u32), Some(f));
+        }
+        assert_eq!(Flavour::from_u32(3), None);
+    }
+}

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "xtask"
+description = "Freally OS's build tool (host, std only): build, pack, sign, run, ci, release."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcore-abi.workspace = true
+fcrypto.workspace = true
+
+[lints]
+workspace = true

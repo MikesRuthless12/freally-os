@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: Apache-2.0
+//! CRC-32C (Castagnoli): reflected polynomial 0x82F63B78, initial value and final
+//! XOR 0xFFFFFFFF (RFC 3720 § B.4). For integrity only; it's not a MAC.
+
+const POLY: u32 = 0x82F6_3B78;
+
+const TABLE: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 { (c >> 1) ^ POLY } else { c >> 1 };
+            k += 1;
+        }
+        t[i] = c;
+        i += 1;
+    }
+    t
+};
+
+/// A running CRC-32C, for data that arrives in pieces.
+#[derive(Clone, Copy)]
+pub struct Crc32c(u32);
+
+impl Default for Crc32c {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Crc32c {
+    pub const fn new() -> Crc32c {
+        Crc32c(0xFFFF_FFFF)
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        let mut c = self.0;
+        for &b in data {
+            c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+        }
+        self.0 = c;
+    }
+
+    pub fn finish(self) -> u32 {
+        self.0 ^ 0xFFFF_FFFF
+    }
+}
+
+/// The CRC-32C of `data`.
+pub fn crc32c(data: &[u8]) -> u32 {
+    let mut c = Crc32c::new();
+    c.update(data);
+    c.finish()
+}

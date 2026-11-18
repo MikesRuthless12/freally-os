@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Always build through xtask: the bootloader, the kernel and user space each need
+# their own target and flags. xtask also sets CARGO_TARGET_DIR=$HOME/.freally-target.
+[alias]
+xtask = "run --quiet --package xtask --"

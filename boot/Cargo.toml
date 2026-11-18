@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "freally-boot"
+description = "freally-boot: Freally OS's own UEFI bootloader (BOOTX64.EFI). Verifies the system image before anything runs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Exactly one flavour, chosen by `cargo xtask build`: it decides which public keys are embedded.
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fcrypto.workspace = true
+
+[lints]
+workspace = true
