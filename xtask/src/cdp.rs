@@ -130,7 +130,7 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         o.slot_b = match s.get("slot_b").and_then(Value::as_str) {
             Some("crash-test") => Some(build::crash_test(flavour)?),
             Some("same") => {
-                let b = build::build_full(flavour, true, &[])?;
+                let b = build::build_full(flavour, true, &[], &[])?;
                 let out = b.dir.join("SYSTEM_B.FSI");
                 std::fs::copy(&b.image, &out).map_err(|e| e.to_string())?;
                 Some(out)
@@ -147,7 +147,13 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
             .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
             .unwrap_or_default();
         let features: Vec<&str> = features.iter().map(String::as_str).collect();
-        let built = build::build_full(flavour, true, &features)?;
+        let without: Vec<String> = s
+            .get("without")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        let without: Vec<&str> = without.iter().map(String::as_str).collect();
+        let built = build::build_full(flavour, true, &features, &without)?;
         let (g, t) = run_setup(setup, &o, &built, &ids)?;
         green += g;
         total += t;

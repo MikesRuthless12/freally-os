@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use fcore_abi::{FErr, well_known};
 use fwire::HandleRef;
-use fwire::proto::conductor::{self as c, ByName, Connected, Register, Start};
+use fwire::proto::conductor::{self as c, ByName, Connected, Register, Stamp, Start};
 
 struct State {
     name: String,
@@ -110,4 +110,35 @@ pub fn register(endpoint: Channel) -> Result<(), CallError> {
         Instant::after(Duration::from_secs(2)),
     )?;
     Ok(())
+}
+
+/// Marks a boot stage (PRD § 3) at TSC `tsc`: S3 (13) is stage's, S4 (14)
+/// the desktop's. Conductor takes each once, from its own service only.
+pub fn stamp(stage: u8, tsc: u64) -> Result<(), CallError> {
+    let mut st = STATE.0.borrow_mut();
+    let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
+    s.directory.call::<_, ()>(c::STAMP, &Stamp { stage, tsc }, Vec::new(), Instant::after(Duration::from_secs(2)))?;
+    Ok(())
+}
+
+/// The font a `fonts` grant carried as `font:<file>` (FR-026): conductor
+/// writes its length (u64, little-endian) and then the file; mapped
+/// read-only for as long as the service runs.
+pub fn font(file: &str) -> Result<&'static [u8], FErr> {
+    let h = take_handle(&alloc::format!("font:{file}")).ok_or(FErr::NotFound)?;
+    let mut len = [0u8; 8];
+    crate::sys::vmo_read(h.raw(), 0, &mut len)?;
+    let len = u64::from_le_bytes(len);
+    let at = crate::sys::vm_map(
+        well_known::SELF_ASPACE,
+        h.raw(),
+        0,
+        (len + 8).next_multiple_of(4096),
+        0,
+        fcore_abi::perm::READ,
+    )?;
+    // The mapping lives as long as the service: keep the VMO's handle with it.
+    core::mem::forget(h);
+    // SAFETY: the kernel just mapped len + 8 readable bytes at `at`; they stay mapped.
+    Ok(unsafe { core::slice::from_raw_parts((at + 8) as *const u8, len as usize) })
 }

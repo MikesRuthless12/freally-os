@@ -3,6 +3,7 @@
   "about": "Every feature of Freally OS, one tagged spec each, driven over CDP by tools/cdp-runner. A feature without a spec, or a spec without a feature, fails the run.",
   "setups": {
     "e2e": { "flavour": "e2e" },
+    "e2e-no-stage": { "flavour": "e2e", "without": ["stage"] },
     "dev": { "flavour": "dev" },
     "e2e-tampered": { "flavour": "e2e", "tamper": 9000 },
     "release": { "flavour": "release" },
@@ -16,9 +17,9 @@
     {
       "id": "boot.title",
       "task": "TASK-008",
-      "setup": "e2e",
+      "setup": "e2e-no-stage",
       "spec": "e2e/os/specs/boot.rs",
-      "what": "The bootloader verifies the signed image and paints Freally OS vX.Y.Z in Noto Sans: the whole screen, pixel for pixel."
+      "what": "The bootloader verifies the signed image and paints Freally OS vX.Y.Z in Noto Sans: the whole screen, pixel for pixel (an image without stage, so the title stays)."
     },
     {
       "id": "boot.integrity",
@@ -46,7 +47,7 @@
       "task": "TASK-018",
       "setup": "e2e",
       "spec": "e2e/os/specs/boot.rs",
-      "what": "Boot services exit, the runtime services move to the direct map, and Freally Core is entered with a BootInfo it accepts, then paints its screen."
+      "what": "Boot services exit, the runtime services move to the direct map, and Freally Core is entered with a BootInfo it accepts, then paints its screen; the boot reaches stage's first frame."
     },
     {
       "id": "kernel.panic_screen",
@@ -112,6 +113,13 @@
       "what": "The PS/2 mouse, found with its IntelliMouse wheel, reports through IRQ 12 every movement on both axes, each of its three buttons, and the wheel both ways, in HID's directions."
     },
     {
+      "id": "stage.windows",
+      "task": "TASK-057",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/stage.rs",
+      "what": "Stage's windows on the real screen: opened centred and cascaded, raised and focused by a press, moved by their strip, Alt+Tab, Alt+F4 and the close button, keys to the focused window only, in both themes."
+    },
+    {
       "id": "input.absent",
       "task": "TASK-043",
       "setup": "e2e-no-ps2",
@@ -137,7 +145,7 @@
       "task": "TASK-047",
       "setup": "e2e",
       "spec": "e2e/os/specs/boot.rs",
-      "what": "Every boot stage from B0 to S2 is stamped, in order, and conductor says them in one line; the firmware's own FPDT times are shown apart, or their absence said."
+      "what": "Conductor's boot line holds every stage B0 to S3 in order, B0 at 0, and the firmware's own times (or that there's no FPDT)."
     },
     {
       "id": "boot.fallback",

@@ -10,6 +10,7 @@
 //! - `devices`, `fbfill <rrggbb>`: devmgr's PCI list; a whole-screen fill.
 //! - `bootctl`: the A/B record (`slot A Good 0.4.0`, `active A`, `booted A`);
 //!   `bootctl trial b`: slot B on trial from the next boot (`@boot.fallback`).
+//! - `stage …`: windows through stage's own protocol (`door_stage.rs`).
 //! - `echo <n> [ms]`: `ok`, then the next `n` bytes that arrive go straight
 //!   back. With `ms`, the door first stops reading for that long, so the
 //!   driver's channel fills and it has to hold the line (`@serial.echo`).
@@ -41,11 +42,20 @@ pub struct Door {
     echo: usize,
     /// Not reading the port until then (ns): an echo's deliberate stall.
     stall_until: u64,
+    /// The door's windows (`stage …`).
+    stage: crate::door_stage::StageDoor,
 }
 
 impl Door {
     pub fn open() -> Door {
-        Door { port: None, lines: Framer::new(), out: Vec::new(), echo: 0, stall_until: 0 }
+        Door {
+            port: None,
+            lines: Framer::new(),
+            out: Vec::new(),
+            echo: 0,
+            stall_until: 0,
+            stage: crate::door_stage::StageDoor::default(),
+        }
     }
 
     /// The port's channel, for conductor's wait: it wakes when bytes arrive.
@@ -271,6 +281,11 @@ impl Door {
                 (_, None) => self.send("error: no A/B record"),
                 _ => self.send("error: bootctl, or bootctl trial b"),
             },
+            "stage" => {
+                for line in self.stage.run(c, arg) {
+                    self.send(&line);
+                }
+            }
             "services" => {
                 let lines: Vec<String> =
                     c.services.iter().map(|s| alloc::format!("svc {} {:?}", s.m.name, s.state)).collect();

@@ -13,6 +13,7 @@ fimage.workspace = true
 fjson.workspace = true
 fscreen.workspace = true
 fsi.workspace = true
+fui.workspace = true
 
 [lints]
 workspace = true

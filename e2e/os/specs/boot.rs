@@ -21,7 +21,9 @@ pub fn integrity(ctx: &mut Ctx) -> Result<(), String> {
 
 /// `@boot.release`: the release bootloader boots its staging-signed image.
 pub fn release(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.expect_screen(Expect::Title { note: "Freally Core is running." })?;
+    // A release image's logs stay off COM1: the screen is the proof it came
+    // up, stage's first frame (the ground; the desktop's wallpaper, TASK-059).
+    ctx.expect_screen(Expect::Fill(fui::tokens_gen::dark::COLOR_BG.xrgb()))?;
     ctx.expect_log("freally-boot 0.1.0 (release)")?;
     ctx.expect_log("signed by the staging key")
 }
@@ -53,7 +55,16 @@ pub fn conductor(ctx: &mut Ctx) -> Result<(), String> {
     if ms == 0 || ms > 3_000 {
         return Err(format!("C0 came {ms} ms after B0 (the boot budget is 3,000 ms)"));
     }
-    ctx.expect_screen(Expect::Title { note: "Freally Core is running." })
+    desktop(ctx)
+}
+
+/// Stage's first frame is on the screen: the dark ground, everywhere (the
+/// desktop's wallpaper and Rack join it in TASK-059). From S3 the screen is
+/// stage's; the bootloader's title stays only in `@boot.title`'s image,
+/// which has no stage.
+fn desktop(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("stage: first frame")?;
+    ctx.expect_screen(Expect::Fill(fui::tokens_gen::dark::COLOR_BG.xrgb()))
 }
 
 pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
@@ -62,7 +73,7 @@ pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("freally-boot: jumping to Freally Core")?;
     ctx.expect_log("freally-core 0.1.0 entered")?;
     ctx.expect_log("freally-core: memory ready")?;
-    ctx.expect_screen(Expect::Title { note: "Freally Core is running." })
+    desktop(ctx)
 }
 
 /// Resets the VM (QMP system_reset, as a restart button does) and waits for
@@ -151,13 +162,18 @@ pub fn trial(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
-/// `@boot.timeline`: conductor's one `boot:` line holds every stage from B0
-/// to S2, in order, each no earlier than the one before, B0 at 0 (K3, all
-/// CPUs online, joins with SMP: TASK-036); and the firmware's own times from
-/// the FPDT, F0 before F1, or that there's no FPDT (TASK-047, FR-004).
+/// `@boot.timeline`: conductor's `boot:` line, said again when stage stamps
+/// S3, holds every stage from B0 to S3, in order, each no earlier than the
+/// one before, B0 at 0 (K3, all CPUs online, joins with SMP: TASK-036); and
+/// the firmware's own times from the FPDT, F0 before F1, or that there's no
+/// FPDT (TASK-047, TASK-057, FR-004).
 pub fn timeline(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.expect_log("conductor: boot: ")?;
-    let line = ctx.log_line_with("conductor: boot: ").ok_or("no boot line")?;
+    ctx.expect_log(" S3=")?;
+    let line = ctx
+        .log_lines_with("conductor: boot: ")
+        .into_iter()
+        .find(|l| l.contains(" S3="))
+        .ok_or("no boot line with S3")?;
     let body = line.split("conductor: boot: ").nth(1).unwrap_or_default();
     let (stages, firmware) = body.split_once("ms after B0; firmware ").ok_or(format!("unreadable: {line}"))?;
     let mut seen: Vec<(String, f64)> = Vec::new();
@@ -166,7 +182,7 @@ pub fn timeline(ctx: &mut Ctx) -> Result<(), String> {
         let ms: f64 = ms.parse().map_err(|_| format!("unreadable time {pair:?} in {line}"))?;
         seen.push((name.to_string(), ms));
     }
-    let want = ["B0", "B1", "B2", "B3", "K0", "K1", "K2", "C0", "S1", "S2"];
+    let want = ["B0", "B1", "B2", "B3", "K0", "K1", "K2", "C0", "S1", "S2", "S3"];
     let names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).filter(|n| *n != "K3").collect();
     if names != want {
         return Err(format!("the stages are {names:?}, not {want:?}: {line}"));

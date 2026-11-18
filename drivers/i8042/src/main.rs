@@ -289,8 +289,10 @@ fn run(_bootstrap: u32) -> i64 {
                             }
                         }
                     }
+                    // A subscriber gone is dropped; one that's behind (its
+                    // queue full) loses the event, never its subscription.
                     for e in &out {
-                        subscribers.retain(|s| s.send(e, Vec::new()).is_ok());
+                        subscribers.retain(|s| s.send(e, Vec::new()) != Err(FErr::PeerClosed));
                     }
                 }
                 let _ = fstd::sys::call1(nr::INTERRUPT_ACK, [kbd.raw() as u64, 0, 0, 0, 0, 0]);

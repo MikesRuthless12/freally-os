@@ -9,6 +9,8 @@ extern crate alloc;
 mod bootctl;
 #[cfg(feature = "flavour-e2e")]
 mod door;
+#[cfg(feature = "flavour-e2e")]
+mod door_stage;
 mod faults;
 mod image;
 mod loader;

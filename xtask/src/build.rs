@@ -97,6 +97,7 @@ pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "svc-devmgr", bin: "devmgr", path: "/system/services/devmgr", kind: fsi::Kind::Service },
     UserProgram { package: "drv-gop-fb", bin: "drv-gop-fb", path: "/system/drivers/gop-fb", kind: fsi::Kind::Driver },
     UserProgram { package: "drv-i8042", bin: "drv-i8042", path: "/system/drivers/i8042", kind: fsi::Kind::Driver },
+    UserProgram { package: "svc-stage", bin: "stage", path: "/system/services/stage", kind: fsi::Kind::Service },
     UserProgram {
         package: "drv-uart16550",
         bin: "drv-uart16550",
@@ -161,11 +162,13 @@ pub fn build(flavour: Flavour) -> Result<Built, String> {
 /// `signed = false` leaves the signature empty: an image no bootloader accepts,
 /// made only where there are no keys (the ci-linux container) to compare hashes.
 pub fn build_with(flavour: Flavour, signed: bool) -> Result<Built, String> {
-    build_full(flavour, signed, &[])
+    build_full(flavour, signed, &[], &[])
 }
 
 /// The whole flavour: bootloader, kernel (with `kernel_features` added), image.
-pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> Result<Built, String> {
+/// `without` names services a test image leaves out (`@boot.title`'s image
+/// has no stage, so the title stays on the screen).
+pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str], without: &[&str]) -> Result<Built, String> {
     let out = util::target_dir().join("freally").join(flavour.name());
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
 
@@ -189,7 +192,7 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> R
     let kernel = build_kernel(flavour, kernel_features)?;
 
     // 3. User space: conductor, and the test program in test images.
-    let mut programs = pack::programs_for(flavour)?;
+    let mut programs = pack::programs_for(flavour, without)?;
     if kernel_features.contains(&"ktest") {
         programs.extend(TEST_PROGRAMS);
     }
@@ -197,7 +200,7 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> R
 
     // 4. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");
-    pack::pack(flavour, &image, &kernel, &user)?;
+    pack::pack(flavour, &image, &kernel, &user, without)?;
     if signed {
         pack::sign(&image, pack::signing_key(flavour))?;
     }
@@ -227,7 +230,7 @@ pub fn build_cmd(args: &[String]) -> Result<(), String> {
 /// A slot-B image that panics in Freally Core, before conductor (TASK-045's
 /// `@boot.fallback`): `target/freally/<flavour>-crash-test/SYSTEM_B.FSI`.
 pub fn crash_test(flavour: Flavour) -> Result<PathBuf, String> {
-    let b = build_full(flavour, true, &["crash-ud2"])?;
+    let b = build_full(flavour, true, &["crash-ud2"], &[])?;
     let dir = util::target_dir().join("freally").join(format!("{}-crash-test", flavour.name()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join("SYSTEM_B.FSI");

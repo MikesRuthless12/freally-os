@@ -49,9 +49,26 @@ pub fn build_facts() -> Result<([u8; 20], u64), String> {
     Ok((id, time))
 }
 
+/// The fonts every image carries (FR-026), and their licence: stage and the
+/// apps get them through the `fonts` grant.
+pub const FONTS: &[(&str, Kind)] = &[
+    ("NotoSans-Regular.ttf", Kind::Font),
+    ("NotoSans-Medium.ttf", Kind::Font),
+    ("NotoSans-SemiBold.ttf", Kind::Font),
+    ("NotoSansMono-Regular.ttf", Kind::Font),
+    ("NotoSansSymbols2-Regular.ttf", Kind::Font),
+    ("OFL.txt", Kind::Data),
+];
+
 /// Packs the flavour's image, unsigned, with `key_id` set for its signing key.
 /// `user` lists each user program: its image path, its kind and its built ELF.
-pub fn pack(flavour: Flavour, out: &Path, kernel: &Path, user: &[(String, Kind, PathBuf)]) -> Result<(), String> {
+pub fn pack(
+    flavour: Flavour,
+    out: &Path,
+    kernel: &Path,
+    user: &[(String, Kind, PathBuf)],
+    without: &[&str],
+) -> Result<(), String> {
     let (build_id, created) = build_facts()?;
     let public = keys::committed_public(signing_key(flavour))?;
     let root = util::repo_root();
@@ -64,13 +81,17 @@ pub fn pack(flavour: Flavour, out: &Path, kernel: &Path, user: &[(String, Kind, 
         format!("Freally OS {} ({})\n", fcore_abi::VERSION, flavour.name()).into_bytes(),
     );
     b.add("/system/NOTICE", Kind::Data, 0, notice);
+    for (file, kind) in FONTS {
+        let bytes = std::fs::read(root.join("assets/fonts/noto").join(file)).map_err(|e| format!("{file}: {e}"))?;
+        b.add(&format!("/system/fonts/{file}"), *kind, 0, bytes);
+    }
     let elf = std::fs::read(kernel).map_err(|e| format!("{}: {e} (build it: cargo xtask build)", kernel.display()))?;
     b.add("/system/kernel", Kind::Kernel, 0, elf);
     for (path, kind, elf) in user {
         let bytes = std::fs::read(elf).map_err(|e| format!("{}: {e}", elf.display()))?;
         b.add(path, *kind, 0, bytes);
     }
-    for (name, text) in manifests(flavour)? {
+    for (name, text) in manifests(flavour)?.into_iter().filter(|(n, _)| !without.contains(&n.as_str())) {
         let m = fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?;
         if !user.iter().any(|(p, ..)| *p == m.binary) {
             return Err(format!("manifests/{name}.svc names {}, which this image doesn't carry", m.binary));
@@ -82,10 +103,11 @@ pub fn pack(flavour: Flavour, out: &Path, kernel: &Path, user: &[(String, Kind, 
 }
 
 /// The programs a flavour's image carries: those its manifests name, so a
-/// dev- or e2e-only program never reaches a release image (FR-037).
-pub fn programs_for(flavour: Flavour) -> Result<Vec<&'static crate::build::UserProgram>, String> {
+/// dev- or e2e-only program never reaches a release image (FR-037); less the
+/// services `without` names (a test image's).
+pub fn programs_for(flavour: Flavour, without: &[&str]) -> Result<Vec<&'static crate::build::UserProgram>, String> {
     let mut binaries = Vec::new();
-    for (name, text) in manifests(flavour)? {
+    for (name, text) in manifests(flavour)?.into_iter().filter(|(n, _)| !without.contains(&n.as_str())) {
         binaries.push(fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?.binary);
     }
     Ok(crate::build::PROGRAMS.iter().filter(|p| binaries.iter().any(|b| b == p.path)).collect())
@@ -140,8 +162,8 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let user = crate::build::build_user(&programs_for(flavour)?, flavour)?;
-    pack(flavour, &out, &crate::build::kernel_path(), &user)?;
+    let user = crate::build::build_user(&programs_for(flavour, &[])?, flavour)?;
+    pack(flavour, &out, &crate::build::kernel_path(), &user, &[])?;
     println!("pack: {} (unsigned, for the {} key)", out.display(), signing_key(flavour).as_str());
     Ok(())
 }

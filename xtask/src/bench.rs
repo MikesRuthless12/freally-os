@@ -19,7 +19,7 @@ pub fn bench_cmd(args: &[String]) -> Result<(), String> {
 
 /// The median channel round trip (ns); an error above the 5 µs target.
 pub fn ipc() -> Result<u64, String> {
-    let built = build::build_full(Flavour::Dev, true, &["bench-ipc"])?;
+    let built = build::build_full(Flavour::Dev, true, &["bench-ipc"], &[])?;
     let mut o = VmOptions::new(Flavour::Dev, "bench");
     o.headless = true;
     o.port_offset = 700;

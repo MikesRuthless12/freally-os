@@ -21,6 +21,8 @@ mod kernel;
 mod services;
 #[path = "../../../e2e/site/specs/site.rs"]
 mod site_specs;
+#[path = "../../../e2e/os/specs/stage.rs"]
+mod stage;
 
 use cdp_proto::Cdp;
 use fjson::Value;
@@ -53,6 +55,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.timeline", boot::timeline),
     ("boot.fallback", boot::fallback),
     ("boot.trial", boot::trial),
+    ("stage.windows", stage::windows),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

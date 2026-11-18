@@ -44,9 +44,15 @@ pub struct Conductor {
     pub image: Image,
     pub services: Vec<Service>,
     pub faults: Kept,
-    /// TSC stamps conductor makes (S1, S2), raw.
+    /// TSC stamps conductor makes (S1, S2), raw; and those stage and the
+    /// desktop send (S3, S4).
     pub s1: u64,
     pub s2: u64,
+    pub s3: u64,
+    pub s4: u64,
+    /// The image's fonts, each copied once into a VMO; services granted
+    /// `fonts` get read-only duplicates.
+    fonts: Vec<(String, Handle)>,
     /// Lines for the test door to send (e2e): the restart reports.
     pub door_out: Vec<String>,
     /// The A/B record (TASK-045).
@@ -89,7 +95,19 @@ impl Conductor {
             })
             .collect();
         let boot = crate::bootctl::Boot::new(image.slot, &image.bootctl);
-        Conductor { image, services, faults: Kept::new(), s1: 0, s2: 0, door_out: Vec::new(), boot, firmware: None }
+        Conductor {
+            image,
+            services,
+            faults: Kept::new(),
+            s1: 0,
+            s2: 0,
+            s3: 0,
+            s4: 0,
+            fonts: Vec::new(),
+            door_out: Vec::new(),
+            boot,
+            firmware: None,
+        }
     }
 
     /// Queues every boot service, in dependency order.
@@ -105,9 +123,41 @@ impl Conductor {
         self.start_due();
     }
 
+    /// The image's fonts (`/system/fonts/*.ttf`), each in a VMO of its own,
+    /// made on first use: `font:<file>` → the VMO, holding the file's length
+    /// (u64, little-endian) and then the file (`fstd::service::font` reads it).
+    fn font_vmos(&mut self) -> &[(String, Handle)] {
+        if self.fonts.is_empty() {
+            for path in self.image.paths().unwrap_or_default() {
+                let Some(file) = path.strip_prefix("/system/fonts/").filter(|f| f.ends_with(".ttf")) else {
+                    continue;
+                };
+                let made = self.image.file(&path).ok().and_then(|bytes| {
+                    let vmo = Handle::from_raw(fstd::sys::vmo_create(bytes.len() as u64 + 8).ok()?)?;
+                    fstd::sys::vmo_write(vmo.raw(), 0, &(bytes.len() as u64).to_le_bytes()).ok()?;
+                    fstd::sys::vmo_write(vmo.raw(), 8, bytes).ok()?;
+                    Some(vmo)
+                });
+                match made {
+                    Some(vmo) => self.fonts.push((alloc::format!("font:{file}"), vmo)),
+                    None => fstd::error!("conductor: can't hand out {path}"),
+                }
+            }
+        }
+        &self.fonts
+    }
+
     /// The handles a manifest's grants carry, by name.
-    fn granted_handles(&self, m: &Manifest) -> Vec<(String, Handle)> {
+    fn granted_handles(&mut self, m: &Manifest) -> Vec<(String, Handle)> {
         let mut out = Vec::new();
+        if m.grants.iter().any(|g| g == "fonts") {
+            // Read-only: the font's bytes, its length, and nothing to write with.
+            for (name, vmo) in self.font_vmos() {
+                if let Ok(d) = vmo.duplicate(rights::READ | rights::MAP | rights::TRANSFER) {
+                    out.push((name.clone(), d));
+                }
+            }
+        }
         let dup = |h: u32, r: u32| {
             fstd::sys::call1(fcore_abi::syscall::HANDLE_DUPLICATE, [h as u64, r as u64, 0, 0, 0, 0])
                 .ok()
@@ -228,6 +278,7 @@ impl Conductor {
             c::LIST_SERVICES => self.list().map(|b| (b, Vec::new())),
             c::BOOT_TIMELINE => self.timeline(h.txid).map(|b| (b, Vec::new())),
             c::FAULTS => self.faults_page(payload).map(|b| (b, Vec::new())),
+            c::STAMP => self.stamp(&caller, payload).map(|b| (b, Vec::new())),
             _ => Err((FErr::NotSupported, String::from("conductor doesn't serve that"))),
         };
         let msg = match reply {
@@ -316,6 +367,23 @@ impl Conductor {
         }
     }
 
+    /// `stamp`: S3 from stage (its first frame on screen), S4 from the
+    /// desktop (its Rack takes input); each once, from that service only.
+    fn stamp(&mut self, caller: &str, payload: &[u8]) -> Result<Vec<u8>, (FErr, String)> {
+        let s: c::Stamp = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        let slot = match (s.stage, caller) {
+            (13, "stage") => &mut self.s3,
+            (14, "desktop") => &mut self.s4,
+            _ => return Err((FErr::AccessDenied, alloc::format!("{caller} may not stamp stage {}", s.stage))),
+        };
+        if *slot != 0 {
+            return Err((FErr::BadState, String::from("already stamped")));
+        }
+        *slot = s.tsc;
+        fstd::info!("conductor: boot: {}", boot_line(&self.stages()));
+        Ok(Vec::new())
+    }
+
     /// The firmware's own times from the ACPI FPDT (devmgr reads it), if any.
     fn firmware_times(&self) -> Option<(u64, u64)> {
         let ch = self.open_connection("devmgr", "conductor")?;
@@ -392,7 +460,7 @@ impl Conductor {
             .iter()
             .map(|c| (c[0], u64::from_le_bytes(c[1..9].try_into().unwrap_or_default())))
             .collect();
-        for (id, t) in [(11u8, self.s1), (12u8, self.s2)] {
+        for (id, t) in [(11u8, self.s1), (12u8, self.s2), (13u8, self.s3), (14u8, self.s4)] {
             if t != 0 {
                 stamps.push((id, t));
             }

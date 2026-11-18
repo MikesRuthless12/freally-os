@@ -56,6 +56,7 @@ dependencies = [
  "fjson",
  "fscreen",
  "fsi",
+ "fui",
 ]
 
 [[package]]
@@ -271,6 +272,14 @@ dependencies = [
 [[package]]
 name = "svc-stage"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "ffont",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
 
 [[package]]
 name = "svc-updater"
@@ -294,4 +303,6 @@ dependencies = [
  "fsi",
  "fsvc",
  "fui",
+ "fwire",
+ "svc-stage",
 ]

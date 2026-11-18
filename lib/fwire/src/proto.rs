@@ -21,6 +21,8 @@ pub mod conductor {
     /// To a service's registered endpoint: a client connected (an event; the
     /// new channel is handle 0).
     pub const INCOMING: u32 = 10;
+    /// A boot stage the caller marks (PRD § 3): S3 from stage, S4 from desktop.
+    pub const STAMP: u32 = 11;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
@@ -132,6 +134,12 @@ pub mod conductor {
     wire_struct! {
         /// `watch`'s events.
         pub struct ServiceEvent { pub name: String, pub state: ServiceState }
+    }
+
+    wire_struct! {
+        /// `stamp`: the stage (13 for S3, 14 for S4) and the TSC when it
+        /// happened. Only stage may stamp S3 and only desktop S4, once each.
+        pub struct Stamp { pub stage: u8, pub tsc: u64 }
     }
 }
 
@@ -294,5 +302,148 @@ pub mod serial {
 
     wire_struct! {
         pub struct Bytes { pub data: Vec<u8> }
+    }
+}
+
+/// Stage (TASK-057, PRD § 4): windows, their surfaces, and input. A window's
+/// surface is a VMO of premultiplied BGRA pixels (`w × h × 4` bytes, rows
+/// tightly packed) that the client draws into and `present`s.
+pub mod stage {
+    use crate::{HandleRef, wire_enum, wire_struct};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    pub const CREATE_WINDOW: u32 = 1;
+    pub const PRESENT: u32 = 2;
+    pub const RESIZE_SURFACE: u32 = 3;
+    pub const SET_TITLE: u32 = 4;
+    pub const CLOSE_WINDOW: u32 = 5;
+    pub const FOCUS_WINDOW: u32 = 6;
+    pub const SET_CURSOR: u32 = 7;
+    pub const PUBLISH_AX_TREE: u32 = 8;
+    pub const SCREENSHOT: u32 = 9;
+    pub const INJECT_INPUT: u32 = 10;
+    pub const SET_THEME: u32 = 11;
+    pub const SET_SCALE: u32 = 12;
+    /// The e2e door's read-backs (e2e images only; conductor's door only).
+    pub const LIST_WINDOWS: u32 = 100;
+    pub const POINTER: u32 = 101;
+
+    /// Events on a window's channel, stage to client.
+    pub const EV_KEY: u32 = 1;
+    pub const EV_POINTER: u32 = 2;
+    pub const EV_FOCUS: u32 = 3;
+    pub const EV_RESIZE: u32 = 4;
+    pub const EV_THEME: u32 = 5;
+    pub const EV_SCALE: u32 = 6;
+    pub const EV_CLOSE_REQUESTED: u32 = 7;
+
+    wire_enum! {
+        pub enum Kind {
+            /// Decorated, placed by stage, in Alt+Tab.
+            Normal = 0,
+            /// Undecorated, below every normal window, placed by its client
+            /// (the desktop's wallpaper and Rack).
+            Panel = 1,
+            /// Undecorated, above every normal window, placed by its client.
+            Popup = 2,
+            /// The whole screen, undecorated.
+            Fullscreen = 3,
+        }
+    }
+
+    wire_struct! {
+        /// `x`, `y` place a Panel or Popup; stage places the others.
+        pub struct CreateWindow {
+            pub title: String,
+            pub w: u32,
+            pub h: u32,
+            pub min_w: u32,
+            pub min_h: u32,
+            pub kind: Kind,
+            pub x: i32,
+            pub y: i32,
+        }
+    }
+
+    wire_struct! {
+        /// The surface (handle 0) and the window's event channel (handle 1).
+        pub struct Created { pub window_id: u32, pub surface: HandleRef, pub events: HandleRef }
+    }
+
+    wire_struct! {
+        pub struct Rect { pub x: i32, pub y: i32, pub w: u32, pub h: u32 }
+    }
+
+    wire_struct! {
+        /// The parts of the surface that changed, in its own coordinates.
+        pub struct Present { pub window_id: u32, pub damage: Vec<Rect> }
+    }
+
+    wire_struct! {
+        pub struct SetTitle { pub window_id: u32, pub title: String }
+    }
+
+    wire_struct! {
+        /// `close_window` and `focus_window`.
+        pub struct ById { pub window_id: u32 }
+    }
+
+    wire_enum! {
+        pub enum Theme {
+            Dark = 0,
+            Light = 1,
+        }
+    }
+
+    wire_struct! {
+        pub struct SetTheme { pub theme: Theme }
+    }
+
+    wire_struct! {
+        /// One window as the e2e door reads it back: its frame on screen (the
+        /// title strip included), whether it has focus, its place in the
+        /// stacking order (0 at the bottom), and its owner.
+        pub struct WindowInfo {
+            pub window_id: u32,
+            pub title: String,
+            pub kind: Kind,
+            pub frame: Rect,
+            pub focused: bool,
+            pub z: u32,
+            pub owner: String,
+        }
+    }
+
+    wire_struct! {
+        pub struct Windows { pub windows: Vec<WindowInfo>, pub theme: Theme }
+    }
+
+    wire_struct! {
+        pub struct PointerAt { pub x: i32, pub y: i32, pub buttons: u8 }
+    }
+
+    wire_struct! {
+        /// `EV_KEY`: as drv-i8042 gave it.
+        pub struct Key { pub usage: u16, pub down: bool, pub ch: u32, pub modifiers: u8 }
+    }
+
+    wire_enum! {
+        pub enum PointerKind {
+            Move = 0,
+            Down = 1,
+            Up = 2,
+            Wheel = 3,
+        }
+    }
+
+    wire_struct! {
+        /// `EV_POINTER`: in the window's surface coordinates; `dy` is the
+        /// wheel (up positive) for `Wheel`.
+        pub struct Pointer { pub x: i32, pub y: i32, pub buttons: u8, pub kind: PointerKind, pub dx: i32, pub dy: i32 }
+    }
+
+    wire_struct! {
+        pub struct Focus { pub focused: bool }
     }
 }

@@ -16,7 +16,9 @@ ffont = { workspace = true, features = ["raster"] }
 fscreen.workspace = true
 fimage = { workspace = true, features = ["decode"] }
 fui = { workspace = true, features = ["ui"] }
+svc-stage = { path = "../services/stage" }
 fjson.workspace = true
+fwire.workspace = true
 cdp-proto.workspace = true
 
 [lints]

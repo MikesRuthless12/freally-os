@@ -39,7 +39,7 @@ pub fn test_cmd(args: &[String]) -> Result<(), String> {
 /// when it couldn't run at all.
 pub fn run(timeout_secs: u64) -> Result<(Vec<Outcome>, Result<String, String>), String> {
     let timeout = Duration::from_secs(timeout_secs);
-    let built = build::build_full(Flavour::Dev, true, &["ktest"])?;
+    let built = build::build_full(Flavour::Dev, true, &["ktest"], &[])?;
     let mut o = VmOptions::new(Flavour::Dev, "ktest");
     o.headless = true;
     o.tcg = !std::path::Path::new("/dev/kvm").exists();

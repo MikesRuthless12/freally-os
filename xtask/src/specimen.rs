@@ -4,7 +4,8 @@
 //! first use, blended in linear light), on both of the UI kit's grounds, for
 //! the owner's sign-off. Writes `target/specimen/noto-sans.{png,fimg}` (and
 //! `noto-mono.png`: Noto Sans Mono on the terminal's cell grid, and
-//! `controls.png`: TASK-056's controls from the hardware set) and
+//! `controls.png`: TASK-056's controls from the hardware set, and
+//! `stage.png`: TASK-057's windows, composed as stage composes them) and
 //! says which characters of the coverage set (ASCII, Latin-1, the PRD's
 //! specials) the font doesn't draw.
 
@@ -106,6 +107,7 @@ pub fn specimen_cmd(_args: &[String]) -> Result<(), String> {
     println!("specimen: {}", out.join("noto-sans.png").display());
     mono(&dir, &out)?;
     controls(&out)?;
+    stage(&out, &dir)?;
 
     for ((label, _), chain) in WEIGHTS.iter().zip(&chains) {
         let missing: String = coverage().into_iter().filter(|c| !covers(chain, *c)).collect();
@@ -208,5 +210,71 @@ fn controls(out: &std::path::Path) -> Result<(), String> {
     let rgb: Vec<u8> = px.iter().flat_map(|&p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
     std::fs::write(out.join("controls.png"), fimage::png::encode(w, half * 2, 3, &rgb)).map_err(|e| e.to_string())?;
     println!("specimen: {}", out.join("controls.png").display());
+    Ok(())
+}
+
+/// TASK-057's windows, composed by stage's own code at 960 × 600 in both
+/// themes: an unfocused window behind a focused one with a long title cut
+/// short, each surface a client's gradient.
+fn stage(out: &std::path::Path, fonts_dir: &std::path::Path) -> Result<(), String> {
+    use fui::text::{FontData, Fonts};
+    use fui::theme::{Mode, Theme};
+    use fwire::proto::stage::Kind;
+    use svc_stage::compose::{Back, Look, Pixels, compose};
+    use svc_stage::windows::Windows;
+    let read = |f: &str| std::fs::read(fonts_dir.join(f)).map_err(|e| format!("{f}: {e}"));
+    let (r, m, sb, mono, sym) = (
+        read("NotoSans-Regular.ttf")?,
+        read("NotoSans-Medium.ttf")?,
+        read("NotoSans-SemiBold.ttf")?,
+        read("NotoSansMono-Regular.ttf")?,
+        read("NotoSansSymbols2-Regular.ttf")?,
+    );
+    let mut fonts = Fonts::new(FontData { regular: &r, medium: &m, semibold: &sb, mono: &mono, symbols: &sym })
+        .map_err(|e| format!("{e:?}"))?;
+    let (w, h) = (960u32, 600u32);
+    let gradient = |sw: u32, sh: u32, a: u32, b: u32| -> Vec<u32> {
+        let ch = |c: u32, s: u32| (c >> s) & 0xFF;
+        (0..sh)
+            .flat_map(|y| {
+                (0..sw).map(move |x| {
+                    let t = (x + y) as f32 / (sw + sh) as f32;
+                    let mix = |s| ((ch(a, s) as f32 * (1.0 - t) + ch(b, s) as f32 * t) as u32) << s;
+                    0xFF00_0000 | mix(16) | mix(8) | mix(0)
+                })
+            })
+            .collect()
+    };
+    let back_px = gradient(420, 260, 0x1E3A5F, 0x2B6CB0);
+    let front_px = gradient(380, 240, 0x23402A, 0x79D920);
+    let mut all = vec![0u32; (w * h * 2) as usize];
+    for (i, mode) in [Mode::Dark, Mode::Light].into_iter().enumerate() {
+        let mut ws = Windows::new(w, h, 32);
+        let a = ws.create("Monitor", Kind::Normal, (420, 260), (0, 0), (0, 0), (1, "specimen"));
+        ws.move_to(a, 120, 90);
+        let b = ws.create(
+            "Terminal — freally:~ — a title far too long for its strip, cut short",
+            Kind::Normal,
+            (380, 240),
+            (0, 0),
+            (0, 0),
+            (1, "specimen"),
+        );
+        ws.move_to(b, 420, 230);
+        let (sa, sb) = ((420u32, 260u32, &back_px[..]), (380u32, 240u32, &front_px[..]));
+        let mut back = Back::new(w, h);
+        let mut look = Look { theme: Theme::new(mode, 1.0), fonts: &mut fonts };
+        let area = back.rect();
+        let find = |id| match id {
+            _ if id == a => Some(&sa as &dyn Pixels),
+            _ if id == b => Some(&sb as &dyn Pixels),
+            _ => None,
+        };
+        compose(&mut back, area, &ws, &find, &mut look);
+        all[(i as u32 * w * h) as usize..((i as u32 + 1) * w * h) as usize].copy_from_slice(&back.px);
+    }
+    let rgb: Vec<u8> = all.iter().flat_map(|&p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
+    std::fs::write(out.join("stage.png"), fimage::png::encode(w, h * 2, 3, &rgb)).map_err(|e| e.to_string())?;
+    println!("specimen: {}", out.join("stage.png").display());
     Ok(())
 }
