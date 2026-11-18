@@ -11,17 +11,16 @@ const IV: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0
 pub fn sha1_for_websocket_handshake_only(data: &[u8]) -> [u8; 20] {
     let mut h = IV;
     let bits = (data.len() as u64).wrapping_mul(8);
-    let mut chunks = data.chunks_exact(64);
-    for block in &mut chunks {
+    let (blocks, rest) = data.as_chunks::<64>();
+    for block in blocks {
         compress(&mut h, block);
     }
-    let rest = chunks.remainder();
     let mut tail = [0u8; 128];
     tail[..rest.len()].copy_from_slice(rest);
     tail[rest.len()] = 0x80;
     let tail_len = if rest.len() < 56 { 64 } else { 128 };
     tail[tail_len - 8..tail_len].copy_from_slice(&bits.to_be_bytes());
-    for block in tail[..tail_len].chunks_exact(64) {
+    for block in tail[..tail_len].as_chunks::<64>().0 {
         compress(&mut h, block);
     }
     let mut out = [0u8; 20];

@@ -216,7 +216,8 @@ pub fn build(strikes: &[(&crate::ttf::Font, f32, &str)]) -> alloc::vec::Vec<u8> 
         let s = px / font.units_per_em as f32;
         let ascent = crate::fmath::round(font.ascender as f32 * s) as i16;
         let descent = crate::fmath::round(-(font.descender as f32) * s) as i16;
-        let line = crate::fmath::round((font.ascender as f32 - font.descender as f32 + font.line_gap as f32) * s) as i16;
+        let line =
+            crate::fmath::round((font.ascender as f32 - font.descender as f32 + font.line_gap as f32) * s) as i16;
         out.extend_from_slice(&(*px as u16).to_le_bytes());
         out.extend_from_slice(&ascent.to_le_bytes());
         out.extend_from_slice(&descent.to_le_bytes());

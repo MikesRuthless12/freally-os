@@ -62,7 +62,11 @@ impl Value {
     /// The number, if it's a whole number that fits.
     pub fn as_i64(&self) -> Option<i64> {
         let n = self.as_f64()?;
-        if whole(n) && (-9_007_199_254_740_992.0..=9_007_199_254_740_992.0).contains(&n) { Some(n as i64) } else { None }
+        if whole(n) && (-9_007_199_254_740_992.0..=9_007_199_254_740_992.0).contains(&n) {
+            Some(n as i64)
+        } else {
+            None
+        }
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -407,7 +411,10 @@ mod tests {
         let text = r#"{"id":7,"method":"Page.captureScreenshot","params":{"format":"png","clip":{"x":1.5,"y":0,"scale":1}},"ok":true,"none":null,"list":[1,-2,"three"]}"#;
         let v = parse(text).unwrap();
         assert_eq!(v.get("id").and_then(Value::as_i64), Some(7));
-        assert_eq!(v.get("params").and_then(|p| p.get("clip")).and_then(|c| c.get("x")).and_then(Value::as_f64), Some(1.5));
+        assert_eq!(
+            v.get("params").and_then(|p| p.get("clip")).and_then(|c| c.get("x")).and_then(Value::as_f64),
+            Some(1.5)
+        );
         assert_eq!(v.to_json(), text);
     }
 
@@ -422,7 +429,21 @@ mod tests {
 
     #[test]
     fn rejects_what_rfc_8259_rejects() {
-        for bad in ["", "{", "[1,]", "{\"a\":1,}", "01", "1.", "-", "\"\\x\"", "\"\\ud800\"", "nul", "[1] 2", "{a:1}", "\"a\nb\""] {
+        for bad in [
+            "",
+            "{",
+            "[1,]",
+            "{\"a\":1,}",
+            "01",
+            "1.",
+            "-",
+            "\"\\x\"",
+            "\"\\ud800\"",
+            "nul",
+            "[1] 2",
+            "{a:1}",
+            "\"a\nb\"",
+        ] {
             assert!(parse(bad).is_err(), "{bad:?} parsed");
         }
     }

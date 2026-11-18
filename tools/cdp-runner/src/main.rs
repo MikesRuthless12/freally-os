@@ -20,9 +20,12 @@ use fjson::Value;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// A spec: drives the VM through `Ctx`, `Err` says what was wrong.
+pub type Spec = fn(&mut Ctx) -> Result<(), String>;
+
 /// Every spec, by its coverage id. `cargo xtask cdp` checks this list and
 /// `e2e/os/coverage.json` name the same features.
-pub const SPECS: &[(&str, fn(&mut Ctx) -> Result<(), String>)] = &[
+pub const SPECS: &[(&str, Spec)] = &[
     ("boot.title", boot::title),
     ("boot.integrity", boot::integrity),
     ("boot.release", boot::release),

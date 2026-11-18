@@ -105,13 +105,7 @@ impl Fe {
         let r4 = r4 + (r3 >> 51);
         let l0 = (r0 & m51) + (r4 >> 51) * 19;
         let l1 = (r1 & m51) + (l0 >> 51);
-        Fe([
-            (l0 & m51) as u64,
-            l1 as u64,
-            (r2 & m51) as u64,
-            (r3 & m51) as u64,
-            (r4 & m51) as u64,
-        ])
+        Fe([(l0 & m51) as u64, l1 as u64, (r2 & m51) as u64, (r3 & m51) as u64, (r4 & m51) as u64])
     }
 
     const fn square(&self) -> Fe {
@@ -155,7 +149,7 @@ impl Fe {
 
     /// The canonical encoding (fully reduced mod p), as in curve25519-donna's
     /// contraction: carry twice, add 19, carry, add 2^255 − 19, carry, drop 2^255.
-    const fn to_bytes(&self) -> [u8; 32] {
+    const fn to_bytes(self) -> [u8; 32] {
         let mut t = self.0;
         let mut pass = 0;
         while pass < 2 {
@@ -376,10 +370,8 @@ fn reduce_wide(x: &[u64; 8]) -> [u64; 4] {
 
 fn words_from_bytes<const N: usize>(b: &[u8]) -> [u64; N] {
     let mut w = [0u64; N];
-    for (i, chunk) in b.chunks_exact(8).enumerate().take(N) {
-        let mut a = [0u8; 8];
-        a.copy_from_slice(chunk);
-        w[i] = u64::from_le_bytes(a);
+    for (i, chunk) in b.as_chunks::<8>().0.iter().enumerate().take(N) {
+        w[i] = u64::from_le_bytes(*chunk);
     }
     w
 }

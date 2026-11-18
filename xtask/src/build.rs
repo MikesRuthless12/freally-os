@@ -34,22 +34,19 @@ pub fn build(flavour: Flavour) -> Result<Built, String> {
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
 
     // 1. The bootloader, with this flavour's keys.
-    util::run_ok(
-        util::cargo()
-            .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags())
-            .env_remove("RUSTFLAGS")
-            .args([
-                "build",
-                "--quiet",
-                "--package",
-                "freally-boot",
-                "--target",
-                "x86_64-unknown-uefi",
-                "--release",
-                "--features",
-                &format!("flavour-{}", flavour.name()),
-            ]),
-    )?;
+    util::run_ok(util::cargo().env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags()).env_remove("RUSTFLAGS").args(
+        [
+            "build",
+            "--quiet",
+            "--package",
+            "freally-boot",
+            "--target",
+            "x86_64-unknown-uefi",
+            "--release",
+            "--features",
+            &format!("flavour-{}", flavour.name()),
+        ],
+    ))?;
     let efi_src = util::target_dir().join("x86_64-unknown-uefi/release/freally-boot.efi");
     let efi = out.join("BOOTX64.EFI");
     std::fs::copy(&efi_src, &efi).map_err(|e| format!("can't copy {}: {e}", efi_src.display()))?;

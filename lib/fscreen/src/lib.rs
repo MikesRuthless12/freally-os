@@ -92,6 +92,12 @@ pub fn integrity(c: &mut Canvas, reason: &str) -> Rect {
     let r = centred(c, &big, baseline, &["Freally OS didn’t start"], colours::ERROR);
     let line = small.line_height as i32;
     centred(c, &small, baseline + 2 * line, &[reason], colours::TEXT);
-    centred(c, &small, baseline + 3 * line, &["Nothing from this image was run. Copy a fresh image to this drive to start again."], colours::TEXT_MUTED);
+    centred(
+        c,
+        &small,
+        baseline + 3 * line,
+        &["Nothing from this image was run. Copy a fresh image to this drive to start again."],
+        colours::TEXT_MUTED,
+    );
     r
 }

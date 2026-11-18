@@ -126,7 +126,7 @@ pub(crate) fn check(toc: &[u8], image_len: u64, data_end: u64) -> Result<(), Fsi
             && e.flags & !(FLAG_DEV_ONLY | FLAG_E2E_ONLY) == 0
             && raw[100..104].iter().all(|&b| b == 0)
             && raw[152..160].iter().all(|&b| b == 0)
-            && e.offset % BLOCK as u64 == 0
+            && e.offset.is_multiple_of(BLOCK as u64)
             && e.offset >= toc_end
             && e.offset.checked_add(e.len).is_some_and(|end| end <= data_end && end <= image_len);
         if !well_formed {

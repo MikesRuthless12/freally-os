@@ -101,8 +101,9 @@ pub fn keygen(args: &[String]) -> Result<(), String> {
 /// Reads a secret seed, refusing a file anyone but its owner can read.
 pub fn load_seed(name: KeyName) -> Result<[u8; 32], String> {
     let path = name.secret_path();
-    let meta = fs::metadata(&path)
-        .map_err(|_| format!("no {} key at {} (run: cargo xtask keygen --{})", name.as_str(), path.display(), name.as_str()))?;
+    let meta = fs::metadata(&path).map_err(|_| {
+        format!("no {} key at {} (run: cargo xtask keygen --{})", name.as_str(), path.display(), name.as_str())
+    })?;
     if meta.permissions().mode() & 0o077 != 0 {
         return Err(format!("{} is readable by others; chmod 600 it", path.display()));
     }
@@ -148,7 +149,8 @@ pub fn write_keys_rs() -> Result<(), String> {
 //! - A **release** bootloader trusts only the staging key until `v0.8.0`, then
 //!   only the release key, made in Phase 7's key ceremony (TASK-109).
 
-/// The dev key: signs dev and e2e images.
+/// The dev key: signs dev and e2e images (a release bootloader never trusts it).
+#[cfg_attr(feature = \"flavour-release\", allow(dead_code))]
 pub const DEV: [u8; 32] = {dev};
 
 /// The staging key: signs release-flavour images until the release key exists.

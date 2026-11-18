@@ -178,7 +178,6 @@ pub fn decode_stored(png: &[u8]) -> Result<Decoded, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     #[test]
     fn crc32_check_value() {
@@ -203,7 +202,7 @@ mod tests {
 
     #[test]
     fn a_damaged_png_is_refused() {
-        let png = encode(4, 4, 4, &vec![7u8; 64]);
+        let png = encode(4, 4, 4, &[7u8; 64]);
         for i in [8, 20, 40, png.len() - 6] {
             let mut bad = png.clone();
             bad[i] ^= 1;

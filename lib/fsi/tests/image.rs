@@ -69,7 +69,13 @@ fn every_single_bit_flip_is_detected() {
         bad[bit / 8] ^= 1 << (bit % 8);
         assert!(verify(&bad, &trusted).is_err(), "bit {bit} (byte {}) flipped, still verified", bit / 8);
         let byte = bit / 8;
-        caught[if byte < 4096 { 0 } else if byte < tree_offset { 1 } else { 2 }] += 1;
+        caught[if byte < 4096 {
+            0
+        } else if byte < tree_offset {
+            1
+        } else {
+            2
+        }] += 1;
     }
     // The flips really did land in every region.
     assert!(caught.iter().all(|&n| n > 0), "{caught:?}");

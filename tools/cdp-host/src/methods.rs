@@ -17,7 +17,11 @@ pub fn call(qmp: &mut Qmp, shot_dir: &Path, method: &str, params: &Value) -> Res
             let _ = qmp.execute("quit", None);
             Ok(Value::Obj(Vec::new()))
         }
-        m if m.starts_with("DOM.") || m.starts_with("Accessibility.") || m.starts_with("Freally.") || m == "Input.insertText" => {
+        m if m.starts_with("DOM.")
+            || m.starts_with("Accessibility.")
+            || m.starts_with("Freally.")
+            || m == "Input.insertText" =>
+        {
             Err((-32601, format!("{m} needs the in-OS test door (cdpd), which arrives in Phase 3")))
         }
         m => Err((-32601, format!("{m} isn't served"))),
@@ -63,15 +67,44 @@ fn screenshot(qmp: &mut Qmp, dir: &Path, params: &Value) -> Result<Value, String
 /// A CDP `code` (or `key`) as a QEMU qcode.
 pub fn qcode(code: &str) -> Option<String> {
     let simple = [
-        ("Enter", "ret"), ("Escape", "esc"), ("Backspace", "backspace"), ("Tab", "tab"), ("Space", "spc"),
-        ("ArrowUp", "up"), ("ArrowDown", "down"), ("ArrowLeft", "left"), ("ArrowRight", "right"),
-        ("ShiftLeft", "shift"), ("ShiftRight", "shift_r"), ("ControlLeft", "ctrl"), ("ControlRight", "ctrl_r"),
-        ("AltLeft", "alt"), ("AltRight", "alt_r"), ("MetaLeft", "meta_l"), ("MetaRight", "meta_r"),
-        ("Minus", "minus"), ("Equal", "equal"), ("BracketLeft", "bracket_left"), ("BracketRight", "bracket_right"),
-        ("Backslash", "backslash"), ("Semicolon", "semicolon"), ("Quote", "apostrophe"), ("Backquote", "grave_accent"),
-        ("Comma", "comma"), ("Period", "dot"), ("Slash", "slash"), ("Delete", "delete"), ("Insert", "insert"),
-        ("Home", "home"), ("End", "end"), ("PageUp", "pgup"), ("PageDown", "pgdn"), ("CapsLock", "caps_lock"),
-        ("PrintScreen", "print"), ("Pause", "pause"), ("ContextMenu", "menu"),
+        ("Enter", "ret"),
+        ("Escape", "esc"),
+        ("Backspace", "backspace"),
+        ("Tab", "tab"),
+        ("Space", "spc"),
+        ("ArrowUp", "up"),
+        ("ArrowDown", "down"),
+        ("ArrowLeft", "left"),
+        ("ArrowRight", "right"),
+        ("ShiftLeft", "shift"),
+        ("ShiftRight", "shift_r"),
+        ("ControlLeft", "ctrl"),
+        ("ControlRight", "ctrl_r"),
+        ("AltLeft", "alt"),
+        ("AltRight", "alt_r"),
+        ("MetaLeft", "meta_l"),
+        ("MetaRight", "meta_r"),
+        ("Minus", "minus"),
+        ("Equal", "equal"),
+        ("BracketLeft", "bracket_left"),
+        ("BracketRight", "bracket_right"),
+        ("Backslash", "backslash"),
+        ("Semicolon", "semicolon"),
+        ("Quote", "apostrophe"),
+        ("Backquote", "grave_accent"),
+        ("Comma", "comma"),
+        ("Period", "dot"),
+        ("Slash", "slash"),
+        ("Delete", "delete"),
+        ("Insert", "insert"),
+        ("Home", "home"),
+        ("End", "end"),
+        ("PageUp", "pgup"),
+        ("PageDown", "pgdn"),
+        ("CapsLock", "caps_lock"),
+        ("PrintScreen", "print"),
+        ("Pause", "pause"),
+        ("ContextMenu", "menu"),
     ];
     if let Some((_, q)) = simple.iter().find(|(c, _)| *c == code) {
         return Some(q.to_string());
@@ -109,7 +142,10 @@ fn key(qmp: &mut Qmp, p: &Value) -> Result<Value, String> {
     let q = qcode(code).ok_or_else(|| format!("no qcode for {code:?}"))?;
     let ev = Value::obj([
         ("type", "key".into()),
-        ("data", Value::obj([("down", down.into()), ("key", Value::obj([("type", "qcode".into()), ("data", q.into())]))])),
+        (
+            "data",
+            Value::obj([("down", down.into()), ("key", Value::obj([("type", "qcode".into()), ("data", q.into())]))]),
+        ),
     ]);
     qmp.execute("input-send-event", Some(Value::obj([("events", Value::Arr(vec![ev]))])))?;
     Ok(Value::Obj(Vec::new()))
@@ -130,7 +166,10 @@ fn mouse(qmp: &mut Qmp, p: &Value) -> Result<Value, String> {
             for (axis, k) in [("x", "deltaX"), ("y", "deltaY")] {
                 let d = p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as i64;
                 if d != 0 {
-                    events.push(Value::obj([("type", "rel".into()), ("data", Value::obj([("axis", axis.into()), ("value", d.into())]))]));
+                    events.push(Value::obj([
+                        ("type", "rel".into()),
+                        ("data", Value::obj([("axis", axis.into()), ("value", d.into())])),
+                    ]));
                 }
             }
         }
@@ -145,7 +184,10 @@ fn mouse(qmp: &mut Qmp, p: &Value) -> Result<Value, String> {
             let dy = p.get("deltaY").and_then(Value::as_f64).unwrap_or(0.0);
             let b = if dy < 0.0 { "wheel-up" } else { "wheel-down" };
             for down in [true, false] {
-                events.push(Value::obj([("type", "btn".into()), ("data", Value::obj([("down", down.into()), ("button", b.into())]))]));
+                events.push(Value::obj([
+                    ("type", "btn".into()),
+                    ("data", Value::obj([("down", down.into()), ("button", b.into())])),
+                ]));
             }
         }
         _ => return Err(format!("unknown mouse event type {kind:?}")),

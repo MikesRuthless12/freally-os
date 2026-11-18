@@ -5,6 +5,7 @@
 mod atlas;
 mod build;
 mod cdp;
+mod ci;
 mod doctor;
 mod gates;
 mod keys;
@@ -28,7 +29,8 @@ cargo xtask <command>
   verify <image>                 verify an image against the dev and staging keys
   atlas [--check]                render the boot atlas from the Noto fonts (or check it)
   screen title|integrity --out P draw a pre-desktop screen to a PNG (as the bootloader does)
-  gate <name>                    run one gate: third-party
+  ci [--fast|--slow] [--only=g]  every gate, reported one by one
+  gate <name>                    one gate: third-party, no-ai, denylist, spdx, private-docs, ladder
 ";
 
 fn verify_cmd(args: &[String]) -> Result<(), String> {
@@ -60,8 +62,14 @@ fn main() -> ExitCode {
         Some("screen") => screen::screen_cmd(rest),
         Some("run") => run::run_cmd(rest),
         Some("cdp") => cdp::cdp_cmd(rest),
+        Some("ci") => ci::ci_cmd(rest),
         Some("gate") => match rest.first().map(String::as_str) {
             Some("third-party") => gates::third_party::check().map(|s| println!("third-party: {s}")),
+            Some("no-ai") => gates::content::no_ai().map(|s| println!("no-AI: {s}")),
+            Some("denylist") => gates::content::denylist().map(|s| println!("denylist: {s}")),
+            Some("spdx") => gates::content::spdx().map(|s| println!("SPDX: {s}")),
+            Some("private-docs") => gates::content::private_docs().map(|s| println!("private-docs: {s}")),
+            Some("ladder") => gates::ladder::check().map(|s| println!("ladder: {s}")),
             other => Err(format!("unknown gate {other:?}\n{HELP}")),
         },
         Some("help") | Some("--help") | None => {

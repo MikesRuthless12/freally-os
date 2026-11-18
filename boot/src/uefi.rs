@@ -9,10 +9,8 @@ use fcore_abi::Guid;
 pub type Handle = *mut c_void;
 pub type Status = usize;
 
-pub const SUCCESS: Status = 0;
 const ERROR_BIT: usize = 1 << 63;
 pub const BUFFER_TOO_SMALL: Status = ERROR_BIT | 5;
-pub const NOT_FOUND: Status = ERROR_BIT | 14;
 
 pub fn is_error(s: Status) -> bool {
     s & ERROR_BIT != 0
@@ -201,7 +199,18 @@ pub const FILE_MODE_READ: u64 = 1;
 pub struct GraphicsOutput {
     pub query_mode: Unused,
     pub set_mode: Unused,
-    pub blt: extern "efiapi" fn(*mut GraphicsOutput, *mut u32, u32, usize, usize, usize, usize, usize, usize, usize) -> Status,
+    pub blt: extern "efiapi" fn(
+        *mut GraphicsOutput,
+        *mut u32,
+        u32,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ) -> Status,
     pub mode: *mut GraphicsMode,
 }
 

@@ -194,9 +194,7 @@ impl<'a> Verified<'a> {
     /// The bytes of the file at `path`, if the image has one.
     pub fn file(&self, path: &str) -> Option<&'a [u8]> {
         let image = self.image;
-        self.toc()
-            .find(|e| e.path() == path)
-            .map(|e| &image[e.offset as usize..(e.offset + e.len) as usize])
+        self.toc().find(|e| e.path() == path).map(|e| &image[e.offset as usize..(e.offset + e.len) as usize])
     }
 }
 
@@ -209,10 +207,7 @@ pub fn verify<'a>(image: &'a [u8], trusted: &[[u8; 32]]) -> Result<Verified<'a>,
     }
 
     // 1. The signature, before any other field is trusted.
-    let key_index = trusted
-        .iter()
-        .position(|k| ct::eq(&key_id(k), &header.key_id))
-        .ok_or(FsiError::UnknownKey)?;
+    let key_index = trusted.iter().position(|k| ct::eq(&key_id(k), &header.key_id)).ok_or(FsiError::UnknownKey)?;
     if !ed25519::verify(&trusted[key_index], &image[..SIGNED_LEN], &header.signature) {
         return Err(FsiError::BadSignature);
     }
@@ -233,7 +228,7 @@ pub fn verify<'a>(image: &'a [u8], trusted: &[[u8; 32]]) -> Result<Verified<'a>,
             && h.tree_len == tree_len
             && h.tree_offset.checked_add(h.tree_len)? == len
             && h.toc_offset == block
-            && h.toc_len % TOC_ENTRY_LEN as u64 == 0
+            && h.toc_len.is_multiple_of(TOC_ENTRY_LEN as u64)
             && h.toc_offset.checked_add(h.toc_len)? <= data_end;
         Some(ok)
     })();

@@ -49,7 +49,10 @@ fn ed25519_sign_verify_round_trips() {
             let bit = (rng.next() % (msg.len() as u64 * 8)) as usize;
             let mut other = msg.clone();
             other[bit / 8] ^= 1 << (bit % 8);
-            assert!(!ed25519::verify(&public, &other, &sig), "iteration {i}: message bit {bit} flipped, still accepted");
+            assert!(
+                !ed25519::verify(&public, &other, &sig),
+                "iteration {i}: message bit {bit} flipped, still accepted"
+            );
         }
 
         let mut other_seed = seed;

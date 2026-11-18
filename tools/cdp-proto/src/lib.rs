@@ -49,7 +49,11 @@ pub fn read_request(r: &mut impl BufRead) -> io::Result<Request> {
 }
 
 pub fn respond(w: &mut impl Write, status: &str, content_type: &str, body: &[u8]) -> io::Result<()> {
-    write!(w, "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+    write!(
+        w,
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
     w.write_all(body)?;
     w.flush()
 }
@@ -78,7 +82,8 @@ pub enum Message {
 impl WebSocket {
     /// Completes the server side of the handshake for `req`, read from `reader`.
     pub fn accept(reader: BufReader<TcpStream>, req: &Request) -> io::Result<WebSocket> {
-        let key = req.header("Sec-WebSocket-Key").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no key"))?;
+        let key =
+            req.header("Sec-WebSocket-Key").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no key"))?;
         let mut writer = reader.get_ref().try_clone()?;
         write!(
             writer,
@@ -225,7 +230,7 @@ impl WebSocket {
                     continue;
                 }
                 0xA => continue,
-                0x0 | 0x1 | 0x2 => {
+                0x0..=0x2 => {
                     if op != 0 {
                         first_op = Some(op);
                     }
@@ -233,7 +238,10 @@ impl WebSocket {
                     if fin {
                         return Ok(match first_op {
                             Some(0x2) => Message::Binary(data),
-                            _ => Message::Text(String::from_utf8(data).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "text isn't UTF-8"))?),
+                            _ => Message::Text(
+                                String::from_utf8(data)
+                                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "text isn't UTF-8"))?,
+                            ),
                         });
                     }
                 }
@@ -259,7 +267,8 @@ impl Cdp {
     /// Connects to the first target `/json/list` gives at `host_port`.
     pub fn connect(host_port: &str) -> io::Result<Cdp> {
         let list = http_get(host_port, "/json/list")?;
-        let v = fjson::parse(&list).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("/json/list: {e:?}")))?;
+        let v = fjson::parse(&list)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("/json/list: {e:?}")))?;
         let url = v
             .as_array()
             .and_then(|a| a.first())
@@ -316,6 +325,6 @@ mod tests {
     #[test]
     fn rfc_6455_accept_key_example() {
         // RFC 6455 § 1.3's worked example.
-        assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGJzzhZRbK+xo=");
+        assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 }

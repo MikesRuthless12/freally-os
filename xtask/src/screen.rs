@@ -2,12 +2,6 @@
 //! `cargo xtask screen title|integrity [--size WxH] --out file.png`: draws a
 //! pre-desktop screen on the host, exactly as the bootloader does, to look at it.
 
-pub fn render_title(w: usize, h: usize, version: &str, note: &str) -> (Vec<u32>, fscreen::Rect) {
-    let mut px = vec![0u32; w * h];
-    let r = fscreen::title(&mut fscreen::Canvas { px: &mut px, w, h }, version, note);
-    (px, r)
-}
-
 pub fn to_png(w: usize, h: usize, px: &[u32]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(w * h * 3);
     for p in px {

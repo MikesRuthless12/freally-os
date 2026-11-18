@@ -66,7 +66,9 @@ impl<'a> Font<'a> {
                 if data.get(rec..rec + 4) == Some(&tag[..]) {
                     let off = u32_at(data, rec + 8).ok_or(FontError::Truncated)? as usize;
                     let len = u32_at(data, rec + 12).ok_or(FontError::Truncated)? as usize;
-                    return data.get(off..off.checked_add(len).ok_or(FontError::Truncated)?).ok_or(FontError::Truncated);
+                    return data
+                        .get(off..off.checked_add(len).ok_or(FontError::Truncated)?)
+                        .ok_or(FontError::Truncated);
                 }
             }
             Err(FontError::MissingTable(*tag))

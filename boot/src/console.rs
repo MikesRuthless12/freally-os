@@ -32,7 +32,7 @@ impl fmt::Write for Console {
         }
         let mut buf = [0u16; 129];
         let mut n = 0;
-        let mut flush = |buf: &mut [u16; 129], n: &mut usize| {
+        let flush = |buf: &mut [u16; 129], n: &mut usize| {
             buf[*n] = 0;
             // SAFETY: `buf` is NUL-terminated UTF-16; `out` is the firmware's ConOut.
             unsafe { ((*out).output_string)(out, buf.as_ptr()) };

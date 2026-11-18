@@ -10,7 +10,9 @@ use crate::util;
 
 pub fn check() -> Result<String, String> {
     // Make sure Cargo.lock reflects the manifests as they are now.
-    util::run_ok(util::cargo().args(["metadata", "--format-version", "1", "--quiet"]).stdout(std::process::Stdio::null()))?;
+    util::run_ok(
+        util::cargo().args(["metadata", "--format-version", "1", "--quiet"]).stdout(std::process::Stdio::null()),
+    )?;
     let lock = std::fs::read_to_string(util::repo_root().join("Cargo.lock"))
         .map_err(|e| format!("can't read Cargo.lock: {e}"))?;
     let outside = outside_packages(&lock);

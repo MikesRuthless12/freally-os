@@ -18,9 +18,7 @@ pub fn home() -> PathBuf {
 
 /// The build cache, on WSL's own disk: `$CARGO_TARGET_DIR`, else `~/.freally-target`.
 pub fn target_dir() -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".freally-target"))
+    env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".freally-target"))
 }
 
 /// Where the dev and staging keys live: `~/.freally-keys/`.
@@ -54,10 +52,8 @@ pub fn run_ok(cmd: &mut Command) -> Result<(), String> {
 
 /// Runs `cmd` and captures stdout (stderr inherited).
 pub fn capture(cmd: &mut Command) -> Result<String, String> {
-    let out = cmd
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|e| format!("couldn't start {:?}: {e}", cmd.get_program()))?;
+    let out =
+        cmd.stderr(Stdio::inherit()).output().map_err(|e| format!("couldn't start {:?}: {e}", cmd.get_program()))?;
     if !out.status.success() {
         return Err(format!("{:?} failed ({})", cmd.get_program(), out.status));
     }
@@ -83,10 +79,7 @@ pub fn unhex(s: &str) -> Result<Vec<u8>, String> {
     if s.len() % 2 != 0 {
         return Err("odd number of hex digits".into());
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("bad hex: {e}")))
-        .collect()
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("bad hex: {e}"))).collect()
 }
 
 /// Every file under `dir` (recursively), skipping `target/`, `.git/` and `node_modules/`.
@@ -111,10 +104,12 @@ pub fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Files git tracks or would track (tracked + untracked-not-ignored), relative to the repo.
 pub fn git_files() -> Result<Vec<PathBuf>, String> {
-    let out = capture(
-        Command::new("git")
-            .current_dir(repo_root())
-            .args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]),
-    )?;
+    let out = capture(Command::new("git").current_dir(repo_root()).args([
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ]))?;
     Ok(out.split('\0').filter(|s| !s.is_empty()).map(PathBuf::from).collect())
 }

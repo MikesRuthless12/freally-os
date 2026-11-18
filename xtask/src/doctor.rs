@@ -72,10 +72,7 @@ pub fn doctor() -> Result<(), String> {
     checks.push(Check {
         name: "the pinned Rust nightly",
         ok: rustc.is_some() && rustc_v.contains("nightly"),
-        detail: format!(
-            "{} (rust-toolchain.toml pins {channel})",
-            rustc_v.lines().next().unwrap_or("rustc not found")
-        ),
+        detail: format!("{} (rust-toolchain.toml pins {channel})", rustc_v.lines().next().unwrap_or("rustc not found")),
         fix: "Install rustup (https://rustup.rs); the repository's rust-toolchain.toml installs the rest.",
     });
 

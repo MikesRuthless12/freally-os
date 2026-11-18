@@ -8,11 +8,7 @@ pub fn check(log: &str, allowed: &[String]) -> Result<(), String> {
         .filter(|l| l.contains("ERROR"))
         .filter(|l| !allowed.iter().any(|a| l.contains(a.as_str())))
         .collect();
-    if unexpected.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("the guard: COM1 reported {}", unexpected.join(" | ")))
-    }
+    if unexpected.is_empty() { Ok(()) } else { Err(format!("the guard: COM1 reported {}", unexpected.join(" | "))) }
 }
 
 #[cfg(test)]

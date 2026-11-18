@@ -10,9 +10,8 @@ pub const ATLAS_PATH: &str = "assets/fonts/noto/boot-atlas.fatl";
 
 pub fn render() -> Result<Vec<u8>, String> {
     let root = util::repo_root();
-    let read = |name: &str| {
-        std::fs::read(root.join("assets/fonts/noto").join(name)).map_err(|e| format!("{name}: {e}"))
-    };
+    let read =
+        |name: &str| std::fs::read(root.join("assets/fonts/noto").join(name)).map_err(|e| format!("{name}: {e}"));
     let semibold = read("NotoSans-SemiBold.ttf")?;
     let regular = read("NotoSans-Regular.ttf")?;
     let semibold = ffont::ttf::Font::parse(&semibold).map_err(|e| format!("NotoSans-SemiBold.ttf: {e:?}"))?;

@@ -123,6 +123,12 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
     if st_map == BUFFER_TOO_SMALL && desc_size > 0 {
         say!("freally-boot: memory map {} regions", map_size / desc_size);
     }
+    // The ACPI 2.0+ RSDP, for the kernel (BootInfo.acpi_rsdp, Phase 1).
+    // SAFETY: the firmware's configuration table has `number_of_table_entries` entries.
+    let tables = unsafe { core::slice::from_raw_parts(st.configuration_table, st.number_of_table_entries) };
+    if let Some(t) = tables.iter().find(|t| t.vendor_guid == ACPI_20_TABLE_GUID) {
+        say!("freally-boot: ACPI 2.0 RSDP at {:#x}", t.vendor_table as usize);
+    }
 
     // Read, then verify.
     // SAFETY: boot services are running and `image` is our own handle.
@@ -133,7 +139,8 @@ extern "efiapi" fn efi_main(image: Handle, st: *mut SystemTable) -> Status {
             say!(
                 "freally-boot: read SYSTEM_A.FSI, {} bytes, header version {}",
                 bytes.len(),
-                hdr.as_ref().map_or("?", |v| core::str::from_utf8(&v[..v.iter().position(|&b| b == 0).unwrap_or(32)]).unwrap_or("?"))
+                hdr.as_ref().map_or("?", |v| core::str::from_utf8(&v[..v.iter().position(|&b| b == 0).unwrap_or(32)])
+                    .unwrap_or("?"))
             );
             let o = check(bytes);
             stamps.b2 = rdtsc();
