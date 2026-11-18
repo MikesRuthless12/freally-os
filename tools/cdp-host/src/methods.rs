@@ -133,4 +133,3 @@ fn mouse(qmp: &mut Qmp, p: &Value) -> Result<Value, String> {
     }
     Ok(Value::Obj(Vec::new()))
 }
-

@@ -77,7 +77,8 @@ pub fn release_local_cmd(args: &[String]) -> Result<(), String> {
 
     // 3. Verify the exact files as a release bootloader would: the staging key only.
     let staging = keys::committed_public(keys::KeyName::Staging)?;
-    let v = fsi::verify(&image, &[staging]).map_err(|e| format!("the release image fails verification: {}", e.describe()))?;
+    let v = fsi::verify(&image, &[staging])
+        .map_err(|e| format!("the release image fails verification: {}", e.describe()))?;
     if v.header.flavour != Flavour::Release as u16 {
         return Err("the release image isn't the release flavour".into());
     }
@@ -127,17 +128,36 @@ pub fn release_local_cmd(args: &[String]) -> Result<(), String> {
         ("signed_with", "staging".into()),
         ("layout", "files (\\EFI\\BOOT\\BOOTX64.EFI, \\FREALLY\\SYSTEM_A.FSI)".into()),
         ("boot_to_title_ms_median", ((median * 1000.0).round() as i64).into()),
-        ("files", Value::Arr(files.iter().map(|(n, d)| Value::obj([("name", (*n).into()), ("bytes", d.len().into()), ("sha256", util::hex(&fcrypto::sha2::sha256(d)).into())])).collect())),
+        (
+            "files",
+            Value::Arr(
+                files
+                    .iter()
+                    .map(|(n, d)| {
+                        Value::obj([
+                            ("name", (*n).into()),
+                            ("bytes", d.len().into()),
+                            ("sha256", util::hex(&fcrypto::sha2::sha256(d)).into()),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
     ]);
     std::fs::write(dir.join("RELEASE.json"), release.to_json() + "\n").map_err(|e| e.to_string())?;
-    println!("release-local: {} ({})", dir.display(), if rehearsal { "a rehearsal, not a release" } else { "kept off GitHub" });
+    println!(
+        "release-local: {} ({})",
+        dir.display(),
+        if rehearsal { "a rehearsal, not a release" } else { "kept off GitHub" }
+    );
     print!("{sums}");
     Ok(())
 }
 
 /// Every file `SHA256SUMS.txt` lists is present and matches.
 pub fn verify_release_dir(dir: &Path) -> Result<usize, String> {
-    let sums = std::fs::read_to_string(dir.join("SHA256SUMS.txt")).map_err(|_| format!("{}: no SHA256SUMS.txt", dir.display()))?;
+    let sums = std::fs::read_to_string(dir.join("SHA256SUMS.txt"))
+        .map_err(|_| format!("{}: no SHA256SUMS.txt", dir.display()))?;
     let mut n = 0;
     for line in sums.lines().filter(|l| !l.trim().is_empty()) {
         let (hash, name) = line.split_once("  ").ok_or_else(|| format!("{}: a bad SHA256SUMS line", dir.display()))?;
@@ -187,12 +207,18 @@ pub fn target_clean_cmd(_args: &[String]) -> Result<(), String> {
         return Err("CARGO_TARGET_DIR is inside the repository; refusing to delete it".into());
     }
     let _ = std::fs::remove_dir_all(&cache);
-    println!("target-clean: pruned {} ({:.1} GB); kept {}", cache.display(), freed as f64 / 1e9, if kept.is_empty() { "no releases".to_string() } else { kept.join(", ") });
+    println!(
+        "target-clean: pruned {} ({:.1} GB); kept {}",
+        cache.display(),
+        freed as f64 / 1e9,
+        if kept.is_empty() { "no releases".to_string() } else { kept.join(", ") }
+    );
     Ok(())
 }
 
 fn remove(p: &Path) -> Result<(), String> {
-    if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) }.map_err(|e| format!("{}: {e}", p.display()))
+    if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) }
+        .map_err(|e| format!("{}: {e}", p.display()))
 }
 
 fn du(p: &Path) -> u64 {

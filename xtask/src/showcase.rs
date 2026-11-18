@@ -132,7 +132,10 @@ impl Tokens<'_> {
         while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
             self.i += 1;
         }
-        std::str::from_utf8(&self.s[start..self.i]).ok().and_then(|n| n.parse().ok()).ok_or_else(|| format!("expected a number at byte {start}"))
+        std::str::from_utf8(&self.s[start..self.i])
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("expected a number at byte {start}"))
     }
 }
 

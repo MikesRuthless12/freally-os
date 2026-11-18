@@ -134,7 +134,13 @@ pub fn tap(q: &mut Qmp, qcode: &str) -> Result<(), String> {
     for down in [true, false] {
         let ev = Value::obj([
             ("type", "key".into()),
-            ("data", Value::obj([("down", down.into()), ("key", Value::obj([("type", "qcode".into()), ("data", qcode.into())]))])),
+            (
+                "data",
+                Value::obj([
+                    ("down", down.into()),
+                    ("key", Value::obj([("type", "qcode".into()), ("data", qcode.into())])),
+                ]),
+            ),
         ]);
         q.execute("input-send-event", Some(Value::obj([("events", Value::Arr(vec![ev]))])))?;
     }
