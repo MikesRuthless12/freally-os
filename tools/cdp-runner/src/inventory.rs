@@ -13,6 +13,8 @@ use std::collections::BTreeSet;
 pub struct Inventory {
     pub shown: BTreeSet<String>,
     pub worked: BTreeSet<String>,
+    /// `service ordinal` for every request ordinal a service was sent.
+    pub served: BTreeSet<String>,
 }
 
 /// A control's name, from cdpd's description of it.
@@ -25,7 +27,7 @@ pub fn name(v: &Value) -> Option<String> {
 impl Inventory {
     pub fn to_json(&self) -> Value {
         let list = |set: &BTreeSet<String>| Value::Arr(set.iter().map(|s| Value::from(s.as_str())).collect());
-        Value::obj([("shown", list(&self.shown)), ("worked", list(&self.worked))])
+        Value::obj([("shown", list(&self.shown)), ("worked", list(&self.worked)), ("served", list(&self.served))])
     }
 }
 
@@ -50,6 +52,7 @@ mod tests {
         let mut inv = Inventory::default();
         inv.shown.insert("a".into());
         inv.worked.insert("a".into());
-        assert_eq!(inv.to_json().to_json(), r#"{"shown":["a"],"worked":["a"]}"#);
+        inv.served.insert("stage 2".into());
+        assert_eq!(inv.to_json().to_json(), r#"{"shown":["a"],"worked":["a"],"served":["stage 2"]}"#);
     }
 }

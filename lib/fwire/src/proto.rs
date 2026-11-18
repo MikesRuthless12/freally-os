@@ -695,3 +695,75 @@ pub mod cdpd {
         pub struct Answer { pub result: String }
     }
 }
+
+/// The inventory's ordinals (TASK-063, FR-040, e2e images only): every
+/// process answers `ASK` itself (fstd, never passed to the service) with how
+/// often each request ordinal reached it. `SERVICES` lists what each
+/// service serves; a full run must touch every one, or accept it.
+pub mod inventory {
+    use crate::wire_struct;
+    use alloc::vec::Vec;
+
+    pub const ASK: u32 = 0xFFFF_FF00;
+
+    wire_struct! {
+        /// Each request ordinal and how many times it came.
+        pub struct Served { pub ordinals: Vec<(u32, u32)> }
+    }
+
+    use super::{
+        cdpd as cd, conductor as c, devmgr as d, display as disp, input as inp, logger as l, monitor as mon,
+        serial as s, stage as st, terminal as term,
+    };
+
+    pub const SERVICES: &[(&str, &[(u32, &str)])] = &[
+        (
+            "conductor",
+            &[
+                (c::CONNECT, "connect"),
+                (c::REGISTER, "register"),
+                (c::LIST_SERVICES, "list_services"),
+                (c::FAULTS, "faults"),
+                (c::BOOT_TIMELINE, "boot_timeline"),
+                (c::STAMP, "stamp"),
+            ],
+        ),
+        ("logger", &[(l::WRITE, "write"), (l::READ, "read")]),
+        (
+            "devmgr",
+            &[
+                (d::LIST, "list"),
+                (d::TABLES, "tables"),
+                (d::FIRMWARE_TIMES, "firmware_times"),
+                (d::RESOURCES, "resources"),
+            ],
+        ),
+        ("drv-gop-fb", &[(disp::INFO, "info"), (disp::FILL, "fill")]),
+        ("drv-i8042", &[(inp::SUBSCRIBE, "subscribe")]),
+        ("drv-uart16550", &[(s::WRITE, "write")]),
+        (
+            "stage",
+            &[
+                (st::CREATE_WINDOW, "create_window"),
+                (st::PRESENT, "present"),
+                (st::SET_TITLE, "set_title"),
+                (st::CLOSE_WINDOW, "close_window"),
+                (st::FOCUS_WINDOW, "focus_window"),
+                (st::SET_CURSOR, "set_cursor"),
+                (st::PUBLISH_AX_TREE, "publish_ax_tree"),
+                (st::SCREENSHOT, "screenshot"),
+                (st::INJECT_INPUT, "inject_input"),
+                (st::SET_THEME, "set_theme"),
+                (st::SET_SCALE, "set_scale"),
+                (st::SUBSCRIBE_SHORTCUTS, "subscribe_shortcuts"),
+                (st::SCREEN, "screen"),
+                (st::LIST_WINDOWS, "list_windows"),
+                (st::POINTER, "pointer"),
+                (st::AX_TREE, "ax_tree"),
+            ],
+        ),
+        ("monitor", &[(mon::STATE, "state")]),
+        ("terminal", &[(term::FEED, "feed"), (term::TYPE, "type"), (term::SCREEN, "screen")]),
+        ("cdpd", &[(cd::CALL, "call")]),
+    ];
+}

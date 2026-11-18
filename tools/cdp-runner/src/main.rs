@@ -171,6 +171,24 @@ impl Ctx {
         }
     }
 
+    /// Every request ordinal the services have been sent so far.
+    fn note_served(&mut self) {
+        if let Ok(r) = self.cdp.call("Freally.ordinals", Value::Obj(Vec::new())) {
+            for s in r.get("services").and_then(Value::as_array).unwrap_or_default() {
+                let name = s.get("service").and_then(Value::as_str).unwrap_or("");
+                for o in s.get("ordinals").and_then(Value::as_array).unwrap_or_default() {
+                    let pair = o.as_array().unwrap_or_default();
+                    if let (Some(ord), Some(n)) =
+                        (pair.first().and_then(Value::as_i64), pair.get(1).and_then(Value::as_i64))
+                        && n > 0
+                    {
+                        self.inv.served.insert(format!("{name} {ord}"));
+                    }
+                }
+            }
+        }
+    }
+
     /// Every control cdpd has seen so far, for the inventory.
     fn note_shown(&mut self) {
         if let Ok(r) = self.cdp.call("Freally.inventory", Value::Obj(Vec::new())) {
@@ -576,6 +594,7 @@ fn main() {
         }
         if watch.is_some() && !ctx.rebooted {
             ctx.note_shown();
+            ctx.note_served();
         }
         let secs = start.elapsed().as_secs_f64();
         match result {

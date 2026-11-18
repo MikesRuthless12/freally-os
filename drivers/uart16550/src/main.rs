@@ -182,6 +182,7 @@ impl Port {
                         && h.ordinal == s::WRITE
                         && let Ok(b) = fwire::from_payload::<s::Bytes>(p)
                     {
+                        fstd::inventory::count(s::WRITE);
                         self.tx.extend(b.data);
                     }
                 }

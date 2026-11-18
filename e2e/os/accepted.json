@@ -1,4 +1,9 @@
 {
-  "about": "Controls the inventory lets through (FR-040): each one a spec can't work yet, and why. Each name is `owner ROLE test-id` (or its name where it has no test id).",
-  "accepted": []
+  "about": "Controls and service ordinals the inventory lets through (FR-040): each one no spec can work yet, and why. A control is `owner ROLE test-id` (or its name where it has no test id); an ordinal is `service ordinal N name`.",
+  "accepted": [
+    {
+      "control": "devmgr ordinal 2 tables",
+      "why": "Its caller is Monitor's Devices tab (FR-034, from v0.5); nothing asks for the ACPI table list before then, and a spec standing in for that caller would prove nothing (a test is not a caller)."
+    }
+  ]
 }

@@ -59,6 +59,7 @@ impl Channel {
         let mut handles = [0u32; 16];
         loop {
             match sys::channel_read(self.0.raw(), &mut bytes, &mut handles) {
+                Ok((n, _)) if crate::inventory::seen(self, &bytes[..n]) => continue,
                 Ok((n, nh)) => {
                     bytes.truncate(n);
                     let hs = handles[..nh].iter().filter_map(|&v| Handle::from_raw(v)).collect();

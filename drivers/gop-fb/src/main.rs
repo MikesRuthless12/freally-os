@@ -122,6 +122,7 @@ fn serve(fb: &Fb, ch: &Channel) -> bool {
         let mut bytes = alloc::vec![0u8; 256];
         let mut hs = [0u32; 2];
         match fstd::sys::channel_read(ch.0.raw(), &mut bytes, &mut hs) {
+            Ok((n, _)) if fstd::inventory::seen(ch, &bytes[..n]) => {}
             Ok((n, _)) => {
                 let Ok((h, p)) = fwire::parse(&bytes[..n]) else { continue };
                 let (reply, handles) = match h.ordinal {

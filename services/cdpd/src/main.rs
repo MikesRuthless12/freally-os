@@ -31,6 +31,8 @@ fn deadline() -> u64 {
 }
 
 struct Cdpd {
+    /// A client per service the inventory asks.
+    asked: alloc::collections::BTreeMap<String, Client>,
     stage: Option<Client>,
     logger: Option<Client>,
     doc: Doc,
@@ -143,6 +145,25 @@ impl Cdpd {
                 let node = self.doc.control_at(at.x, at.y).map_or(Value::Null, |i| self.doc.control(i));
                 Ok(Value::obj([("node", node)]))
             }
+            // How often each running service has been asked each thing.
+            "Freally.ordinals" => {
+                use fwire::proto::inventory as inv;
+                let running: Vec<String> =
+                    services()?.into_iter().filter(|v| v.state == c::ServiceState::Running).map(|v| v.name).collect();
+                let mut out = Vec::new();
+                for (name, _) in inv::SERVICES {
+                    let counts = match *name {
+                        "cdpd" => Some(fstd::inventory::counts()),
+                        "conductor" => fstd::service::ask::<_, inv::Served>(inv::ASK, &()).ok().map(|s| s.ordinals),
+                        n if running.iter().any(|r| r == n) => self.ask(n),
+                        _ => None,
+                    };
+                    let Some(counts) = counts else { continue };
+                    let list = counts.iter().map(|(o, n)| Value::Arr(alloc::vec![(*o).into(), (*n).into()])).collect();
+                    out.push(Value::obj([("service", (*name).into()), ("ordinals", Value::Arr(list))]));
+                }
+                Ok(Value::obj([("services", Value::Arr(out))]))
+            }
             "Freally.focusedNode" => {
                 self.rebuild()?;
                 let node = self.doc.focused_control().map_or(Value::Null, |i| self.doc.control(i));
@@ -227,6 +248,25 @@ impl Cdpd {
             "Log.read" => self.log(params),
             m => Err(format!("{m} isn't served by cdpd")),
         }
+    }
+
+    /// One service's counts (connecting once more if it restarted).
+    fn ask(&mut self, name: &str) -> Option<Vec<(u32, u32)>> {
+        use fwire::proto::inventory as inv;
+        for _ in 0..2 {
+            if !self.asked.contains_key(name) {
+                let ch = fstd::service::connect_within(name, Duration::from_millis(500)).ok()?;
+                self.asked.insert(String::from(name), Client::new(ch));
+            }
+            let cl = self.asked.get_mut(name)?;
+            match cl.call::<_, inv::Served>(inv::ASK, &(), Vec::new(), deadline()) {
+                Ok((s, _)) => return Some(s.ordinals),
+                Err(_) => {
+                    self.asked.remove(name);
+                }
+            }
+        }
+        None
     }
 
     /// `Freally.readBack {service, query}`: what the real service holds.
@@ -386,7 +426,8 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     fstd::info!("cdpd: ready");
-    let mut d = Cdpd { stage: None, logger: None, doc: Doc::default(), seen: Default::default() };
+    let mut d =
+        Cdpd { asked: Default::default(), stage: None, logger: None, doc: Doc::default(), seen: Default::default() };
     let mut clients: Vec<(Channel, String)> = Vec::new();
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];

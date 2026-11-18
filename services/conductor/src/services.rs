@@ -288,6 +288,9 @@ impl Conductor {
             Ok(r) => r,
             Err(_) => return,
         };
+        if fstd::inventory::seen_if(cfg!(feature = "flavour-e2e"), &child.channel, &bytes[..n]) {
+            return;
+        }
         let mut handles: Vec<Option<Handle>> = hs[..nh].iter().map(|&v| Handle::from_raw(v)).collect();
         let Ok((h, payload)) = fwire::parse(&bytes[..n]) else {
             fstd::warn!("conductor: a malformed message from {}", self.services[i].m.name);

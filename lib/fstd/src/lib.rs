@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod ax;
 pub mod handle;
+pub mod inventory;
 pub mod ipc;
 pub mod log;
 pub mod process;

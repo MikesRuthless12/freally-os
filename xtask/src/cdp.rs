@@ -170,10 +170,12 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         let (shown, missing) = inventory(d)?;
         if missing.is_empty() {
             green += 1;
-            println!("▶ @inventory … pass (0.0s)\n    {shown} controls shown, each worked by a spec or accepted");
+            println!(
+                "▶ @inventory … pass (0.0s)\n    {shown} controls and service ordinals, each worked by a spec or accepted"
+            );
         } else {
             println!(
-                "▶ @inventory … fail (0.0s)\n    {} of {shown} controls no spec worked (work each, or accept it in e2e/os/accepted.json with a reason):\n      {}",
+                "▶ @inventory … fail (0.0s)\n    {} of {shown} controls and service ordinals no spec worked (work each, or accept it in e2e/os/accepted.json with a reason):\n      {}",
                 missing.len(),
                 missing.join("\n      ")
             );
@@ -188,7 +190,7 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
 /// Returns how many were shown, and the ones left.
 fn inventory(dir: &std::path::Path) -> Result<(usize, Vec<String>), String> {
     use std::collections::BTreeSet;
-    let (mut shown, mut worked) = (BTreeSet::new(), BTreeSet::new());
+    let (mut shown, mut worked, mut served) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten() {
         let text = std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
         let v = fjson::parse(&text).map_err(|e| format!("{}: {}", entry.path().display(), e.what))?;
@@ -203,6 +205,7 @@ fn inventory(dir: &std::path::Path) -> Result<(usize, Vec<String>), String> {
         };
         shown.extend(list("shown"));
         worked.extend(list("worked"));
+        served.extend(list("served"));
     }
     let path = util::repo_root().join("e2e/os/accepted.json");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -218,8 +221,20 @@ fn inventory(dir: &std::path::Path) -> Result<(usize, Vec<String>), String> {
         }
         accepted.push(c.to_string());
     }
-    let missing = shown.iter().filter(|c| !worked.contains(*c) && !accepted.contains(c)).cloned().collect();
-    Ok((shown.len(), missing))
+    let mut missing: Vec<String> =
+        shown.iter().filter(|c| !worked.contains(*c) && !accepted.contains(c)).cloned().collect();
+    // The ordinals: each one every service serves, sent at least once.
+    let mut total = shown.len();
+    for (svc, ords) in fwire::proto::inventory::SERVICES {
+        for (o, name) in ords.iter() {
+            total += 1;
+            let id = format!("{svc} ordinal {o} {name}");
+            if !served.contains(&format!("{svc} {o}")) && !accepted.contains(&id) {
+                missing.push(id);
+            }
+        }
+    }
+    Ok((total, missing))
 }
 
 fn run_setup(

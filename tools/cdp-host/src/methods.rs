@@ -23,6 +23,7 @@ fn cdpd_serves(m: &str) -> bool {
                 | "Freally.inventory"
                 | "Freally.nodeAt"
                 | "Freally.focusedNode"
+                | "Freally.ordinals"
         )
 }
 
