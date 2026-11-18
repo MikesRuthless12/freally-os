@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `cargo xtask cdp --os [--site] [--only=id,id]`: the CDP legs (closeout step 5a).
+//! `cargo xtask cdp --os [--site] [--only=id,id] [--slow]`: the CDP legs
+//! (closeout step 5a; `--slow` runs the long forms, such as `@serial.echo`'s 10 MB).
 //!
 //! The OS leg: for each VM setup in `e2e/os/coverage.json`, boot it headless,
 //! start `cdp-host` on its QMP socket, and run that setup's specs with
@@ -53,7 +54,11 @@ fn tool(name: &str) -> std::path::PathBuf {
     util::target_dir().join("debug").join(name)
 }
 
+/// `--slow`: the specs' long forms (the runner reads `FREALLY_CDP_SLOW`).
+static SLOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn cdp_cmd(args: &[String]) -> Result<(), String> {
+    SLOW.store(args.iter().any(|a| a == "--slow"), std::sync::atomic::Ordering::Relaxed);
     let site = args.iter().any(|a| a == "--site");
     let os = args.iter().any(|a| a == "--os") || !site;
     let only: Option<Vec<String>> =
@@ -147,7 +152,9 @@ fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> 
         .spawn()
         .map_err(|e| format!("can't start cdp-host: {e}"))?;
     let failures = util::target_dir().join("cdp/failures");
+    let slow = SLOW.load(std::sync::atomic::Ordering::Relaxed);
     let runner = Command::new(tool("cdp-runner"))
+        .env("FREALLY_CDP_SLOW", if slow { "1" } else { "0" })
         .args([
             "--endpoint",
             &format!("127.0.0.1:{HOST_PORT}"),

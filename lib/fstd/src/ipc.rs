@@ -34,8 +34,27 @@ impl Channel {
         Ok(())
     }
 
-    /// Takes the next message, waiting until `deadline_ns` for one.
+    /// Takes the next message, waiting until `deadline_ns` for one (a
+    /// deadline already past gives `TimedOut` on an empty channel: use
+    /// `try_recv` to look without waiting).
     pub fn recv(&self, deadline_ns: u64) -> Result<Message, FErr> {
+        loop {
+            match self.try_recv() {
+                Err(FErr::ShouldWait) => {
+                    let seen =
+                        self.0.wait(fcore_abi::signal::READABLE | fcore_abi::signal::PEER_CLOSED, deadline_ns)?;
+                    if seen & fcore_abi::signal::READABLE == 0 {
+                        return Err(FErr::PeerClosed);
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// The next message if one is waiting, never waiting: `ShouldWait` when
+    /// there's none yet, `PeerClosed` when none will come.
+    pub fn try_recv(&self) -> Result<Message, FErr> {
         let mut bytes = vec![0u8; 512];
         let mut handles = [0u32; 16];
         loop {
@@ -45,14 +64,7 @@ impl Channel {
                     let hs = handles[..nh].iter().filter_map(|&v| Handle::from_raw(v)).collect();
                     return Ok(Message { bytes, handles: hs });
                 }
-                Err(FErr::ShouldWait) => {
-                    let seen =
-                        self.0.wait(fcore_abi::signal::READABLE | fcore_abi::signal::PEER_CLOSED, deadline_ns)?;
-                    if seen & fcore_abi::signal::READABLE == 0 {
-                        return Err(FErr::PeerClosed);
-                    }
-                }
-                // The kernel says how big: grow and read again.
+                // Too small: grow and read again.
                 Err(FErr::BufferTooSmall) => bytes.resize(bytes.len() * 4, 0),
                 Err(e) => return Err(e),
             }

@@ -115,6 +115,13 @@
       "setup": "e2e-no-ps2",
       "spec": "e2e/os/specs/services.rs",
       "what": "On a machine with no PS/2 controller, drv-i8042 says No PS/2 controller found. and ends cleanly: never restarted, nothing else disturbed."
+    },
+    {
+      "id": "serial.echo",
+      "task": "TASK-044",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "Bytes through COM3 and back without losing one, while the door stalls so the driver must hold the line: 256 KB each run, 10 MB with --slow."
     }
   ]
 }

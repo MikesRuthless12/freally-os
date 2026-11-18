@@ -271,3 +271,28 @@ pub mod input {
         pub struct Mouse { pub dx: i16, pub dy: i16, pub wheel: i8, pub buttons: u8 }
     }
 }
+
+/// Serial ports (TASK-044, dev and e2e): `open` gives one client a port's channel.
+pub mod serial {
+    use crate::{HandleRef, wire_struct};
+    use alloc::vec::Vec;
+
+    pub const OPEN: u32 = 1;
+    /// On a port's channel, driver to client (events): bytes that arrived.
+    pub const DATA: u32 = 2;
+    /// On a port's channel, client to driver (one-way): bytes to send.
+    pub const WRITE: u32 = 3;
+
+    wire_struct! {
+        /// 2 for COM2 (the Brain's), 3 for COM3 (cdpd's).
+        pub struct Open { pub port: u8 }
+    }
+
+    wire_struct! {
+        pub struct Opened { pub channel: HandleRef }
+    }
+
+    wire_struct! {
+        pub struct Bytes { pub data: Vec<u8> }
+    }
+}

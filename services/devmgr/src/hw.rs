@@ -151,17 +151,16 @@ impl Hardware {
                     values.push((alloc::format!("{name}-flags"), flags as u64));
                 }
             }
+            // COM2 and COM3 with their IRQs. COM1 is the logger's (conductor
+            // hands it over before any driver runs).
             "drv-uart16550" => {
-                for (name, port, irq) in [("com1", 0x3F8u64, 4u8), ("com2", 0x2F8, 3), ("com3", 0x3E8, 4)] {
+                for (name, port, irq) in [("com2", 0x2F8u64, 3u8), ("com3", 0x3E8, 4)] {
                     add(name, self.carve(resource::IO_PORT, port, 8)?, &mut handles);
                     let (gsi, flags) = facpi::isa_gsi(&self.madt, irq);
+                    add(&alloc::format!("{name}-irq"), self.carve(resource::IRQ, gsi as u64, 1)?, &mut handles);
                     values.push((alloc::format!("{name}-gsi"), gsi as u64));
                     values.push((alloc::format!("{name}-flags"), flags as u64));
                 }
-                let (gsi4, _) = facpi::isa_gsi(&self.madt, 4);
-                let (gsi3, _) = facpi::isa_gsi(&self.madt, 3);
-                add("irq4", self.carve(resource::IRQ, gsi4 as u64, 1)?, &mut handles);
-                add("irq3", self.carve(resource::IRQ, gsi3 as u64, 1)?, &mut handles);
             }
             _ => return Err(FErr::NotFound),
         }

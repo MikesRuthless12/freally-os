@@ -84,6 +84,11 @@ version = "0.1.0"
 [[package]]
 name = "drv-uart16550"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "drv-xhci"

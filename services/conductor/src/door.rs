@@ -1,62 +1,146 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The test door (e2e flavour only, compiled out of every other): line
-//! commands on COM3 (0x3E8) for the CDP specs until cdpd exists (Phase 3).
+//! commands on COM3 for the CDP specs until cdpd exists (Phase 3), through
+//! drv-uart16550's COM3 channel.
 //!
 //! - `kill <service>`: ends the service's process; when it registers again,
 //!   the door says `back <service> <ms>`.
 //! - `log <n>`: the logger's newest `n` records, one `rec <svc> <msg>` each.
 //! - `services`: one `svc <name> <state>` per service.
+//! - `devices`, `fbfill <rrggbb>`: devmgr's PCI list; a whole-screen fill.
+//! - `echo <n> [ms]`: `ok`, then the next `n` bytes that arrive go straight
+//!   back. With `ms`, the door first stops reading for that long, so the
+//!   driver's channel fills and it has to hold the line (`@serial.echo`).
 //!
-//! Each answer ends with `end`.
+//! Each answer ends with `end`. While the driver is down (`@services.restart`
+//! kills it too) answers wait in the outbox, and go out once it's back.
 
 use crate::services::Conductor;
 use alloc::string::String;
 use alloc::vec::Vec;
-use fcore_abi::{resource, well_known};
+use fcore_abi::{FErr, signal};
+use fstd::ipc::{Channel, Client};
+use fstd::serial_json::Framer;
 use fstd::time::{Duration, Instant};
 use fwire::proto::logger as l;
+use fwire::proto::serial as s;
 
-const COM3: u16 = 0x3E8;
+/// The most one `echo` takes.
+const ECHO_MAX: usize = 64 << 20;
 
 pub struct Door {
-    line: Vec<u8>,
-    open: bool,
+    /// drv-uart16550's COM3, once it's up.
+    port: Option<Channel>,
+    /// Command lines, framed as the Brain and cdpd frame theirs.
+    lines: Framer,
+    /// Answers not yet handed to the driver.
+    out: Vec<u8>,
+    /// Bytes still to echo.
+    echo: usize,
+    /// Not reading the port until then (ns): an echo's deliberate stall.
+    stall_until: u64,
 }
 
 impl Door {
     pub fn open() -> Door {
-        let ok = fstd::sys::resource_create(well_known::ROOT_RESOURCE, resource::IO_PORT, COM3 as u64, 8)
-            .and_then(|r| fstd::sys::ioport_grant(r, COM3, 8))
-            .is_ok();
-        Door { line: Vec::new(), open: ok }
+        Door { port: None, lines: Framer::new(), out: Vec::new(), echo: 0, stall_until: 0 }
     }
 
-    fn send(&self, s: &str) {
-        for b in s.bytes().chain(core::iter::once(b'\n')) {
-            let start = Instant::now();
-            while fstd::sys::inb(COM3 + 5) & 0x20 == 0 && start.elapsed() < Duration::from_millis(50) {}
-            fstd::sys::outb(COM3, b);
+    /// The port's channel, for conductor's wait: it wakes when bytes arrive.
+    pub fn wait_item(&self) -> Option<[u32; 2]> {
+        if Instant::now().as_ns() < self.stall_until {
+            return None;
+        }
+        self.port.as_ref().map(|p| [p.0.raw(), signal::READABLE | signal::PEER_CLOSED])
+    }
+
+    fn connect(&mut self, c: &mut Conductor) {
+        if self.port.is_some() {
+            return;
+        }
+        let Some(ch) = c.open_connection("drv-uart16550", "test-door") else { return };
+        let deadline = Instant::after(Duration::from_secs(1));
+        if let Ok((_, mut hs)) =
+            Client::new(ch).call::<_, s::Opened>(s::OPEN, &s::Open { port: 3 }, Vec::new(), deadline)
+            && !hs.is_empty()
+        {
+            self.port = Some(Channel(hs.remove(0)));
+            fstd::info!("conductor: test door open on COM3");
+        }
+    }
+
+    fn send(&mut self, line: &str) {
+        self.out.extend_from_slice(line.as_bytes());
+        self.out.push(b'\n');
+    }
+
+    /// Hands the outbox to the driver, as far as it takes it.
+    fn flush(&mut self) {
+        while !self.out.is_empty() {
+            let Some(port) = &self.port else { return };
+            let n = self.out.len().min(60_000);
+            let Ok(m) = fwire::event(s::WRITE, &s::Bytes { data: self.out[..n].to_vec() }) else { return };
+            match port.send(&m, Vec::new()) {
+                Ok(()) => {
+                    self.out.drain(..n);
+                }
+                Err(FErr::Busy) => return,
+                Err(_) => {
+                    self.port = None;
+                    return;
+                }
+            }
         }
     }
 
     /// Reads what has arrived; runs each whole line.
     pub fn poll(&mut self, c: &mut Conductor) {
-        if !self.open {
-            return;
-        }
+        self.connect(c);
         for out in core::mem::take(&mut c.door_out) {
             self.send(&out);
             self.send("end");
         }
-        while fstd::sys::inb(COM3 + 5) & 1 != 0 {
-            let b = fstd::sys::inb(COM3);
-            if b == b'\n' || b == b'\r' {
-                if !self.line.is_empty() {
-                    let cmd = String::from_utf8_lossy(&core::mem::take(&mut self.line)).into_owned();
-                    self.run(c, cmd.trim());
+        while let Some(port) = &self.port
+            && Instant::now().as_ns() >= self.stall_until
+        {
+            match port.try_recv() {
+                Ok(m) => {
+                    if let Ok((h, p)) = fwire::parse(&m.bytes)
+                        && h.ordinal == s::DATA
+                        && let Ok(b) = fwire::from_payload::<s::Bytes>(p)
+                    {
+                        self.input(c, &b.data);
+                    }
                 }
-            } else if self.line.len() < 256 {
-                self.line.push(b);
+                Err(FErr::ShouldWait) => break,
+                Err(_) => {
+                    self.port = None;
+                    break;
+                }
+            }
+        }
+        self.flush();
+    }
+
+    fn input(&mut self, c: &mut Conductor, mut data: &[u8]) {
+        while !data.is_empty() {
+            if self.echo > 0 {
+                let n = self.echo.min(data.len());
+                self.out.extend_from_slice(&data[..n]);
+                data = &data[n..];
+                self.echo -= n;
+                if self.echo == 0 {
+                    self.send("end");
+                }
+                self.flush();
+                continue;
+            }
+            let (line, used) = self.lines.next(data, Instant::now().as_ns());
+            data = &data[used..];
+            // A dropped line (abandoned, too long, not UTF-8) is nothing: the
+            // client's request times out.
+            if let Some(Ok(cmd)) = line {
+                self.run(c, cmd.trim());
             }
         }
     }
@@ -68,6 +152,10 @@ impl Door {
                 Some(s) if s.child.is_some() => {
                     s.killed_at = Some(Instant::now().as_ns());
                     let ok = s.child.as_ref().is_some_and(|ch| fstd::sys::process_kill(ch.process.raw()).is_ok());
+                    // Killing the door's own carrier: what's said next waits for its return.
+                    if arg == "drv-uart16550" {
+                        self.port = None;
+                    }
                     self.send(if ok { "ok" } else { "error: kill failed" });
                     // `back` follows when it registers again.
                     return;
@@ -144,6 +232,18 @@ impl Door {
                     None => self.send("error: drv-gop-fb isn't ready"),
                 }
             }
+            "echo" => match echo_args(arg) {
+                Some((n, stall_ms)) if n <= ECHO_MAX && stall_ms <= 60_000 => {
+                    self.send("ok");
+                    self.echo = n;
+                    self.stall_until = Instant::after(Duration::from_millis(stall_ms));
+                    if n > 0 {
+                        // `end` follows the last echoed byte.
+                        return;
+                    }
+                }
+                _ => self.send("error: echo takes a byte count (at most 64 MiB) and a stall (at most 60,000 ms)"),
+            },
             "services" => {
                 let lines: Vec<String> =
                     c.services.iter().map(|s| alloc::format!("svc {} {:?}", s.m.name, s.state)).collect();
@@ -155,4 +255,15 @@ impl Door {
         }
         self.send("end");
     }
+}
+
+/// `echo`'s arguments: a byte count, and a stall in milliseconds (0 if none).
+fn echo_args(arg: &str) -> Option<(usize, u64)> {
+    let mut words = arg.split_whitespace();
+    let n = words.next()?.parse().ok()?;
+    let stall = match words.next() {
+        Some(w) => w.parse().ok()?,
+        None => 0,
+    };
+    words.next().is_none().then_some((n, stall))
 }

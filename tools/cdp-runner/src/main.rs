@@ -48,6 +48,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("input.keys", services::keys),
     ("input.mouse", services::mouse),
     ("input.absent", services::absent),
+    ("serial.echo", services::echo),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -190,16 +191,7 @@ impl Ctx {
     /// answer's lines, up to `end` (waiting up to 10 s).
     pub fn door(&self, cmd: &str) -> Result<Vec<String>, String> {
         use std::io::{BufRead, Write};
-        let addr = self.com3.as_deref().ok_or("this setup has no test door (e2e only)")?;
-        let start = Instant::now();
-        let stream = loop {
-            match std::net::TcpStream::connect(addr) {
-                Ok(s) => break s,
-                Err(e) if start.elapsed() > Duration::from_secs(10) => return Err(format!("the test door: {e}")),
-                Err(_) => std::thread::sleep(Duration::from_millis(100)),
-            }
-        };
-        stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+        let stream = self.door_stream()?;
         let mut w = stream.try_clone().map_err(|e| e.to_string())?;
         w.write_all(format!("{cmd}\n").as_bytes()).map_err(|e| e.to_string())?;
         let mut lines = Vec::new();
@@ -214,6 +206,55 @@ impl Ctx {
             }
         }
         Err(format!("the test door closed after {lines:?}"))
+    }
+
+    /// COM3's socket (waiting up to 10 s for it), reads timing out after 10 s.
+    fn door_stream(&self) -> Result<std::net::TcpStream, String> {
+        let addr = self.com3.as_deref().ok_or("this setup has no test door (e2e only)")?;
+        let start = Instant::now();
+        let stream = loop {
+            match std::net::TcpStream::connect(addr) {
+                Ok(s) => break s,
+                Err(e) if start.elapsed() > Duration::from_secs(10) => return Err(format!("the test door: {e}")),
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+        Ok(stream)
+    }
+
+    /// The door's `echo`: sends `data` and returns what came back, writing
+    /// and reading at once (a serial line runs both ways). The door first
+    /// stops reading for `stall_ms`, so the driver must hold the line.
+    pub fn door_echo(&self, data: &[u8], stall_ms: u64) -> Result<Vec<u8>, String> {
+        use std::io::{BufRead, Read, Write};
+        let stream = self.door_stream()?;
+        let mut w = stream.try_clone().map_err(|e| e.to_string())?;
+        w.write_all(format!("echo {} {stall_ms}\n", data.len()).as_bytes()).map_err(|e| e.to_string())?;
+        let mut r = std::io::BufReader::new(stream);
+        let mut line = String::new();
+        r.read_line(&mut line).map_err(|e| format!("no answer to echo: {e}"))?;
+        if line.trim() != "ok" {
+            return Err(format!("echo was answered {:?}", line.trim()));
+        }
+        let payload = data.to_vec();
+        let writer = std::thread::spawn(move || w.write_all(&payload).map_err(|e| e.to_string()));
+        let mut back = vec![0u8; data.len()];
+        let mut got = 0;
+        while got < back.len() {
+            match r.read(&mut back[got..]) {
+                Ok(0) => return Err(format!("the test door closed after {got} of {} bytes", data.len())),
+                Ok(n) => got += n,
+                Err(e) => return Err(format!("the echo stopped after {got} of {} bytes: {e}", data.len())),
+            }
+        }
+        writer.join().map_err(|_| "the writer panicked".to_string())??;
+        line.clear();
+        r.read_line(&mut line).map_err(|e| format!("no end after the echo: {e}"))?;
+        if line.trim() != "end" {
+            return Err(format!("the echo ended with {:?}, not end", line.trim()));
+        }
+        Ok(back)
     }
 
     /// A warm reboot (RAM kept), as a restart button does.

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = drv-uart16550
+binary      = /system/drivers/uart16550
+description = Carries the developer's link and the test link over the serial ports, in developer and test images only.
+start       = boot
+after       = logger, devmgr
+restart     = always
+class       = interactive
+flavours    = dev, e2e

@@ -298,3 +298,34 @@ pub fn absent(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `@serial.echo`: bytes through COM3 and back, every one: drv-uart16550's
+/// interrupt-driven receive and send, and its flow control. The door stops
+/// reading for 4 s first, so the driver's channel to it fills (`Busy`) and the
+/// driver must hold the line (stop reading the UART, and so hold the sender
+/// back) until the door catches up. 256 KB each run; the roadmap's 10 MB with
+/// `cargo xtask cdp --slow` (closeouts): about 2 port I/O exits a byte, which
+/// under KVM nested in WSL2 is ~16 KB/s, so ~11 min (TASK-044).
+pub fn echo(ctx: &mut Ctx) -> Result<(), String> {
+    let slow = std::env::var("FREALLY_CDP_SLOW").is_ok_and(|v| v == "1");
+    let n: usize = if slow { 10 * 1024 * 1024 } else { 256 * 1024 };
+    ctx.expect_log("[drv-uart16550] drv-uart16550: COM2 and COM3")?;
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let data: Vec<u8> = (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect();
+    let start = std::time::Instant::now();
+    let back = ctx.door_echo(&data, 4000)?;
+    let secs = start.elapsed().as_secs_f64();
+    if back != data {
+        let at = back.iter().zip(&data).position(|(a, b)| a != b).unwrap_or(0);
+        return Err(format!("the echo differs from the original at byte {at} of {n}"));
+    }
+    println!("    {} KB echoed without loss in {secs:.1} s, a 4 s stall included", n / 1024);
+    Ok(())
+}

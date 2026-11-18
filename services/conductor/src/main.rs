@@ -60,7 +60,11 @@ fn run(_bootstrap: u32) -> i64 {
     let mut door = door::Door::open();
     loop {
         c.start_due();
-        let (items, what) = c.wait_items();
+        #[allow(unused_mut)]
+        let (mut items, what) = c.wait_items();
+        // The door's port: an answer starts as soon as its command arrives.
+        #[cfg(feature = "flavour-e2e")]
+        items.extend(door.wait_item());
         let mut deadline = c.next_start().unwrap_or(u64::MAX);
         if cfg!(feature = "flavour-e2e") {
             deadline = deadline.min(Instant::after(Duration::from_millis(20)));

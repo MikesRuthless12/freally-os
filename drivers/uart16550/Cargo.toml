@@ -1,11 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "drv-uart16550"
-description = "The 16550 serial driver (dev and e2e)."
+description = "drv-uart16550: COM2 and COM3, interrupt driven (dev and e2e images only)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "drv-uart16550"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fstd.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

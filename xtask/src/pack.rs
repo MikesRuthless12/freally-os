@@ -81,6 +81,16 @@ pub fn pack(flavour: Flavour, out: &Path, kernel: &Path, user: &[(String, Kind, 
     std::fs::write(out, image).map_err(|e| format!("can't write {}: {e}", out.display()))
 }
 
+/// The programs a flavour's image carries: those its manifests name, so a
+/// dev- or e2e-only program never reaches a release image (FR-037).
+pub fn programs_for(flavour: Flavour) -> Result<Vec<&'static crate::build::UserProgram>, String> {
+    let mut binaries = Vec::new();
+    for (name, text) in manifests(flavour)? {
+        binaries.push(fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?.binary);
+    }
+    Ok(crate::build::PROGRAMS.iter().filter(|p| binaries.iter().any(|b| b == p.path)).collect())
+}
+
 /// The manifests (`manifests/*.svc`) whose `flavours` include `flavour`, checked
 /// as a set (unique names and binaries, every `after` known, no cycle): each
 /// one's name (its file name) and text.
@@ -130,8 +140,7 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let programs: Vec<&crate::build::UserProgram> = crate::build::PROGRAMS.iter().collect();
-    let user = crate::build::build_user(&programs, flavour)?;
+    let user = crate::build::build_user(&programs_for(flavour)?, flavour)?;
     pack(flavour, &out, &crate::build::kernel_path(), &user)?;
     println!("pack: {} (unsigned, for the {} key)", out.display(), signing_key(flavour).as_str());
     Ok(())

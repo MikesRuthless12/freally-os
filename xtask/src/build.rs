@@ -97,6 +97,12 @@ pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "svc-devmgr", bin: "devmgr", path: "/system/services/devmgr", kind: fsi::Kind::Service },
     UserProgram { package: "drv-gop-fb", bin: "drv-gop-fb", path: "/system/drivers/gop-fb", kind: fsi::Kind::Driver },
     UserProgram { package: "drv-i8042", bin: "drv-i8042", path: "/system/drivers/i8042", kind: fsi::Kind::Driver },
+    UserProgram {
+        package: "drv-uart16550",
+        bin: "drv-uart16550",
+        path: "/system/drivers/uart16550",
+        kind: fsi::Kind::Driver,
+    },
 ];
 
 /// Test images (`cargo xtask test`) add these.
@@ -183,7 +189,7 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> R
     let kernel = build_kernel(flavour, kernel_features)?;
 
     // 3. User space: conductor, and the test program in test images.
-    let mut programs: Vec<&UserProgram> = PROGRAMS.iter().collect();
+    let mut programs = pack::programs_for(flavour)?;
     if kernel_features.contains(&"ktest") {
         programs.extend(TEST_PROGRAMS);
     }
