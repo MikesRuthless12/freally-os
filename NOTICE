@@ -1,0 +1,13 @@
+Freally OS
+Copyright 2026 Mike, Havoc Software
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Freally name and logo, the Freally hardware-set renders, the Freally UI kit
+and Freally OS's own renders are NOT licensed under Apache-2.0. They are All
+Rights Reserved; see TRADEMARKS.md and assets/LICENSE-BRAND.md.
+
+Outside code compiled into Freally OS is limited to the Rust toolchain's own
+core, alloc and compiler_builtins libraries; see THIRD-PARTY-NOTICES.md.
+
+Contact: freallyproducts@gmail.com

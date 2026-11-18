@@ -1,0 +1,58 @@
+# Freally OS — the house .gitignore (from Freally Flipcopy's, 2026-11-17).
+#
+# ⛔ The repository is PUBLIC (owner, 2026-11-17: the code is Apache-2.0). The
+# planning documents are NOT: the roadmap, the PRD, the vision, the go-to-market
+# plan, the build-prompts guide, vision.json, Live-To-Do*.md, the handoff,
+# research and anything under private/ stay in the working tree only.
+# ⛔ Globs, not filenames: a sibling doc whose name an exact path does not match
+# would sit untracked but NOT ignored, one `git add -A` from public.
+
+# ── Build output ───────────────────────────────────────────────────────────
+/target/
+**/target/
+node_modules/
+*.log
+
+# ── Secrets — NEVER publish ───────────────────────────────────────────────
+# The dev, staging and release signing keys live outside the repo
+# (~/.freally-keys/ in WSL; the release key on its own USB drives). A key
+# copied in here by accident is still never one commit from anywhere.
+*.key
+*.pem
+*.p12
+*.pfx
+*.seed
+.freally-keys/
+.env
+.env.*
+
+# ── The planning documents (PLAID) — NEVER publish ────────────────────────
+/vision.json
+/docs/prd.md
+/docs/product-vision.md
+/docs/gtm.md
+/docs/research/
+/private/
+*[Rr]oadmap*
+*ROADMAP*
+*[Bb]uild-[Pp]rompts-[Gg]uide*
+*BUILD-PROMPTS-GUIDE*
+*[Bb]uild-*[Pp]rompts*
+*[Hh]andoff*
+*HANDOFF*
+*[Ff]eature-[Rr]oadmap*
+*[Cc]ompetition-[Gg]uide*
+*PROGRESS*
+Rolling-Session.md
+# The owner's by-hand checks and the v1.0.0 release gate
+/Live-To-Do*.md
+Live-To-Do*.md
+# The agents' standing orders (as in Freally Flipcopy)
+/CLAUDE.md
+
+# ── Machine-local ─────────────────────────────────────────────────────────
+.claude/
+.agents/
+/vms/
+*.qcow2
+*.fd

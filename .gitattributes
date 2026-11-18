@@ -1,0 +1,18 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+
+# Synced kit copies are byte-for-byte; git must never touch their line endings.
+assets/kit/** -text
+assets/hardware/** -text
+
+# Binaries
+*.png -text
+*.webp -text
+*.jpg -text
+*.mp4 -text
+*.wav -text
+*.efi -text
+*.fsi -text
+*.fimg -text
+*.bin -text
+*.ppm -text
