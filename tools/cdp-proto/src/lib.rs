@@ -258,6 +258,8 @@ impl WebSocket {
 pub struct Cdp {
     ws: WebSocket,
     next_id: i64,
+    /// Events that arrived while waiting for a reply (the newest 10,000).
+    events: Vec<Value>,
 }
 
 impl Drop for Cdp {
@@ -283,7 +285,12 @@ impl Cdp {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no page target"))?;
         let rest = url.strip_prefix("ws://").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not ws://"))?;
         let (hp, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-        Ok(Cdp { ws: WebSocket::connect(hp, path)?, next_id: 1 })
+        Ok(Cdp { ws: WebSocket::connect(hp, path)?, next_id: 1, events: Vec::new() })
+    }
+
+    /// The events that arrived since the last time, oldest first.
+    pub fn take_events(&mut self) -> Vec<Value> {
+        core::mem::take(&mut self.events)
     }
 
     /// Calls `method`; `Err` carries CDP's error message.
@@ -301,7 +308,14 @@ impl Cdp {
                 Message::Text(t) => {
                     let v = fjson::parse(&t).map_err(|e| format!("bad reply: {e:?}"))?;
                     if v.get("id").and_then(Value::as_i64) != Some(id) {
-                        continue; // an event, or another call's reply
+                        // An event is kept for `take_events`; another call's reply is dropped.
+                        if v.get("method").is_some() {
+                            if self.events.len() >= 10_000 {
+                                self.events.remove(0);
+                            }
+                            self.events.push(v);
+                        }
+                        continue;
                     }
                     if trace {
                         eprintln!("cdp ← {id}");

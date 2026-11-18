@@ -245,6 +245,12 @@ version = "0.1.0"
 [[package]]
 name = "svc-cdpd"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "fjson",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "svc-conductor"

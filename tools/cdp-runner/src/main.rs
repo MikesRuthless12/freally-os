@@ -15,6 +15,8 @@ mod site;
 
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
+#[path = "../../../e2e/os/specs/cdp.rs"]
+mod cdp_specs;
 #[path = "../../../e2e/os/specs/desktop.rs"]
 mod desktop;
 #[path = "../../../e2e/os/specs/kernel.rs"]
@@ -69,6 +71,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("terminal.vt", terminal::vt),
     ("shell.builtins", terminal::builtins),
     ("monitor.tabs", monitor::tabs),
+    ("cdp.freally", cdp_specs::freally),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = cdpd
+binary      = /system/services/cdpd
+description = Answers the test machine's questions about the screen and the system, in test images only.
+start       = boot
+after       = logger, stage
+restart     = always
+class       = background
+flavours    = e2e

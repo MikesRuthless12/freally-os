@@ -164,8 +164,15 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
 
 fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> Result<(usize, usize), String> {
     let mut vm = run::start_built(o, built)?;
+    // An e2e image's test door (COM3): cdp-host reaches cdpd through it.
+    let com3: Vec<String> = if o.flavour == Flavour::E2e {
+        vec![String::from("--com3"), format!("127.0.0.1:{}", o.port(3))]
+    } else {
+        Vec::new()
+    };
     let mut host = Command::new(tool("cdp-host"))
         .args(["--qmp", &o.qmp_socket().display().to_string(), "--port", &HOST_PORT.to_string()])
+        .args(&com3)
         .stdout(Stdio::null())
         .spawn()
         .map_err(|e| format!("can't start cdp-host: {e}"))?;
@@ -183,11 +190,7 @@ fn run_setup(setup: &str, o: &VmOptions, built: &build::Built, ids: &[&str]) -> 
             "--failures",
             &failures.display().to_string(),
         ])
-        .args(if o.flavour == Flavour::E2e {
-            vec![String::from("--com3"), format!("127.0.0.1:{}", o.port(3))]
-        } else {
-            Vec::new()
-        })
+        .args(&com3)
         .stdout(Stdio::piped())
         .spawn();
     let mut result = Ok((0, ids.len()));

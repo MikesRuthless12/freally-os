@@ -129,6 +129,10 @@ pub mod conductor {
         pub struct Faults { pub reports: Vec<FaultReport>, pub next_cursor: u64 }
     }
 
+    /// The boot's stages (PRD § 3), by id.
+    pub const STAGES: [&str; 15] =
+        ["F0", "F1", "B0", "B1", "B2", "B3", "K0", "K1", "K2", "K3", "C0", "S1", "S2", "S3", "S4"];
+
     wire_struct! {
         /// Each stage's id (PRD § 3) and its time in ns since B0.
         pub struct BootTimeline { pub stages: Vec<(u8, u64)> }
@@ -336,6 +340,9 @@ pub mod stage {
     /// The e2e door's read-backs (e2e images only; conductor's door only).
     pub const LIST_WINDOWS: u32 = 100;
     pub const POINTER: u32 = 101;
+    /// e2e images only, conductor and cdpd only: a window's published
+    /// accessibility tree (`ById` → `AxBytes`).
+    pub const AX_TREE: u32 = 102;
 
     /// Events on a window's channel, stage to client.
     pub const EV_KEY: u32 = 1;
@@ -445,8 +452,14 @@ pub mod stage {
 
     wire_struct! {
         /// `publish_ax_tree`: the window's accessibility tree (handle 0), a
-        /// VMO holding its length (u64, little-endian) and then the tree.
+        /// VMO holding its length (u64, little-endian) and then the tree
+        /// (`crate::proto::ax::Tree`).
         pub struct AxTree { pub window_id: u32, pub tree: HandleRef }
+    }
+
+    wire_struct! {
+        /// `ax_tree`'s answer: the tree's bytes as published (empty: none).
+        pub struct AxBytes { pub window_id: u32, pub bytes: Vec<u8> }
     }
 
     wire_struct! {
@@ -463,6 +476,8 @@ pub mod stage {
             pub owner: String,
             /// The accessibility tree it last published, in bytes (0: none yet).
             pub ax_bytes: u64,
+            /// Its surface on screen (the frame less the title strip).
+            pub surface: Rect,
         }
     }
 
@@ -566,5 +581,115 @@ pub mod monitor {
         /// The tab shown, the Processes sort, the Log filter, the tab's lines
         /// as text, and the window.
         pub struct State { pub tab: String, pub sort: String, pub filter: String, pub lines: Vec<String>, pub window: u32 }
+    }
+}
+
+/// A window's accessibility tree (TASK-063, PRD § 4): what stage keeps for
+/// cdpd, which reads it as the DOM. Nodes in order, each after its parent;
+/// bounds in surface pixels.
+pub mod ax {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// A root's parent.
+    pub const ROOT: u32 = u32::MAX;
+
+    /// Roles, in `fui::a11y::Role`'s order; `NAMES` are the DOM's node names.
+    pub const WINDOW: u8 = 0;
+    pub const GROUP: u8 = 1;
+    pub const TEXT: u8 = 2;
+    pub const BUTTON: u8 = 3;
+    pub const SWITCH: u8 = 4;
+    pub const SLIDER: u8 = 5;
+    pub const KNOB: u8 = 6;
+    pub const METER: u8 = 7;
+    pub const TEXTBOX: u8 = 8;
+    pub const LISTBOX: u8 = 9;
+    pub const OPTION: u8 = 10;
+    pub const TABLE: u8 = 11;
+    pub const ROW: u8 = 12;
+    pub const CELL: u8 = 13;
+    pub const TABLIST: u8 = 14;
+    pub const TAB: u8 = 15;
+    pub const MENU: u8 = 16;
+    pub const MENUITEM: u8 = 17;
+    pub const DIALOG: u8 = 18;
+    pub const TOOLTIP: u8 = 19;
+    pub const IMG: u8 = 20;
+    pub const SCROLLAREA: u8 = 21;
+    pub const NAMES: [&str; 22] = [
+        "WINDOW",
+        "GROUP",
+        "TEXT",
+        "BUTTON",
+        "SWITCH",
+        "SLIDER",
+        "KNOB",
+        "METER",
+        "TEXTBOX",
+        "LISTBOX",
+        "OPTION",
+        "TABLE",
+        "ROW",
+        "CELL",
+        "TABLIST",
+        "TAB",
+        "MENU",
+        "MENUITEM",
+        "DIALOG",
+        "TOOLTIP",
+        "IMG",
+        "SCROLLAREA",
+    ];
+    /// The roles a person works: each must be worked by some spec (the
+    /// inventory).
+    pub fn interactive(role: u8) -> bool {
+        matches!(role, BUTTON | SWITCH | SLIDER | KNOB | TEXTBOX | OPTION | TAB | MENUITEM)
+    }
+
+    /// State bits (`fui::a11y::state`).
+    pub const FOCUSED: u32 = 1 << 0;
+    pub const PRESSED: u32 = 1 << 1;
+    pub const CHECKED: u32 = 1 << 2;
+    pub const DISABLED: u32 = 1 << 3;
+    pub const EXPANDED: u32 = 1 << 4;
+    pub const SELECTED: u32 = 1 << 5;
+    pub const HOVERED: u32 = 1 << 6;
+
+    wire_struct! {
+        pub struct Node {
+            pub parent: u32,
+            pub role: u8,
+            pub name: String,
+            pub state: u32,
+            pub value: String,
+            pub testid: String,
+            pub x: i32,
+            pub y: i32,
+            pub w: u32,
+            pub h: u32,
+        }
+    }
+
+    wire_struct! {
+        pub struct Tree { pub nodes: Vec<Node> }
+    }
+}
+
+/// cdpd (TASK-063, e2e images only): conductor's test door hands it one CDP
+/// method at a time, its params and answer as JSON text.
+pub mod cdpd {
+    use crate::wire_struct;
+    use alloc::string::String;
+
+    pub const CALL: u32 = 1;
+
+    wire_struct! {
+        pub struct Call { pub method: String, pub params: String }
+    }
+
+    wire_struct! {
+        pub struct Answer { pub result: String }
     }
 }

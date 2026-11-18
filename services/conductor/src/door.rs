@@ -13,6 +13,8 @@
 //! - `stage …`: windows through stage's own protocol (`door_stage.rs`).
 //! - `terminal …`: the terminal's screen, fed and read (`door_terminal.rs`).
 //! - `monitor …`: what Monitor shows (`door_monitor.rs`).
+//! - `cdpd <Method> <params as JSON>` → `json <result>` (one line): a CDP
+//!   method cdpd serves (TASK-063), for cdp-host.
 //! - `echo <n> [ms]`: `ok`, then the next `n` bytes that arrive go straight
 //!   back. With `ms`, the door first stops reading for that long, so the
 //!   driver's channel fills and it has to hold the line (`@serial.echo`).
@@ -50,6 +52,8 @@ pub struct Door {
     terminal: crate::door_terminal::TermDoor,
     /// Monitor's (`monitor …`).
     monitor: crate::door_monitor::MonDoor,
+    /// cdpd's client (`cdpd …`, TASK-063).
+    cdpd: Option<Client>,
 }
 
 impl Door {
@@ -63,6 +67,7 @@ impl Door {
             stage: crate::door_stage::StageDoor::default(),
             terminal: crate::door_terminal::TermDoor::default(),
             monitor: crate::door_monitor::MonDoor::default(),
+            cdpd: None,
         }
     }
 
@@ -92,6 +97,34 @@ impl Door {
     fn send(&mut self, line: &str) {
         self.out.extend_from_slice(line.as_bytes());
         self.out.push(b'\n');
+    }
+
+    /// One CDP method through cdpd: `json <result>`, or `error: <why>`.
+    fn cdpd(&mut self, c: &mut Conductor, arg: &str) -> String {
+        use fwire::proto::cdpd as cd;
+        let (method, params) = arg.split_once(' ').unwrap_or((arg, "{}"));
+        if self.cdpd.is_none() {
+            self.cdpd = c.open_connection("cdpd", "conductor").map(fstd::ipc::Client::new);
+        }
+        let Some(cl) = self.cdpd.as_mut() else { return String::from("error: cdpd isn't up") };
+        let call = cd::Call { method: String::from(method), params: String::from(params) };
+        // cdpd asks conductor (the services, the boot, connections) while
+        // conductor waits for its answer: serve its requests meanwhile.
+        let Some(i) = c.services.iter().position(|s| s.m.name == "cdpd") else {
+            return String::from("error: no cdpd in this image");
+        };
+        let Some(dir) = c.services[i].child.as_ref().map(|ch| ch.channel.0.raw()) else {
+            return String::from("error: cdpd isn't running");
+        };
+        let deadline = Instant::after(Duration::from_secs(5));
+        match cl.call_serving::<_, cd::Answer>(cd::CALL, &call, deadline, dir, || c.request(i)) {
+            Ok(a) => alloc::format!("json {}", a.result),
+            Err(fstd::ipc::CallError::Remote(_, why)) => alloc::format!("error: {why}"),
+            Err(e) => {
+                self.cdpd = None;
+                alloc::format!("error: {e:?}")
+            }
+        }
     }
 
     /// Hands the outbox to the driver, as far as it takes it.
@@ -303,6 +336,10 @@ impl Door {
                 for line in self.monitor.run(c, arg) {
                     self.send(&line);
                 }
+            }
+            "cdpd" => {
+                let line = self.cdpd(c, arg);
+                self.send(&line);
             }
             "services" => {
                 let lines: Vec<String> =

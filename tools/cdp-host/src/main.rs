@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //! cdp-host: Freally OS's Chrome DevTools Protocol endpoint (PRD § 4, *CDP endpoint*).
 //!
-//! `cdp-host --qmp <vm>/qmp.sock [--port 9333]` listens on 127.0.0.1 only:
-//! `GET /json/version`, `GET /json/list` (one `desktop` target), and the
-//! WebSocket at `/devtools/page/desktop`, where `{id, method, params}` gets
-//! `{id, result}` or `{id, error}`. Methods come from QMP, which works against
-//! any flavour, release included. Never Playwright.
+//! `cdp-host --qmp <vm>/qmp.sock [--com3 HOST:PORT] [--port 9333]` listens on
+//! 127.0.0.1 only: `GET /json/version`, `GET /json/list` (one `desktop`
+//! target), and the WebSocket at `/devtools/page/<target>`, where
+//! `{id, method, params}` gets `{id, result}` or `{id, error}`. Methods come
+//! from QMP, which works against any flavour, release included, or, in e2e
+//! images, from cdpd through the test door on COM3 (TASK-063). After
+//! `Log.enable`, each answer is followed by the `Log.entryAdded` events
+//! logged since. Never Playwright.
 
+mod door;
 mod methods;
 
 use cdp_proto::qmp;
@@ -22,13 +26,16 @@ struct Shared {
     qmp: Mutex<qmp::Qmp>,
     shot_dir: PathBuf,
     port: u16,
+    /// The test door (e2e images), and the log's cursor once `Log.enable`d.
+    door: Option<door::Door>,
+    log: Mutex<Option<u64>>,
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
     let Some(qmp_path) = arg("--qmp") else {
-        eprintln!("cdp-host --qmp <vm>/qmp.sock [--port 9333]");
+        eprintln!("cdp-host --qmp <vm>/qmp.sock [--com3 HOST:PORT] [--port 9333]");
         std::process::exit(2);
     };
     let port: u16 = arg("--port").and_then(|p| p.parse().ok()).unwrap_or(9333);
@@ -49,7 +56,8 @@ fn main() {
         }
     };
     println!("cdp-host: listening on 127.0.0.1:{port}, QMP {}", qmp_path.display());
-    let shared = Arc::new(Shared { qmp: Mutex::new(qmp), shot_dir, port });
+    let door = arg("--com3").map(door::Door::new);
+    let shared = Arc::new(Shared { qmp: Mutex::new(qmp), shot_dir, port, door, log: Mutex::new(None) });
     for stream in listener.incoming().flatten() {
         let shared = Arc::clone(&shared);
         std::thread::spawn(move || {
@@ -80,7 +88,7 @@ fn serve(stream: TcpStream, s: &Shared) -> std::io::Result<()> {
             t.set("webSocketDebuggerUrl", ws_url.into());
             respond(&mut w, "200 OK", "application/json", Value::Arr(vec![t]).to_json().as_bytes())
         }
-        "/devtools/page/desktop" => {
+        p if p.starts_with("/devtools/page/") => {
             let mut ws = WebSocket::accept(reader, &req)?;
             loop {
                 let msg = match ws.recv() {
@@ -96,6 +104,9 @@ fn serve(stream: TcpStream, s: &Shared) -> std::io::Result<()> {
                 };
                 let reply = handle(s, &text);
                 ws.send_text(&reply.to_json())?;
+                for event in log_events(s) {
+                    ws.send_text(&event.to_json())?;
+                }
             }
         }
         _ => respond(&mut w, "404 Not Found", "text/plain", b"not found"),
@@ -112,14 +123,41 @@ fn handle(s: &Shared, text: &str) -> Value {
         return error(id, -32600, "no method");
     };
     let params = msg.get("params").cloned().unwrap_or(Value::Obj(Vec::new()));
+    match method {
+        "Log.enable" | "Log.disable" => {
+            let mut log = s.log.lock().unwrap_or_else(|p| p.into_inner());
+            *log = (method == "Log.enable").then_some(0);
+            return Value::obj([("id", id), ("result", Value::Obj(Vec::new()))]);
+        }
+        _ => {}
+    }
     let mut qmp = match s.qmp.lock() {
         Ok(q) => q,
         Err(p) => p.into_inner(),
     };
-    match methods::call(&mut qmp, &s.shot_dir, method, &params) {
+    match methods::call(&mut qmp, s.door.as_ref(), &s.shot_dir, method, &params) {
         Ok(result) => Value::obj([("id", id), ("result", result)]),
         Err((code, m)) => error(id, code, &m),
     }
+}
+
+/// After `Log.enable`: every record logged since the last answer, as
+/// `Log.entryAdded` events (none without a door).
+fn log_events(s: &Shared) -> Vec<Value> {
+    let mut log = s.log.lock().unwrap_or_else(|p| p.into_inner());
+    let (Some(cursor), Some(door)) = (*log, s.door.as_ref()) else { return Vec::new() };
+    let Ok(r) = door.cdpd("Log.read", &Value::obj([("cursor", cursor.into()), ("limit", 500u32.into())])) else {
+        return Vec::new();
+    };
+    if let Some(next) = r.get("next").and_then(Value::as_i64) {
+        *log = Some(next.max(0) as u64);
+    }
+    r.get("entries")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .map(|e| Value::obj([("method", "Log.entryAdded".into()), ("params", Value::obj([("entry", e.clone())]))]))
+        .collect()
 }
 
 fn error(id: Value, code: i64, message: &str) -> Value {

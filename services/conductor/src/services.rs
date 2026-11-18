@@ -321,7 +321,8 @@ impl Conductor {
         let allowed = want.name == "logger"
             || want.name == "stage"
             || (caller == "desktop" && demand)
-            || caller_m.is_some_and(|m| m.after.contains(&want.name));
+            || caller_m.is_some_and(|m| m.after.contains(&want.name))
+            || (cfg!(feature = "flavour-e2e") && caller == "cdpd");
         if !allowed {
             return Err((FErr::AccessDenied, alloc::format!("{caller} may not connect to {}", want.name)));
         }
@@ -330,8 +331,9 @@ impl Conductor {
             .iter()
             .find(|s| s.m.name == want.name)
             .ok_or((FErr::NotFound, alloc::format!("no service is called {}", want.name)))?;
-        // A demand service not running yet starts now; the caller waits for it.
-        if target.endpoint.is_none() && self.start_on_demand(&want.name) {
+        // A demand service not running yet starts now; the caller waits for
+        // it (cdpd only ever looks: it starts nothing).
+        if target.endpoint.is_none() && caller != "cdpd" && self.start_on_demand(&want.name) {
             return Err((FErr::ShouldWait, alloc::format!("{} is starting", want.name)));
         }
         let target = self.services.iter().find(|s| s.m.name == want.name).ok_or((FErr::NotFound, String::new()))?;
@@ -612,8 +614,7 @@ pub enum Wake {
 /// each stage in ms after B0, then the firmware's own times when the FPDT
 /// gives them (on its own clock: shown apart, never added in).
 pub fn boot_line(stages: &[(u8, u64)]) -> String {
-    const NAMES: [&str; 15] =
-        ["F0", "F1", "B0", "B1", "B2", "B3", "K0", "K1", "K2", "K3", "C0", "S1", "S2", "S3", "S4"];
+    const NAMES: [&str; 15] = c::STAGES;
     let ms = |ns: u64| alloc::format!("{}.{}", ns / 1_000_000, ns / 100_000 % 10);
     let mut line = String::new();
     for (id, ns) in stages.iter().filter(|(id, _)| *id >= 2) {

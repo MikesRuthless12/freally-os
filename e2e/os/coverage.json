@@ -162,6 +162,13 @@
       "what": "Every built-in runs in the terminal and says what it should; each answers --help; mistakes say how; restart isn't in an e2e image; theme and scale reach stage; line editing and history."
     },
     {
+      "id": "cdp.freally",
+      "task": "TASK-063",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/cdp.rs",
+      "what": "cdpd's methods through cdp-host: the targets, the processes (conductor first), the boot timeline, the faults, readBack of stage's theme, the metrics and the Log domain, each agreeing with the real services."
+    },
+    {
       "id": "monitor.tabs",
       "task": "TASK-062",
       "setup": "e2e",

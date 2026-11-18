@@ -141,6 +141,49 @@ impl Client {
     }
 }
 
+impl Client {
+    /// As `call` (no handles either way), but while it waits it also watches
+    /// `other`, a channel, running `serve` whenever a message waits there:
+    /// for a callee that may ask the caller in turn (conductor's test door
+    /// asks cdpd, which asks conductor for the services).
+    pub fn call_serving<Req: Wire, Rep: Wire>(
+        &mut self,
+        ordinal: u32,
+        req: &Req,
+        deadline_ns: u64,
+        other: u32,
+        mut serve: impl FnMut(),
+    ) -> Result<Rep, CallError> {
+        use fcore_abi::signal;
+        let txid = self.next_txid;
+        self.next_txid = self.next_txid.wrapping_add(1).max(1);
+        self.channel.send(&fwire::request(txid, ordinal, req)?, Vec::new())?;
+        loop {
+            let items = [[self.channel.0.raw(), signal::READABLE | signal::PEER_CLOSED], [other, signal::READABLE]];
+            match sys::wait_many(&items, deadline_ns)? {
+                0 => {
+                    let m = match self.channel.try_recv() {
+                        Ok(m) => m,
+                        Err(FErr::ShouldWait) => continue,
+                        Err(e) => return Err(e.into()),
+                    };
+                    let (h, payload) = fwire::parse(&m.bytes)?;
+                    if h.txid != txid {
+                        continue; // a late reply to an earlier call
+                    }
+                    check_reply(&h, txid, ordinal)?;
+                    if h.is_error() {
+                        let (code, text) = fwire::error_of(payload)?;
+                        return Err(CallError::Remote(code, text));
+                    }
+                    return Ok(fwire::from_payload(payload)?);
+                }
+                _ => serve(),
+            }
+        }
+    }
+}
+
 fn check_reply(h: &Header, txid: u32, ordinal: u32) -> Result<(), CallError> {
     if !h.is_reply() || h.txid != txid || h.ordinal != ordinal {
         return Err(CallError::Wire(WireError::BadTag));

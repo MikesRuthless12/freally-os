@@ -1,13 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The CDP methods cdp-host serves from QMP. Methods that need the in-OS test
-//! door (`cdpd`, e2e only) say so until it exists (Phase 3, TASK-063).
+//! The CDP methods cdp-host serves: from QMP, or (e2e images) from cdpd
+//! through the test door (TASK-063). Without a door, cdpd's methods say so.
 
+use crate::door::Door;
 use cdp_proto::qmp::Qmp;
 use fjson::Value;
 use std::path::Path;
 
+/// The methods cdpd serves.
+fn cdpd_serves(m: &str) -> bool {
+    m.starts_with("DOM.")
+        || m.starts_with("Accessibility.")
+        || m == "Log.read"
+        || m == "Performance.getMetrics"
+        || m == "Target.getTargets"
+        || matches!(
+            m,
+            "Freally.getBootTimeline"
+                | "Freally.getProcesses"
+                | "Freally.getFaults"
+                | "Freally.readBack"
+                | "Freally.inventory"
+        )
+}
+
 /// Serves one CDP call. `Ok(result)` or `Err((code, message))`.
-pub fn call(qmp: &mut Qmp, shot_dir: &Path, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+pub fn call(
+    qmp: &mut Qmp,
+    door: Option<&Door>,
+    shot_dir: &Path,
+    method: &str,
+    params: &Value,
+) -> Result<Value, (i64, String)> {
+    if cdpd_serves(method)
+        && let Some(d) = door
+    {
+        return d.cdpd(method, params).map_err(|e| (-32000, e));
+    }
+    if method == "Target.activateTarget"
+        && let Some(d) = door
+    {
+        let id = params.get("targetId").and_then(Value::as_str).unwrap_or("");
+        return d.line(&format!("stage focus {id}")).map(|_| Value::Obj(Vec::new())).map_err(|e| (-32000, e));
+    }
     match method {
         "Page.captureScreenshot" => screenshot(qmp, shot_dir, params).map_err(|e| (-32000, e)),
         "Input.dispatchKeyEvent" => key(qmp, params).map_err(|e| (-32000, e)),
@@ -21,12 +56,8 @@ pub fn call(qmp: &mut Qmp, shot_dir: &Path, method: &str, params: &Value) -> Res
             let _ = qmp.execute("quit", None);
             Ok(Value::Obj(Vec::new()))
         }
-        m if m.starts_with("DOM.")
-            || m.starts_with("Accessibility.")
-            || m.starts_with("Freally.")
-            || m == "Input.insertText" =>
-        {
-            Err((-32601, format!("{m} needs the in-OS test door (cdpd), which arrives in Phase 3")))
+        m if cdpd_serves(m) || m.starts_with("Freally.") || m == "Target.activateTarget" => {
+            Err((-32601, format!("{m} needs the in-OS test door (cdpd), in e2e images only")))
         }
         m => Err((-32601, format!("{m} isn't served"))),
     }

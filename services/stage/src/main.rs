@@ -356,7 +356,13 @@ impl Stage {
                 })
             }
             #[cfg(feature = "flavour-e2e")]
-            st::LIST_WINDOWS if name == "conductor" => Ok((fwire::to_payload(&self.list()), Vec::new())),
+            st::LIST_WINDOWS if matches!(name.as_str(), "conductor" | "cdpd") => {
+                Ok((fwire::to_payload(&self.list()), Vec::new()))
+            }
+            #[cfg(feature = "flavour-e2e")]
+            st::AX_TREE if matches!(name.as_str(), "conductor" | "cdpd") => fwire::from_payload::<st::ById>(p)
+                .map_err(|_| (FErr::InvalidArgs, "unreadable"))
+                .map(|b| (fwire::to_payload(&self.ax_bytes(b.window_id)), Vec::new())),
             #[cfg(feature = "flavour-e2e")]
             st::POINTER if name == "conductor" => Ok((
                 fwire::to_payload(&st::PointerAt { x: self.desk.x, y: self.desk.y, buttons: self.desk.buttons }),
@@ -499,6 +505,21 @@ impl Stage {
         Ok((fwire::to_payload(&st::Shot { vmo: HandleRef(0), w: r.w, h: r.h }), alloc::vec![theirs]))
     }
 
+    /// A window's published tree, as published (at most 60 KiB: a message's room).
+    #[cfg(feature = "flavour-e2e")]
+    fn ax_bytes(&self, window_id: u32) -> st::AxBytes {
+        let mut bytes = Vec::new();
+        if let Some((vmo, len)) = self.wins.iter().find(|w| w.id == window_id).and_then(|w| w.ax.as_ref())
+            && *len <= 60 * 1024
+        {
+            bytes = alloc::vec![0u8; *len as usize];
+            if fstd::sys::vmo_read(vmo.raw(), 8, &mut bytes).is_err() {
+                bytes.clear();
+            }
+        }
+        st::AxBytes { window_id, bytes }
+    }
+
     #[cfg(feature = "flavour-e2e")]
     fn list(&self) -> st::Windows {
         let focused = self.desk.windows.focused();
@@ -517,6 +538,10 @@ impl Stage {
                 z: z as u32,
                 owner: w.owner.clone(),
                 ax_bytes: self.wins.iter().find(|x| x.id == w.id).and_then(|x| x.ax.as_ref()).map_or(0, |a| a.1),
+                surface: {
+                    let s = self.desk.windows.surface_rect(w);
+                    st::Rect { x: s.x, y: s.y, w: s.w, h: s.h }
+                },
             })
             .collect();
         let theme = if self.theme.mode == Mode::Light { st::Theme::Light } else { st::Theme::Dark };
