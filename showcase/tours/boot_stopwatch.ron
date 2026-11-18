@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// The boot counter (GTM § 7): power on to the desktop with a stopwatch, then
+// the timeline in Monitor → Boot, every stage's real time.
+Tour(
+    name: "boot-stopwatch",
+    flavour: "dev",
+    stopwatch: true,
+    steps: [
+        Record(ms: 6000),
+        Key(code: "MetaLeft+KeyM"),
+        Record(ms: 1500),
+        Key(code: "ControlLeft+Tab"),
+        Record(ms: 6000),
+    ],
+)

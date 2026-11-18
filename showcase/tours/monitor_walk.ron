@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Every process explained (GTM § 7): Monitor's four tabs, from the keyboard.
+Tour(
+    name: "monitor-walk",
+    flavour: "dev",
+    steps: [
+        Record(ms: 4500),
+        Key(code: "MetaLeft+KeyM"),
+        Record(ms: 4000),
+        Key(code: "ControlLeft+Tab"),
+        Record(ms: 4000),
+        Key(code: "ControlLeft+Tab"),
+        Record(ms: 3000),
+        Key(code: "ControlLeft+Tab"),
+        Record(ms: 4000),
+    ],
+)

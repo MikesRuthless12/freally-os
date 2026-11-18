@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+// Freally Terminal and Freally Shell: the built-ins, typed live.
+Tour(
+    name: "terminal",
+    flavour: "dev",
+    steps: [
+        Record(ms: 4500),
+        Key(code: "MetaLeft+KeyT"),
+        Record(ms: 1500),
+        Type(text: "help\n"),
+        Record(ms: 2500),
+        Type(text: "ps\n"),
+        Record(ms: 3000),
+        Type(text: "boot\n"),
+        Record(ms: 3000),
+        Type(text: "uptime\n"),
+        Record(ms: 2500),
+    ],
+)

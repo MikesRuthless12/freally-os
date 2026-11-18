@@ -3,8 +3,11 @@
 //! Freally OS itself, never a mock-up (the fleet's rule).
 //!
 //! A tour (`showcase/tours/*.ron`) boots its flavour headless and runs steps:
-//! `Record(ms: N)` films N ms, `Key(code: "KeyA")` presses a key, `Wait(ms: N)`
-//! waits without filming. Frames are QMP screendumps on a 30 fps clock (a slow
+//! `Record(ms: N)` films N ms, `Key(code: "KeyA")` presses a key (or a chord,
+//! `"MetaLeft+KeyM"`, pressed in order and let go in reverse), `Type(text:
+//! "ps\n")` types, filming each key as it lands, and `Wait(ms: N)` waits
+//! without filming. `stopwatch: true` burns a stopwatch from power on into the
+//! film (a measurement on the real footage, in Noto Sans Mono). Frames are QMP screendumps on a 30 fps clock (a slow
 //! dump repeats the last frame, so the clock stays true); `ffmpeg` (a host tool)
 //! makes the MP4 in `target/showcase/`. From Phase 3 the fleet cursor is drawn
 //! by the OS, so it's in every frame.
@@ -24,6 +27,7 @@ pub enum Step {
     Record(u64),
     Wait(u64),
     Key(String),
+    Type(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -31,6 +35,7 @@ pub struct Tour {
     pub name: String,
     pub flavour: String,
     pub steps: Vec<Step>,
+    pub stopwatch: bool,
 }
 
 /// Parses the small RON subset tours use: `Tour(name: "…", flavour: "…", steps: [Step(key: value), …])`.
@@ -39,13 +44,14 @@ pub fn parse(text: &str) -> Result<Tour, String> {
     let mut t = Tokens { s: src.as_bytes(), i: 0 };
     t.word("Tour")?;
     t.punct(b'(')?;
-    let (mut name, mut flavour, mut steps) = (None, None, Vec::new());
+    let (mut name, mut flavour, mut steps, mut stopwatch) = (None, None, Vec::new(), false);
     while !t.peek(b')') {
         let key = t.ident()?;
         t.punct(b':')?;
         match key.as_str() {
             "name" => name = Some(t.string()?),
             "flavour" => flavour = Some(t.string()?),
+            "stopwatch" => stopwatch = t.ident()? == "true",
             "steps" => {
                 t.punct(b'[')?;
                 while !t.peek(b']') {
@@ -57,6 +63,7 @@ pub fn parse(text: &str) -> Result<Tour, String> {
                         ("Record", "ms") => Step::Record(t.number()?),
                         ("Wait", "ms") => Step::Wait(t.number()?),
                         ("Key", "code") => Step::Key(t.string()?),
+                        ("Type", "text") => Step::Type(t.string()?),
                         _ => return Err(format!("unknown step {kind}({field}: …)")),
                     };
                     t.punct(b')')?;
@@ -70,7 +77,12 @@ pub fn parse(text: &str) -> Result<Tour, String> {
         t.comma();
     }
     t.punct(b')')?;
-    Ok(Tour { name: name.ok_or("a tour needs a name")?, flavour: flavour.unwrap_or_else(|| "dev".into()), steps })
+    Ok(Tour {
+        name: name.ok_or("a tour needs a name")?,
+        flavour: flavour.unwrap_or_else(|| "dev".into()),
+        steps,
+        stopwatch,
+    })
 }
 
 struct Tokens<'a> {
@@ -122,7 +134,8 @@ impl Tokens<'_> {
         while self.s.get(self.i).is_some_and(|&c| c != b'"') {
             self.i += 1;
         }
-        let v = String::from_utf8_lossy(&self.s[start..self.i]).into_owned();
+        // `\n` is Enter (a `Type` step's).
+        let v = String::from_utf8_lossy(&self.s[start..self.i]).replace("\\n", "\n");
         self.punct(b'"')?;
         Ok(v)
     }
@@ -136,6 +149,56 @@ impl Tokens<'_> {
             .ok()
             .and_then(|n| n.parse().ok())
             .ok_or_else(|| format!("expected a number at byte {start}"))
+    }
+}
+
+/// One key event, down or up.
+fn key_event(q: &mut Qmp, qcode: &str, down: bool) -> Result<(), String> {
+    let ev = Value::obj([
+        ("type", "key".into()),
+        (
+            "data",
+            Value::obj([
+                ("down", down.into()),
+                ("key", Value::obj([("type", "qcode".into()), ("data", qcode.into())])),
+            ]),
+        ),
+    ]);
+    q.execute("input-send-event", Some(Value::obj([("events", Value::Arr(vec![ev]))]))).map(|_| ())
+}
+
+/// A key, or a chord (`"MetaLeft+KeyM"`): pressed in order, let go in reverse.
+fn chord(q: &mut Qmp, spec: &str) -> Result<(), String> {
+    let codes =
+        spec.split('+').map(|c| qmp::qcode(c).ok_or_else(|| format!("no key {c}"))).collect::<Result<Vec<_>, _>>()?;
+    for c in &codes {
+        key_event(q, c, true)?;
+    }
+    for c in codes.iter().rev() {
+        key_event(q, c, false)?;
+    }
+    Ok(())
+}
+
+/// The keys that type `c` on the US layout (shifted where it needs Shift).
+fn keys_for(c: char) -> Option<String> {
+    let plain = |k: &str| Some(k.to_string());
+    let shifted = |k: &str| Some(format!("ShiftLeft+{k}"));
+    match c {
+        'a'..='z' => plain(&format!("Key{}", c.to_ascii_uppercase())),
+        'A'..='Z' => shifted(&format!("Key{c}")),
+        '0'..='9' => plain(&format!("Digit{c}")),
+        ' ' => plain("Space"),
+        '\n' => plain("Enter"),
+        '-' => plain("Minus"),
+        '_' => shifted("Minus"),
+        '.' => plain("Period"),
+        '/' => plain("Slash"),
+        '=' => plain("Equal"),
+        ',' => plain("Comma"),
+        ';' => plain("Semicolon"),
+        ':' => shifted("Semicolon"),
+        _ => None,
     }
 }
 
@@ -181,7 +244,14 @@ pub fn film(tour: &Tour) -> Result<std::path::PathBuf, String> {
             match step {
                 Step::Record(ms) => record(&mut q, &frames, &mut next, *ms)?,
                 Step::Wait(ms) => std::thread::sleep(Duration::from_millis(*ms)),
-                Step::Key(code) => qmp::tap(&mut q, &qmp::qcode(code).ok_or_else(|| format!("no key {code}"))?)?,
+                Step::Key(code) => chord(&mut q, code)?,
+                Step::Type(text) => {
+                    for c in text.chars() {
+                        chord(&mut q, &keys_for(c).ok_or_else(|| format!("can't type {c:?}"))?)?;
+                        // A typist's pace, on film.
+                        record(&mut q, &frames, &mut next, 110)?;
+                    }
+                }
             }
         }
         Ok::<u32, String>(next)
@@ -194,10 +264,18 @@ pub fn film(tour: &Tour) -> Result<std::path::PathBuf, String> {
     // OS's own mode) and fit earlier frames inside it, aspect kept.
     let last = std::fs::read(frames.join(format!("{:05}.ppm", n.saturating_sub(1)))).map_err(|e| e.to_string())?;
     let (w, h, _) = fimage::ppm::parse(&last)?;
-    let fit = format!(
+    let mut fit = format!(
         "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0x{:06X}",
         fscreen::colours::BACKGROUND
     );
+    if tour.stopwatch {
+        // Seconds since power on (the first frame), to the millisecond.
+        let font = util::repo_root().join("assets/fonts/noto/NotoSansMono-Regular.ttf");
+        fit.push_str(&format!(
+            ",drawtext=fontfile='{}':text='%{{eif\\:t\\:d}}.%{{eif\\:mod(t*1000\\,1000)\\:d\\:3}} s since power on':x=w-tw-32:y=32:fontsize=36:fontcolor=white:box=1:boxcolor=0x000000AA:boxborderw=12",
+            font.display()
+        ));
+    }
     util::run_ok(
         Command::new("ffmpeg")
             .args(["-loglevel", "error", "-y", "-framerate", &FPS.to_string(), "-i"])
@@ -243,6 +321,27 @@ mod tests {
         assert_eq!(t.name, "demo");
         assert_eq!(t.flavour, "e2e");
         assert_eq!(t.steps, vec![Step::Record(500), Step::Key("KeyM".into()), Step::Wait(10)]);
+    }
+
+    #[test]
+    fn parses_chords_typing_and_the_stopwatch() {
+        let t =
+            parse("Tour(name: \"t\", stopwatch: true, steps: [Key(code: \"MetaLeft+KeyM\"), Type(text: \"ps\\n\")])")
+                .unwrap();
+        assert!(t.stopwatch);
+        assert_eq!(t.steps, vec![Step::Key("MetaLeft+KeyM".into()), Step::Type("ps\n".into())]);
+        assert_eq!(keys_for('A').as_deref(), Some("ShiftLeft+KeyA"));
+        assert_eq!(keys_for('\n').as_deref(), Some("Enter"));
+        assert!(keys_for('€').is_none());
+        // Every tour in the repo parses, and types only what it can.
+        for e in std::fs::read_dir(util::repo_root().join("showcase/tours")).unwrap().flatten() {
+            let t = parse(&std::fs::read_to_string(e.path()).unwrap()).unwrap();
+            for s in &t.steps {
+                if let Step::Type(text) = s {
+                    assert!(text.chars().all(|c| keys_for(c).is_some()), "{}: {text:?}", t.name);
+                }
+            }
+        }
     }
 
     #[test]
