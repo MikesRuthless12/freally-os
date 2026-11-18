@@ -71,6 +71,8 @@ fn every_conductor_message_round_trips() {
                     restarts: 1,
                     started_ns: 99,
                     binary_sha256: [0x5A; 32],
+                    cpu_ns: 12_345_678,
+                    mem_bytes: 6 << 20,
                 }],
             },
         );
@@ -180,6 +182,26 @@ fn random_bytes_never_panic() {
         let _ = from_payload::<c::Services>(&bytes);
         let _ = from_payload::<l::Records>(&bytes);
     }
+}
+
+#[test]
+fn the_app_doors_round_trip() {
+    use crate::proto::{monitor as m, terminal as t};
+    round_trip(
+        m::STATE,
+        m::State {
+            tab: "Processes".to_string(),
+            sort: "Name up".to_string(),
+            filter: "all 0".to_string(),
+            lines: vec!["stage | Running | 25.0 MiB | 2.0 % | 0".to_string()],
+            window: 7,
+        },
+    );
+    round_trip(t::FEED, t::Bytes { data: b"\x1b[31mred\x1b[0m".to_vec() });
+    round_trip(
+        t::SCREEN,
+        t::Screen { rows: vec!["freally:~$ ".to_string()], cursor: (0, 11), scrollback: 3, cols: 96, window: 4 },
+    );
 }
 
 #[test]

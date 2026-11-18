@@ -335,6 +335,11 @@ impl Conductor {
             return Err((FErr::ShouldWait, alloc::format!("{} is starting", want.name)));
         }
         let target = self.services.iter().find(|s| s.m.name == want.name).ok_or((FErr::NotFound, String::new()))?;
+        // Ended for good (cleanly, or held after too many crashes): no use
+        // waiting (stage, finding no PS/2 driver, carries on at once).
+        if target.endpoint.is_none() && matches!(target.state, ServiceState::Stopped | ServiceState::Held) {
+            return Err((FErr::BadState, alloc::format!("{} isn't running", want.name)));
+        }
         let endpoint =
             target.endpoint.as_ref().ok_or((FErr::ShouldWait, alloc::format!("{} isn't ready yet", want.name)))?;
         let (a, b) = Channel::pair().map_err(|e| (e, String::from("channel_create")))?;
@@ -359,21 +364,27 @@ impl Conductor {
             .get_mut(r.endpoint.0 as usize)
             .and_then(Option::take)
             .ok_or((FErr::InvalidArgs, String::from("no endpoint")))?;
-        let now = Instant::now().as_ns();
-        let s = &mut self.services[i];
-        s.endpoint = Some(Channel(ep));
-        s.state = ServiceState::Running;
-        if let Some(t) = s.killed_at.take() {
-            let ms = (now.saturating_sub(t)) / 1_000_000;
-            fstd::info!("conductor: {} back in {ms} ms", s.m.name);
-            self.door_out.push(alloc::format!("back {} {ms}", s.m.name));
-        }
+        self.services[i].endpoint = Some(Channel(ep));
+        self.came_up(i);
         if r.name == "logger" {
             self.attach_log();
         }
         self.check_s1();
         self.check_s2();
         Ok((Vec::new(), Vec::new()))
+    }
+
+    /// Service `i` is up (it registered, or stamped its milestone): Running,
+    /// and, after a kill, how long it took to come back.
+    fn came_up(&mut self, i: usize) {
+        let now = Instant::now().as_ns();
+        let s = &mut self.services[i];
+        s.state = ServiceState::Running;
+        if let Some(t) = s.killed_at.take() {
+            let ms = (now.saturating_sub(t)) / 1_000_000;
+            fstd::info!("conductor: {} back in {ms} ms", s.m.name);
+            self.door_out.push(alloc::format!("back {} {ms}", s.m.name));
+        }
     }
 
     /// S2 (PRD § 3): the framebuffer and input drivers are ready, an input
@@ -422,10 +433,22 @@ impl Conductor {
             (14, "desktop") => &mut self.s4,
             _ => return Err((FErr::AccessDenied, alloc::format!("{caller} may not stamp stage {}", s.stage))),
         };
-        if *slot != 0 {
-            return Err((FErr::BadState, String::from("already stamped")));
+        let first = *slot == 0;
+        let i = self.services.iter().position(|v| v.m.name == caller);
+        // A milestone says the service is up, endpoint or not (the desktop
+        // serves no one). Restarted, it says so again: up, the boot's times
+        // left as they were.
+        match (first, i) {
+            (true, _) => *slot = s.tsc,
+            (false, Some(i)) if self.services[i].restarts > 0 => {
+                self.came_up(i);
+                return Ok(Vec::new());
+            }
+            _ => return Err((FErr::BadState, String::from("already stamped"))),
         }
-        *slot = s.tsc;
+        if let Some(i) = i {
+            self.came_up(i);
+        }
         fstd::info!("conductor: boot: {}", boot_line(&self.stages()));
         // The desktop takes input: a trial slot's 10 s start (PRD § 3, rule 4).
         if s.stage == 14 {
@@ -479,10 +502,26 @@ impl Conductor {
     }
 
     fn list(&self) -> Result<Vec<u8>, (FErr, String)> {
-        let services = self
-            .services
-            .iter()
-            .map(|s| c::ServiceInfo {
+        let usage = |process: u32| fstd::sys::process_usage(process).unwrap_or((0, 0));
+        // Conductor first: PID 1, running since C0, never restarted.
+        let me = fcore_abi::well_known::SELF_PROCESS;
+        let (cpu_ns, mem_bytes) = usage(me);
+        let mut services = alloc::vec![c::ServiceInfo {
+            name: String::from("conductor"),
+            description: String::from(
+                "Starts every service in order, restarts the ones that crash, and keeps the boot's times."
+            ),
+            state: c::ServiceState::Running,
+            pid: fstd::sys::process_info(me).map_or(1, |(pid, ..)| pid),
+            restarts: 0,
+            started_ns: 0,
+            binary_sha256: [0; 32],
+            cpu_ns,
+            mem_bytes,
+        }];
+        services.extend(self.services.iter().map(|s| {
+            let (cpu_ns, mem_bytes) = s.child.as_ref().map_or((0, 0), |c| usage(c.process.raw()));
+            c::ServiceInfo {
                 name: s.m.name.clone(),
                 description: s.m.description.clone(),
                 state: s.state,
@@ -490,8 +529,10 @@ impl Conductor {
                 restarts: s.restarts,
                 started_ns: s.started_ns,
                 binary_sha256: s.sha,
-            })
-            .collect();
+                cpu_ns,
+                mem_bytes,
+            }
+        }));
         Ok(fwire::to_payload(&c::Services { services }))
     }
 

@@ -13,6 +13,14 @@ version = "0.1.0"
 [[package]]
 name = "app-monitor"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "ffont",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
 
 [[package]]
 name = "app-settings"

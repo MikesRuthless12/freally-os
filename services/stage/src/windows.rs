@@ -3,12 +3,15 @@
 //! has focus. Pure state, so every rule has a host test; `compose` draws it
 //! and `input` moves it.
 //!
-//! - Three layers, bottom to top: panels (the desktop's wallpaper and Rack),
-//!   normal and fullscreen windows, popups. Raising moves a window to the
-//!   top of its own layer.
+//! - Four layers, bottom to top: a panel filling the screen (a wall), normal
+//!   and fullscreen windows, any other panel (the Rack), popups. Raising
+//!   moves a window to the top of its own layer.
 //! - A normal window's frame is its title strip above its surface; stage
-//!   places it (centred, then cascading). Panels and popups are placed by
-//!   their clients; a fullscreen window covers the screen.
+//!   places it (centred, then cascading) in the work area: the screen less
+//!   the bands of panels docked along its top or bottom edge, the screen's
+//!   width wide. Dragged, its strip stays in the work area. Panels and
+//!   popups are placed by their clients; a fullscreen window covers the
+//!   screen.
 //! - Focus follows raising; closing the focused window passes focus to the
 //!   one used most recently before it.
 
@@ -94,6 +97,9 @@ pub struct Window {
     /// name as conductor gave it.
     pub client: u32,
     pub owner: String,
+    /// Bottom to top: a wall, normal and fullscreen windows, other panels,
+    /// popups and tooltips.
+    layer: u8,
 }
 
 impl Window {
@@ -102,11 +108,7 @@ impl Window {
     }
 
     fn layer(&self) -> u8 {
-        match self.kind {
-            Kind::Panel => 0,
-            Kind::Normal | Kind::Fullscreen => 1,
-            Kind::Popup | Kind::Tooltip => 2,
-        }
+        self.layer
     }
 }
 
@@ -199,16 +201,26 @@ impl Windows {
             Kind::Fullscreen => Rect::new(0, 0, sw, sh),
             Kind::Panel | Kind::Popup | Kind::Tooltip => Rect::new(at.0, at.1, w, frame_h),
             Kind::Normal => {
-                // Centred, each next one 32 px further down and right, wrapping.
+                // Centred in the work area, each next one 32 px further down
+                // and right, wrapping; kept in the work area if it fits.
                 let step = 32 * (self.placed % 8) as i32;
                 self.placed += 1;
+                let (top, bottom) = self.work();
                 let x = (sw as i32 - w as i32) / 2 + step;
-                let y = (sh as i32 - frame_h as i32) / 2 + step;
-                Rect::new(x.clamp(0, (sw - w) as i32), y.clamp(0, (sh - frame_h.min(sh)) as i32), w, frame_h)
+                let y = top + (bottom - top - frame_h as i32) / 2 + step;
+                let y = y.min(bottom - frame_h as i32).max(top.min(sh as i32 - frame_h as i32)).max(0);
+                Rect::new(x.clamp(0, (sw - w) as i32), y, w, frame_h)
             }
         };
         let id = self.next;
         self.next += 1;
+        let wall = frame.x <= 0 && frame.y <= 0 && frame.w >= sw && frame.h >= sh;
+        let layer = match kind {
+            Kind::Panel if wall => 0,
+            Kind::Normal | Kind::Fullscreen => 1,
+            Kind::Panel => 2,
+            Kind::Popup | Kind::Tooltip => 3,
+        };
         let win = Window {
             id,
             title: String::from(title),
@@ -220,8 +232,8 @@ impl Windows {
             min_h,
             client,
             owner: String::from(owner),
+            layer,
         };
-        let layer = win.layer();
         let at = self.list.iter().position(|o| o.layer() > layer).unwrap_or(self.list.len());
         self.list.insert(at, win);
         if !matches!(kind, Kind::Panel | Kind::Tooltip) {
@@ -263,15 +275,29 @@ impl Windows {
         Some(gone)
     }
 
+    /// The work area's top and bottom: the screen less the bands of panels
+    /// docked along its top or bottom edge, the screen's width wide.
+    pub fn work(&self) -> (i32, i32) {
+        let (sw, sh) = (self.screen.0, self.screen.1 as i32);
+        let docked = |w: &&Window| w.layer == 2 && w.frame.x <= 0 && w.frame.w >= sw;
+        let top =
+            self.list.iter().filter(docked).filter(|w| w.frame.y <= 0).map(|w| w.frame.y + w.frame.h as i32).max();
+        let bottom =
+            self.list.iter().filter(docked).filter(|w| w.frame.y + w.frame.h as i32 >= sh).map(|w| w.frame.y).min();
+        (top.unwrap_or(0).clamp(0, sh), bottom.unwrap_or(sh).clamp(0, sh))
+    }
+
     /// Moves a window's frame to (x, y), kept where its strip can still be
-    /// grabbed: the strip's top on screen and 48 px of it across. Returns the
-    /// area that changed (old and new frames).
+    /// grabbed: the strip's top in the work area and 48 px of it across.
+    /// Returns the area that changed (old and new frames).
     pub fn move_to(&mut self, id: WindowId, x: i32, y: i32) -> Rect {
-        let (sw, sh) = self.screen;
+        let sw = self.screen.0;
+        let (top, bottom) = self.work();
         let grip = 48.min(sw as i32);
+        let strip = self.strip as i32;
         let Some(w) = self.list.iter_mut().find(|w| w.id == id) else { return Rect::default() };
         let x = x.clamp(grip - w.frame.w as i32, sw as i32 - grip);
-        let y = y.clamp(0, sh as i32 - self.strip.min(sh) as i32);
+        let y = y.clamp(top, (bottom - strip).max(top));
         let old = w.frame;
         w.frame.x = x;
         w.frame.y = y;

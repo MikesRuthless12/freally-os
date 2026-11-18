@@ -278,14 +278,19 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let p = handle(a0, rights::READ)?;
             let pr = proc::as_process(&p.object)?;
             let inner = pr.inner.lock();
-            // pid u32, threads u32, handles u32, exited u32 (1/0), exit code i64, name [u8; 32]
-            let mut out = [0u8; 56];
+            // pid u32, threads u32, handles u32, exited u32 (1/0), exit code i64,
+            // name [u8; 32], then the CPU time its live threads have run (ns, u64)
+            // and the bytes mapped in its address space (u64).
+            let mut out = [0u8; 72];
             out[0..4].copy_from_slice(&pr.pid.to_le_bytes());
             out[4..8].copy_from_slice(&(inner.threads.len() as u32).to_le_bytes());
             out[8..12].copy_from_slice(&(inner.handles.len() as u32).to_le_bytes());
             out[12..16].copy_from_slice(&(inner.exit_code.is_some() as u32).to_le_bytes());
             out[16..24].copy_from_slice(&inner.exit_code.unwrap_or(0).to_le_bytes());
             out[24..56].copy_from_slice(&pr.name);
+            let ticks: u64 = inner.threads.iter().map(|t| t.run_tsc.load(core::sync::atomic::Ordering::Relaxed)).sum();
+            out[56..64].copy_from_slice(&crate::time::ticks_to_ns(ticks).to_le_bytes());
+            out[64..72].copy_from_slice(&inner.aspace.mapped_bytes().to_le_bytes());
             let n = (a2 as usize).min(out.len());
             drop(inner);
             copy_to_user(a1, &out[..n])?;

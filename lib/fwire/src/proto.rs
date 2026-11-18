@@ -70,6 +70,9 @@ pub mod conductor {
             pub restarts: u32,
             pub started_ns: u64,
             pub binary_sha256: [u8; 32],
+            /// CPU time its process has run (ns) and the bytes it has mapped.
+            pub cpu_ns: u64,
+            pub mem_bytes: u64,
         }
     }
 
@@ -547,5 +550,21 @@ pub mod terminal {
             pub cols: u32,
             pub window: u32,
         }
+    }
+}
+
+/// Monitor's test door (TASK-062, e2e images only, conductor's door only):
+/// what it shows, as text.
+pub mod monitor {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    pub const STATE: u32 = 1;
+
+    wire_struct! {
+        /// The tab shown, the Processes sort, the Log filter, the tab's lines
+        /// as text, and the window.
+        pub struct State { pub tab: String, pub sort: String, pub filter: String, pub lines: Vec<String>, pub window: u32 }
     }
 }

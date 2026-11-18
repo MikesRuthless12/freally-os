@@ -211,3 +211,12 @@ pub fn uefi_set_var(name: &str, data: &[u8]) -> Result<(), FErr> {
     call1(nr::UEFI_SET_VAR, [name.as_ptr() as u64, name.len() as u64, data.as_ptr() as u64, data.len() as u64, 0, 0])
         .map(|_| ())
 }
+
+/// A process's CPU time (ns its live threads have run) and the bytes mapped
+/// in its address space (Monitor's columns).
+pub fn process_usage(process: u32) -> Result<(u64, u64), FErr> {
+    let mut b = [0u8; 72];
+    call1(nr::PROCESS_INFO, [process as u64, b.as_mut_ptr() as u64, b.len() as u64, 0, 0, 0])?;
+    let u = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap_or_default());
+    Ok((u(56), u(64)))
+}

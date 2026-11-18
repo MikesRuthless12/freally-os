@@ -69,6 +69,8 @@ pub struct Thread {
     pub kstack_top: u64,
     fpu: Option<UnsafeCell<Box<[u8]>>>,
     pub wake_at: AtomicU64,
+    /// The TSC ticks it has run (Monitor's CPU %).
+    pub run_tsc: AtomicU64,
     /// Killed: it runs only to unwind, and ends on its way back to user mode.
     dying: AtomicBool,
     /// The process this thread belongs to (None for kernel threads).
@@ -108,6 +110,8 @@ struct Sched {
     slice_end: u64,
     free_slots: Vec<u64>,
     next_slot: u64,
+    /// When the running thread was switched in (TSC).
+    since: u64,
 }
 
 static SCHED: SpinLock<Sched> = SpinLock::new(Sched {
@@ -116,6 +120,7 @@ static SCHED: SpinLock<Sched> = SpinLock::new(Sched {
     idle: None,
     sleepers: Vec::new(),
     zombies: Vec::new(),
+    since: 0,
     slice_end: 0,
     free_slots: Vec::new(),
     next_slot: 0,
@@ -339,6 +344,7 @@ pub fn create(
         kstack_top: top,
         fpu: new_fpu_area(user),
         wake_at: AtomicU64::new(0),
+        run_tsc: AtomicU64::new(0),
         dying: AtomicBool::new(false),
         process: SpinLock::new(None),
     }))
@@ -385,6 +391,7 @@ pub fn init() -> Result<(), &'static str> {
         kstack_top: 0,
         fpu: None,
         wake_at: AtomicU64::new(0),
+        run_tsc: AtomicU64::new(0),
         dying: AtomicBool::new(false),
         process: SpinLock::new(None),
     });
@@ -446,6 +453,11 @@ pub fn schedule() {
         CURRENT.store(Arc::as_ptr(&next) as *mut Thread, Ordering::Release);
         s.current = Some(next.clone());
         let now = cpu::rdtsc();
+        // The time prev ran, to its account.
+        if s.since != 0 {
+            prev.run_tsc.fetch_add(now.saturating_sub(s.since), Ordering::Relaxed);
+        }
+        s.since = now;
         s.slice_end = now + crate::time::ns_to_ticks(next.class().slice_ns());
         let wake = s.sleepers.iter().map(|t| t.wake_at.load(Ordering::Relaxed)).min().unwrap_or(u64::MAX);
         arm(s.slice_end.min(wake), now);

@@ -28,9 +28,10 @@ use fstd::time::{Duration, Instant};
 use fui::color::Rgba;
 use fui::controls::paint::{paint_key, paint_lamp};
 use fui::draw;
+use fui::draw::{fade, fill};
 use fui::hardware::{Hardware, KeyLook, Lamp};
 use fui::layout::Rect;
-use fui::text::{FontData, Fonts};
+use fui::text::{FontData, Fonts, words};
 use fui::theme::{Mode, TextStyle, Theme, Tok};
 use fwire::proto::conductor as c;
 use fwire::proto::stage as st;
@@ -181,53 +182,6 @@ fn close(stage: &mut Client, w: Win) {
     let _ = stage.call::<_, ()>(st::CLOSE_WINDOW, &st::ById { window_id: w.id }, Vec::new(), deadline());
 }
 
-/// Words on a surface, the top of their line at `y`.
-#[allow(clippy::too_many_arguments)]
-fn words(s: &mut Surface, fonts: &mut Fonts, theme: Theme, style: TextStyle, x: i32, y: i32, text: &str, c: Tok) {
-    let (px, line, _) = theme.text(style);
-    let chain = fonts.chain(style);
-    let (up, down, _) = chain[0].metrics(px);
-    let baseline = y + (line as i32 - (up + down)) / 2 + up;
-    struct T<'a, 'b>(&'a mut Surface<'b>);
-    impl ffont::atlas::Target for T<'_, '_> {
-        fn size(&self) -> (usize, usize) {
-            (self.0.width as usize, self.0.height as usize)
-        }
-        fn get(&self, x: usize, y: usize) -> u32 {
-            self.0.px[y * self.0.stride as usize + x]
-        }
-        fn set(&mut self, x: usize, y: usize, rgb: u32) {
-            self.0.px[y * self.0.stride as usize + x] = rgb;
-        }
-    }
-    ffont::text::draw(&mut T(s), chain, px, x, baseline, text, theme.colour(c).xrgb());
-}
-
-fn fill(s: &mut Surface, r: Rect, rgb: u32) {
-    let r = r.intersect(Rect::new(0, 0, s.width, s.height));
-    for y in r.y..r.y + r.h as i32 {
-        let at = (y as u32 * s.stride) as usize;
-        s.px[at + r.x as usize..at + r.x as usize + r.w as usize].fill(rgb);
-    }
-}
-
-/// Pixels laid at `strength` toward `rgb`: a key at 40 % is 60 % of the way
-/// to the faceplate.
-fn fade(s: &mut Surface, r: Rect, rgb: u32, strength: f32) {
-    let r = r.intersect(Rect::new(0, 0, s.width, s.height));
-    for y in r.y..r.y + r.h as i32 {
-        for x in r.x..r.x + r.w as i32 {
-            let i = (y as u32 * s.stride + x as u32) as usize;
-            let d = s.px[i];
-            let ch = |sh: u32| {
-                let (a, b) = ((d >> sh & 0xFF) as f32, (rgb >> sh & 0xFF) as f32);
-                ((a + (b - a) * strength + 0.5) as u32) << sh
-            };
-            s.px[i] = ch(16) | ch(8) | ch(0);
-        }
-    }
-}
-
 /// A key's legend, drawn in its centre until the icons are rendered.
 fn legend(s: &mut Surface, key: Key, known: &[Known], cx: f32, cy: f32, scale: f32, ink: Rgba) {
     let k = scale;
@@ -290,7 +244,7 @@ impl Desktop {
             Known {
                 app: App {
                     name: String::from("Terminal"),
-                    description: String::from("A command line, in Freally Mono."),
+                    description: String::from("A command line, with Freally Shell."),
                     service: String::from("terminal"),
                 },
                 shortcut: "Super+T",
@@ -419,8 +373,7 @@ impl Desktop {
             &mut self.fonts,
             t,
             TextStyle::Clock,
-            well.x + inner,
-            well.y + (well.h as i32 - line as i32) / 2,
+            (well.x + inner, well.y + (well.h as i32 - line as i32) / 2),
             &text,
             Tok::PrimaryInk,
         );
@@ -473,7 +426,7 @@ impl Desktop {
         let mut s = win.surface();
         fill(&mut s, Rect::new(0, 0, w, h), t.colour(Tok::Border).xrgb());
         fill(&mut s, Rect::new(1, 1, w - 2, h - 2), t.colour(Tok::Surface2).xrgb());
-        words(&mut s, &mut self.fonts, t, TextStyle::Small, pad as i32, (pad / 2) as i32, &text, Tok::Text);
+        words(&mut s, &mut self.fonts, t, TextStyle::Small, (pad as i32, (pad / 2) as i32), &text, Tok::Text);
         present(&mut self.stage, &mut win);
         self.tooltip = Some(win);
     }
@@ -546,8 +499,7 @@ impl Desktop {
             &mut self.fonts,
             t,
             TextStyle::Subtitle,
-            well.x + pad / 2,
-            ty,
+            (well.x + pad / 2, ty),
             shown,
             if query.is_empty() { Tok::Text3 } else { Tok::Text },
         );
@@ -564,7 +516,7 @@ impl Desktop {
             } else {
                 alloc::format!("No app called '{query}'.")
             };
-            words(&mut s, &mut self.fonts, t, TextStyle::Body, pad, top + t.px(8) as i32, &msg, Tok::Text2);
+            words(&mut s, &mut self.fonts, t, TextStyle::Body, (pad, top + t.px(8) as i32), &msg, Tok::Text2);
         }
         for (row, &i) in matches.iter().take(LAUNCHER_ROWS).enumerate() {
             let y = top + row as i32 * row_h;
@@ -576,14 +528,13 @@ impl Desktop {
                     t.colour(Tok::Surface2),
                 );
             }
-            words(&mut s, &mut self.fonts, t, TextStyle::Body, pad, y + t.px(2) as i32, &apps[i].name, Tok::Text);
+            words(&mut s, &mut self.fonts, t, TextStyle::Body, (pad, y + t.px(2) as i32), &apps[i].name, Tok::Text);
             words(
                 &mut s,
                 &mut self.fonts,
                 t,
                 TextStyle::Small,
-                pad,
-                y + t.px(21) as i32,
+                (pad, y + t.px(21) as i32),
                 &apps[i].description,
                 Tok::Text2,
             );

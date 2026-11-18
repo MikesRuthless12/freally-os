@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 name        = terminal
 binary      = /system/apps/terminal
-description = A command line in Freally Mono, with Freally Shell and its built-ins.
+description = A command line, with Freally Shell and its built-ins.
 start       = demand
 after       = logger, stage
 restart     = on-failure

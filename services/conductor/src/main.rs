@@ -10,6 +10,8 @@ mod bootctl;
 #[cfg(feature = "flavour-e2e")]
 mod door;
 #[cfg(feature = "flavour-e2e")]
+mod door_monitor;
+#[cfg(feature = "flavour-e2e")]
 mod door_stage;
 #[cfg(feature = "flavour-e2e")]
 mod door_terminal;

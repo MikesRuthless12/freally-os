@@ -162,6 +162,13 @@
       "what": "Every built-in runs in the terminal and says what it should; each answers --help; mistakes say how; restart isn't in an e2e image; theme and scale reach stage; line editing and history."
     },
     {
+      "id": "monitor.tabs",
+      "task": "TASK-062",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/monitor.rs",
+      "what": "Super+M opens Monitor; Processes lists every service with its state, memory, CPU % and restarts, sorted by a header click and back; Boot shows every stage and the summary; Faults says what crashed; Log is live and its chips filter it; Ctrl+Tab steps the tabs."
+    },
+    {
       "id": "input.absent",
       "task": "TASK-043",
       "setup": "e2e-no-ps2",

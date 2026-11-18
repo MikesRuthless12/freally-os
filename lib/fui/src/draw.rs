@@ -144,3 +144,29 @@ pub fn atan2(y: f32, x: f32) -> f32 {
     }
     if y < 0.0 { -r } else { r }
 }
+
+/// `r` filled with `rgb`, clipped to the surface.
+pub fn fill(s: &mut Surface, r: Rect, rgb: u32) {
+    let r = r.intersect(Rect::new(0, 0, s.width, s.height));
+    for y in r.y..r.y + r.h as i32 {
+        let at = (y as u32 * s.stride) as usize;
+        s.px[at + r.x as usize..at + r.x as usize + r.w as usize].fill(rgb);
+    }
+}
+
+/// `r`'s pixels moved `strength` (0..=1) of the way toward `rgb`: a control
+/// at 40 % is 60 % of the way to its ground.
+pub fn fade(s: &mut Surface, r: Rect, rgb: u32, strength: f32) {
+    let r = r.intersect(Rect::new(0, 0, s.width, s.height));
+    for y in r.y..r.y + r.h as i32 {
+        for x in r.x..r.x + r.w as i32 {
+            let i = (y as u32 * s.stride + x as u32) as usize;
+            let d = s.px[i];
+            let ch = |sh: u32| {
+                let (a, b) = ((d >> sh & 0xFF) as f32, (rgb >> sh & 0xFF) as f32);
+                ((a + (b - a) * strength + 0.5) as u32) << sh
+            };
+            s.px[i] = ch(16) | ch(8) | ch(0);
+        }
+    }
+}

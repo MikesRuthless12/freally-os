@@ -4,7 +4,9 @@
 //! windows. Each is a solid colour; asked to close (its close button,
 //! Alt+F4), it closes, as an app would.
 //!
-//! - `stage open <w> <h> <rrggbb> <title>` → `window <id>`;
+//! - `stage open <w> <h> <rrggbb> <title>` → `window <id>` (a normal window
+//!   stage places); `stage popup <x> <y> <w> <h> <rrggbb> <title>` → the same
+//!   for a popup at (x, y);
 //! - `stage close|focus <id>`, `stage title <id> <text>`, `stage theme dark|light`;
 //! - `stage cursor <id> <kind>` (`set_cursor`, its number: 1 hand, 2 text…);
 //! - `stage scale <pct>`; `stage ax <id> <bytes>` publishes a tree of that
@@ -59,7 +61,14 @@ impl StageDoor {
         self.hear();
         let (op, rest) = arg.split_once(' ').unwrap_or((arg, ""));
         let r = match op {
-            "open" => self.open(rest),
+            "open" => self.open(st::Kind::Normal, (0, 0), rest),
+            "popup" => {
+                let mut p = rest.splitn(3, ' ');
+                match (p.next().map(str::parse), p.next().map(str::parse), p.next()) {
+                    (Some(Ok(x)), Some(Ok(y)), Some(rest)) => self.open(st::Kind::Popup, (x, y), rest),
+                    _ => Err(String::from("stage popup <x> <y> <w> <h> <rrggbb> <title>")),
+                }
+            }
             "close" => self.id(rest).and_then(|id| self.close(id)),
             "focus" => self.id(rest).and_then(|id| self.call::<()>(st::FOCUS_WINDOW, &st::ById { window_id: id })),
             "title" => {
@@ -111,7 +120,7 @@ impl StageDoor {
                     .map_err(|e| alloc::format!("{e:?}"))
             }),
             "events" => Ok(core::mem::take(&mut self.events)),
-            _ => Err(String::from("stage open|close|focus|title|cursor|scale|ax|shot|theme|list|pointer|events")),
+            _ => Err(String::from("stage open|popup|close|focus|title|cursor|scale|ax|shot|theme|list|pointer|events")),
         };
         r.unwrap_or_else(|e| alloc::vec![alloc::format!("error: {e}")])
     }
@@ -130,7 +139,7 @@ impl StageDoor {
         s.trim().parse().map_err(|_| alloc::format!("{s:?} isn't a window id"))
     }
 
-    fn open(&mut self, rest: &str) -> Result<Vec<String>, String> {
+    fn open(&mut self, kind: st::Kind, (x, y): (i32, i32), rest: &str) -> Result<Vec<String>, String> {
         let mut w = rest.splitn(4, ' ');
         let (Some(width), Some(height), Some(rgb), title) = (w.next(), w.next(), w.next(), w.next().unwrap_or(""))
         else {
@@ -141,16 +150,7 @@ impl StageDoor {
         else {
             return Err(String::from("unreadable size or colour"));
         };
-        let req = st::CreateWindow {
-            title: String::from(title),
-            w: width,
-            h: height,
-            min_w: 0,
-            min_h: 0,
-            kind: st::Kind::Normal,
-            x: 0,
-            y: 0,
-        };
+        let req = st::CreateWindow { title: String::from(title), w: width, h: height, min_w: 0, min_h: 0, kind, x, y };
         let cl = self.client()?;
         let (made, mut hs) = cl
             .call::<_, st::Created>(st::CREATE_WINDOW, &req, Vec::new(), deadline())

@@ -168,3 +168,29 @@ fn painting_draws_backgrounds_borders_and_words() {
     let lit = px.iter().filter(|&&p| p != th.colour(Tok::Surface).xrgb() && p != th.colour(Tok::Border).xrgb()).count();
     assert!(lit > 100, "the words drew {lit} pixels");
 }
+
+#[test]
+fn words_fit_a_width_with_an_ellipsis() {
+    let mut f = fonts();
+    let th = Theme::new(Mode::Dark, 1.0);
+    let s = TextStyle::Small;
+    assert_eq!(f.fit(th, s, "Running", 200), "Running", "what fits stays whole");
+    let long = "Draws the desktop and every window, and sends your keys to the right one.";
+    let cut = f.fit(th, s, long, 200);
+    assert!(cut.ends_with('…') && f.measure(th, s, &cut).0 <= 200, "{cut:?}");
+    let room = f.fit(th, s, long, 260);
+    assert!(room.len() > cut.len(), "more room, more words: {cut:?} then {room:?}");
+    assert!(long.starts_with(cut.trim_end_matches('…')), "cut at its end only: {cut:?}");
+    // Short words: always cut where one ends.
+    let short = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen";
+    for max in (120..=300).step_by(3) {
+        let cut = f.fit(th, s, short, max);
+        let word = cut.trim_end_matches('…');
+        assert!(f.measure(th, s, &cut).0 <= max, "{cut:?} is wider than {max}");
+        assert!(short[word.len()..].starts_with(' '), "at {max} px, cut where a word ends: {cut:?}");
+    }
+    // One long word: cut between letters, not thrown away.
+    let one = f.fit(th, s, "a Supercalifragilisticexpialidocious", 100);
+    assert!(one.starts_with("a Super") && one.ends_with('…'), "{one:?}");
+    assert_eq!(f.fit(th, s, long, 4), "…", "no room for a letter");
+}

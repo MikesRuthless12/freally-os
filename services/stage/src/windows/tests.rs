@@ -49,7 +49,7 @@ fn sizes_keep_their_minimum_and_the_screen() {
 }
 
 #[test]
-fn layers_hold_panels_below_and_popups_above() {
+fn layers_hold_a_wall_below_other_panels_over_windows_and_popups_on_top() {
     let mut ws = screen();
     let wall = ws.create("wall", Kind::Panel, (1000, 800), (0, 0), (0, 0), ME);
     let a = normal(&mut ws, "a", 300, 200);
@@ -58,11 +58,43 @@ fn layers_hold_panels_below_and_popups_above() {
     let ids: Vec<WindowId> = ws.stack().iter().map(|w| w.id).collect();
     assert_eq!(ids, vec![wall, a, b, pop], "b goes under the popup");
     ws.focus(wall);
-    assert_eq!(ws.stack()[0].id, wall, "a panel raised stays at the bottom");
+    assert_eq!(ws.stack()[0].id, wall, "a wall raised stays at the bottom");
     assert_eq!(ws.get(pop).unwrap().frame, Rect::new(10, 20, 100, 50), "a popup is where its client put it");
     let rack = ws.create("rack", Kind::Panel, (1000, 56), (0, 0), (0, 744), ME);
-    assert_eq!(ws.stack()[1].id, rack);
-    assert_eq!(ws.focused(), Some(wall), "a new panel doesn't take focus");
+    let ids: Vec<WindowId> = ws.stack().iter().map(|w| w.id).collect();
+    assert_eq!(ids, vec![wall, a, b, rack, pop], "the Rack over the windows, under the popup");
+    ws.focus(a);
+    assert_eq!(ws.stack()[3].id, rack, "a window raised stays under the Rack");
+    assert_eq!(ws.focused(), Some(a), "a new panel doesn't take focus");
+}
+
+#[test]
+fn windows_are_placed_and_dragged_above_a_docked_rack() {
+    let mut ws = screen();
+    ws.create("rack", Kind::Panel, (1000, 56), (0, 0), (0, 744), ME);
+    assert_eq!(ws.work(), (0, 744));
+    // Centred in 744: (744 - 332) / 2 = 206.
+    let a = normal(&mut ws, "a", 400, 300);
+    assert_eq!(ws.get(a).unwrap().frame.y, 206);
+    // Tall ones cascade, then stop at the Rack's top: 744 - 672 = 72.
+    let tall: Vec<WindowId> = (0..4).map(|i| normal(&mut ws, &alloc::format!("t{i}"), 600, 640)).collect();
+    for t in &tall {
+        let f = ws.get(*t).unwrap().frame;
+        assert!(f.y + f.h as i32 <= 744, "{t} reaches {} under the Rack", f.y + f.h as i32);
+    }
+    // Dragged down, its strip stays above the Rack.
+    ws.move_to(a, 300, 5000);
+    assert_eq!(ws.get(a).unwrap().frame.y, 744 - 32);
+    // A bar along the top keeps them below it too.
+    ws.create("bar", Kind::Panel, (1000, 24), (0, 0), (0, 0), ME);
+    assert_eq!(ws.work(), (24, 744));
+    ws.move_to(a, 300, -50);
+    assert_eq!(ws.get(a).unwrap().frame.y, 24);
+    // A panel elsewhere, or not the screen's width, docks nothing.
+    let mut other = screen();
+    other.create("float", Kind::Panel, (200, 56), (0, 0), (0, 744), ME);
+    other.create("mid", Kind::Panel, (1000, 56), (0, 0), (0, 300), ME);
+    assert_eq!(other.work(), (0, 800));
 }
 
 #[test]

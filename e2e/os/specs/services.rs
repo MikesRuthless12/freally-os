@@ -290,6 +290,20 @@ pub fn absent(ctx: &mut Ctx) -> Result<(), String> {
     if told != 1 {
         return Err(format!("drv-i8042 said it found no controller {told} times, not once"));
     }
+    // Stage doesn't wait on a driver that has ended: it says so, and its
+    // first frame (S3) follows S2 within 500 ms.
+    ctx.expect_log("stage: no keyboard or mouse")?;
+    ctx.expect_log(" S3=")?;
+    let line = ctx.log_line_with(" S3=").unwrap_or_default();
+    let at = |name: &str| {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
+            .and_then(|v| v.parse::<f64>().ok())
+    };
+    match (at("S2"), at("S3")) {
+        (Some(s2), Some(s3)) if s3 >= s2 && s3 - s2 <= 500.0 => {}
+        _ => return Err(format!("stage waited on the absent driver: {line}")),
+    }
     let states = ctx.door("services")?;
     for want in ["svc drv-i8042 Stopped", "svc drv-gop-fb Running", "svc devmgr Running", "svc logger Running"] {
         if !states.iter().any(|s| s == want) {

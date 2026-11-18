@@ -151,6 +151,11 @@ impl AddressSpace {
     }
 
     /// Unmaps a whole mapping that starts at `addr` and is `len` long.
+    /// The bytes mapped in this space now (Monitor's memory column).
+    pub fn mapped_bytes(&self) -> u64 {
+        self.maps.lock().iter().map(|m| m.len).sum()
+    }
+
     pub fn unmap(&self, addr: u64, len: u64) -> Result<(), FErr> {
         let mut maps = self.maps.lock();
         let i =

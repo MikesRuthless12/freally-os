@@ -157,7 +157,6 @@ fn run(_bootstrap: u32) -> i64 {
         stamped: false,
         screen,
     };
-    s.flush();
     let Ok((listen, give)) = Channel::pair() else { return 1 };
     if fstd::service::register(give).is_err() {
         return 1;
@@ -166,6 +165,8 @@ fn run(_bootstrap: u32) -> i64 {
     if keys.is_none() {
         fstd::warn!("stage: no keyboard or mouse (drv-i8042 isn't serving)");
     }
+    // The first frame (S3) once the input's settled: S2 always comes first.
+    s.flush();
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
         if let Some(k) = &keys {

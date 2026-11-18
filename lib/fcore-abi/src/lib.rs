@@ -212,6 +212,9 @@ pub mod syscall {
     pub const PROCESS_START: u64 = 2;
     pub const PROCESS_EXIT: u64 = 3;
     pub const PROCESS_KILL: u64 = 4;
+    /// Up to 72 bytes, little-endian: pid u32, threads u32, handles u32,
+    /// exited u32 (1/0), exit code i64, name [u8; 32], CPU time u64 (ns its
+    /// live threads have run), bytes mapped u64.
     pub const PROCESS_INFO: u64 = 5;
     pub const THREAD_CREATE: u64 = 6;
     pub const THREAD_START: u64 = 7;

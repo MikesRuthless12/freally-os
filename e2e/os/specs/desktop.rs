@@ -46,9 +46,9 @@ fn expect_more(ctx: &Ctx, text: &str, before: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// `@desktop.rack`: the Rack along the screen's foot, stamped S4. Three keys
-/// (the launcher, Terminal, Monitor) from the hardware set, Monitor (not in
-/// this image yet) at 40 %; the 12-hour clock in its well. A key's tooltip
+/// `@desktop.rack`: the Rack along the screen's foot, stamped S4, over every
+/// window. Three keys (the launcher, Terminal, Monitor) from the hardware
+/// set, all lit (both apps are in the image); the 12-hour clock in its well. A key's tooltip
 /// after 600 ms, gone when the pointer leaves; the launcher key opens the
 /// launcher (TASK-059, FR-030).
 pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
@@ -62,24 +62,39 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
     {
         return Err(format!("the clock says {clock:?}, not 12-hour h:mm AM/PM"));
     }
-    let shot = ctx.screenshot()?;
+    // The faceplate along the foot (a desktop restarted by an earlier spec
+    // draws it again within moments).
+    let start = std::time::Instant::now();
+    let shot = loop {
+        let shot = ctx.screenshot()?;
+        let (w, h) = (shot.w as usize, shot.h as usize);
+        let px = |x: usize, y: usize| {
+            let i = (y * w + x) * 3;
+            (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
+        };
+        let top = h - RACK_H as usize;
+        if px(w / 2, top) == dark::COLOR_BORDER.xrgb() && px(w / 2, top + 28) == dark::COLOR_SURFACE.xrgb() {
+            break shot;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(5) {
+            return Err("no Rack faceplate along the foot".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
     let (sw, sh) = (shot.w as i32, shot.h as i32);
     let top = sh - RACK_H;
     let at = |x: i32, y: i32| {
         let i = (y as usize * shot.w as usize + x as usize) * 3;
         (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
     };
-    if at(sw / 2, top) != dark::COLOR_BORDER.xrgb() || at(sw / 2, top + 28) != dark::COLOR_SURFACE.xrgb() {
-        return Err("no Rack faceplate along the foot".into());
-    }
-    // Keys at x 8, 56, 104 (40 px): the launcher's face, and the absent apps'
-    // faded toward the faceplate.
+    // Keys at x 8, 56, 104 (40 px): each face as bright as the launcher's (an
+    // app missing from the image would fade toward the faceplate).
     let face = |x0: i32| (x0 + 6..x0 + 34).map(|x| luma(at(x, top + 3 + 34))).max().unwrap_or(0);
     let (launcher, terminal, monitor) = (face(8), face(56), face(104));
     let plate = luma(dark::COLOR_SURFACE.xrgb());
-    if launcher <= plate + 8 || terminal + 4 < launcher || monitor >= terminal {
+    if launcher <= plate + 8 || terminal + 4 < launcher || monitor + 4 < launcher {
         return Err(format!(
-            "keys: launcher {launcher}, Terminal {terminal}, Monitor {monitor} (not in the image), the faceplate {plate}"
+            "keys: launcher {launcher}, Terminal {terminal}, Monitor {monitor}, the faceplate {plate}"
         ));
     }
     // The clock: green digits in a well at the right.
@@ -100,17 +115,33 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
     }
     move_to(ctx, sw / 2, sh / 2)?;
     expect_window(ctx, "Tooltip", false)?;
-    // A window opening over the Rack under a still pointer: the Rack hears
-    // the pointer leave (still over the key's place), and the tooltip goes.
+    // A window as tall as the screen opens: the Rack stays over it (its
+    // faceplate still drawn), the tooltip still up under the still pointer.
     move_to(ctx, 56 + 20, top + 3 + 20)?;
     expect_window(ctx, "Tooltip", true)?;
-    let cover = ctx.door("stage open 1280 768 303030 Cover")?;
-    let id =
-        cover.iter().find_map(|l| l.strip_prefix("window ")).ok_or(format!("stage open said {cover:?}"))?.to_string();
+    let tall = ctx.door("stage open 1280 768 303030 Tall")?;
+    let tall =
+        tall.iter().find_map(|l| l.strip_prefix("window ")).ok_or(format!("stage open said {tall:?}"))?.to_string();
+    expect_window(ctx, "Tall", true)?;
+    let shot = ctx.screenshot()?;
+    let i = ((top as usize) * shot.w as usize + shot.w as usize / 2) * 3;
+    let edge = (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32;
+    if edge != dark::COLOR_BORDER.xrgb() {
+        return Err(format!("a tall window covered the Rack: {edge:06x} along its top edge"));
+    }
     move_to(ctx, 56 + 21, top + 3 + 20)?;
+    expect_window(ctx, "Tooltip", true)?;
+    // A popup opening over the Rack under a still pointer: the Rack hears
+    // the pointer leave (still over the key's place), and the tooltip goes.
+    let cover = ctx.door(&format!("stage popup 0 {} 1280 {RACK_H} 303030 Cover", top))?;
+    let id =
+        cover.iter().find_map(|l| l.strip_prefix("window ")).ok_or(format!("stage popup said {cover:?}"))?.to_string();
+    move_to(ctx, 56 + 20, top + 3 + 20)?;
     expect_window(ctx, "Tooltip", false)?;
     crate::stage::ok(ctx, &format!("stage close {id}"))?;
+    crate::stage::ok(ctx, &format!("stage close {tall}"))?;
     expect_window(ctx, "Cover", false)?;
+    expect_window(ctx, "Tall", false)?;
     // The launcher key: its tooltip, then a press opens the launcher.
     let opened = ctx.log_count("desktop: the launcher is open");
     move_to(ctx, 8 + 20, top + 3 + 20)?;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Freally Terminal, the app (TASK-060, FR-032): a window of stage's showing
-//! the grid in Freally Mono 14 px, with Freally Shell inside it (TASK-061).
+//! the grid in Noto Sans Mono 14 px, with Freally Shell inside it (TASK-061).
 //!
 //! - Keys become the bytes xterm sends (arrows as `ESC [ A`, or `ESC O A`
 //!   when the program asks); the shell reads them and answers in VT bytes.

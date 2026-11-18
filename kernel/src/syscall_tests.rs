@@ -48,6 +48,26 @@ ktest!(syscalls_each_succeeds_and_each_error_path_is_reported, {
         if e(call(nr::VMO_READ, vmo, 0, 0xFFFF_8000_0000_0000, 8, 0, 0)) != Some(FErr::InvalidArgs) {
             return Err("vmo_read wrote into the kernel");
         }
+        // process_info: the 72-byte answer, its mapped bytes (the 8 KiB above
+        // at least), and a thread's CPU time growing as it runs.
+        let (n, _) = call(nr::PROCESS_INFO, well_known::SELF_PROCESS as u64, BUF + 1024, 72, 0, 0, 0)?;
+        let mut info = [0u8; 72];
+        crate::mm::user::copy_from_user(&mut info, BUF + 1024)?;
+        let mapped = u64::from_le_bytes(info[64..72].try_into().unwrap_or_default());
+        if n != 72 || mapped < 8192 || mapped != aspace.mapped_bytes() {
+            return Err("process_info: 72 bytes, the bytes mapped last");
+        }
+        // A switch first, so the clock's started on this thread, then run.
+        crate::sched::schedule();
+        let before = me.run_tsc.load(core::sync::atomic::Ordering::Relaxed);
+        let spin = crate::time::now_ns() + 2_000_000;
+        while crate::time::now_ns() < spin {
+            core::hint::spin_loop();
+        }
+        crate::sched::schedule();
+        if me.run_tsc.load(core::sync::atomic::Ordering::Relaxed) <= before {
+            return Err("a thread's CPU time didn't grow as it ran");
+        }
         call(nr::VM_PROTECT, well_known::SELF_ASPACE as u64, BUF, 8192, perm::READ, 0, 0)?;
         call(nr::VM_PROTECT, well_known::SELF_ASPACE as u64, BUF, 8192, perm::READ | perm::WRITE, 0, 0)?;
         // Events, signals, waits.
