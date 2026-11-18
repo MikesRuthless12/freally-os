@@ -166,7 +166,7 @@ pub fn trial(ctx: &mut Ctx) -> Result<(), String> {
 
 /// `@boot.timeline`: conductor's `boot:` line, said again when stage stamps
 /// S3, holds every stage from B0 to S3, in order, each no earlier than the
-/// one before, B0 at 0 (K3, all CPUs online, joins with SMP: TASK-036); and
+/// one before, B0 at 0 (K3 among them: every CPU online, TASK-036); and
 /// the firmware's own times from the FPDT, F0 before F1, or that there's no
 /// FPDT (TASK-047, TASK-057, FR-004).
 pub fn timeline(ctx: &mut Ctx) -> Result<(), String> {
@@ -184,8 +184,9 @@ pub fn timeline(ctx: &mut Ctx) -> Result<(), String> {
         let ms: f64 = ms.parse().map_err(|_| format!("unreadable time {pair:?} in {line}"))?;
         seen.push((name.to_string(), ms));
     }
-    let want = ["B0", "B1", "B2", "B3", "K0", "K1", "K2", "C0", "S1", "S2", "S3"];
-    let names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).filter(|n| *n != "K3").collect();
+    // K3: every CPU online (TASK-036), between the kernel's K2 and conductor's C0.
+    let want = ["B0", "B1", "B2", "B3", "K0", "K1", "K2", "K3", "C0", "S1", "S2", "S3"];
+    let names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).collect();
     if names != want {
         return Err(format!("the stages are {names:?}, not {want:?}: {line}"));
     }

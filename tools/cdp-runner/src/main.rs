@@ -511,9 +511,21 @@ impl Ctx {
     }
 
     /// A warm reboot (RAM kept), as a restart button does.
+    /// Resets the VM and waits for the next boot's first line: up to 60 s,
+    /// as for the first boot (a loaded host can take far longer than a spec's
+    /// 10 s to bring the firmware back up).
     pub fn reset(&mut self) -> Result<(), String> {
         self.rebooted = true;
-        self.cdp.call("Page.reload", Value::Obj(Vec::new())).map(|_| ())
+        let boots = self.log_count("freally-boot ");
+        self.cdp.call("Page.reload", Value::Obj(Vec::new()))?;
+        let start = Instant::now();
+        while self.log_count("freally-boot ") <= boots {
+            if start.elapsed() > Duration::from_secs(60) {
+                return Err(String::from("the VM didn't boot again within 60 s of its reset"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
     }
 
     /// Every COM1 line containing `text`.
