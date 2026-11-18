@@ -21,12 +21,15 @@ extern crate alloc;
 mod serial;
 #[macro_use]
 mod test;
+mod acpi_early;
 mod arch;
 mod exceptions;
 mod fb;
 mod fmtbuf;
 mod mm;
 mod sync;
+mod time;
+mod timer;
 
 use arch::cpu;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -37,6 +40,19 @@ static BOOT_INFO: AtomicPtr<BootInfo> = AtomicPtr::new(core::ptr::null_mut());
 /// The boot timeline's kernel stamps (raw TSC): K0 entry, K1 memory ready.
 pub static K0: AtomicU64 = AtomicU64::new(0);
 pub static K1: AtomicU64 = AtomicU64::new(0);
+pub static K2: AtomicU64 = AtomicU64::new(0);
+
+static ACPI: AtomicPtr<acpi_early::Tables> = AtomicPtr::new(core::ptr::null_mut());
+
+/// The ACPI tables the kernel parsed at boot.
+pub fn acpi() -> Option<&'static acpi_early::Tables> {
+    let p = ACPI.load(Ordering::Acquire);
+    // SAFETY: set once to a leaked allocation that lives forever.
+    if p.is_null() { None } else { Some(unsafe { &*p }) }
+}
+
+/// The scheduler's hook on every timer interrupt (TASK-026 fills it in).
+pub fn sched_tick() {}
 
 /// BootInfo, once the kernel has checked it.
 pub fn boot_info() -> Option<&'static BootInfo> {
@@ -53,6 +69,7 @@ pub fn boot_info() -> Option<&'static BootInfo> {
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
+    cpu::interrupts_off(); // until the IDT and the APIC are the kernel's own
     K0.store(cpu::rdtsc(), Ordering::Relaxed);
     // SAFETY: the bootloader passes BootInfo's direct-map address.
     let bi = unsafe { &*info };
@@ -88,6 +105,34 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
         (mm::frames::free_count() * 4096) >> 20,
         K1.load(Ordering::Relaxed) - K0.load(Ordering::Relaxed)
     );
+
+    // TASK-023: interrupts and time.
+    let tables = match acpi_early::parse(bi.acpi_rsdp) {
+        Ok(t) => t,
+        Err(e) => exceptions::stop(e, "The firmware's ACPI tables are missing or damaged."),
+    };
+    let apic_id = arch::apic::init(tables.madt.lapic_addr, tables.madt.has_8259);
+    arch::ioapic::init(&tables.madt);
+    exceptions::route(arch::apic::TIMER_VECTOR, timer::interrupt);
+    exceptions::route(arch::apic::SPURIOUS_VECTOR, timer::spurious);
+    let source = time::init(tables.hpet, bi.tsc.b0);
+    K2.store(cpu::rdtsc(), Ordering::Relaxed);
+    klog!(
+        "freally-core: interrupts and time ready: {} (APIC {}), {} CPUs, {} I/O APICs, TSC {} MHz from {}{}, RTC {} (K2 {} µs after K1)",
+        if arch::apic::x2apic() { "x2APIC" } else { "xAPIC" },
+        apic_id,
+        tables.madt.cpu_count,
+        tables.madt.ioapic_count,
+        time::tsc_hz() / 1_000_000,
+        source.how,
+        match source.check {
+            Some(h) => alloc::format!(" (HPET says {} MHz)", h / 1_000_000),
+            None => alloc::string::String::new(),
+        },
+        time::rtc_unix(),
+        time::ticks_to_ns(K2.load(Ordering::Relaxed) - K1.load(Ordering::Relaxed)) / 1000
+    );
+    ACPI.store(alloc::boxed::Box::leak(alloc::boxed::Box::new(tables)), Ordering::Release);
 
     #[cfg(feature = "ktest")]
     test::run_all();
