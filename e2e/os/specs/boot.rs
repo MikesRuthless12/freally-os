@@ -41,6 +41,6 @@ pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("freally-boot: runtime services moved")?;
     ctx.expect_log("freally-boot: jumping to Freally Core")?;
     ctx.expect_log("freally-core 0.1.0 entered")?;
-    ctx.expect_log("usable; image")?;
+    ctx.expect_log("freally-core: memory ready")?;
     ctx.expect_screen(Expect::Title { note: "Freally Core is running." })
 }

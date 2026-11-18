@@ -88,16 +88,18 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
         }
     }
     if !fast {
-        for f in ["release", "dev", "e2e"] {
+        for f in ["release", "dev", "e2e", "ktest"] {
             let name: &'static str = match f {
                 "release" => "clippy kernel/release",
                 "dev" => "clippy kernel/dev",
+                "ktest" => "clippy kernel/ktest",
                 _ => "clippy kernel/e2e",
             };
             g.push((
                 name,
                 Box::new(move || {
-                    let feat = format!("flavour-{f}");
+                    let feat =
+                        if f == "ktest" { "flavour-dev,ktest,crash-ud2".to_string() } else { format!("flavour-{f}") };
                     quiet(cargo(&[
                         "clippy",
                         "-p",
@@ -132,6 +134,26 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
                 c.env("FREALLY_FUZZ_ITERS", "2000");
             }
             quiet(c).map(|_| if slow { "green, fuzz at 2,000 iterations".into() } else { "green".into() })
+        }),
+    ));
+    g.push((
+        "ktests",
+        Box::new(|| {
+            let (results, verdict) = crate::ktest::run(600)?;
+            let failed: Vec<String> =
+                results.iter().filter(|r| !r.pass).map(|r| format!("{}: {}", r.name, r.why.join(" ").trim())).collect();
+            match verdict {
+                Ok(s) => Ok(s.trim_start_matches("ktests: ").to_string()),
+                Err(e) if failed.is_empty() => Err(e),
+                Err(e) => Err(format!(
+                    "{e}
+{}",
+                    failed.join(
+                        "
+"
+                    )
+                )),
+            }
         }),
     ));
     g.push((

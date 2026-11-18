@@ -117,7 +117,13 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         if let Some(from) = s.get("image_from").and_then(Value::as_str) {
             o.image_override = Some(build::build(crate::pack::parse_flavour(from)?)?.image);
         }
-        let built = build::build(flavour)?;
+        let features: Vec<String> = s
+            .get("kernel_features")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        let features: Vec<&str> = features.iter().map(String::as_str).collect();
+        let built = build::build_full(flavour, true, &features)?;
         let (g, t) = run_setup(setup, &o, &built, &ids)?;
         green += g;
         total += t;

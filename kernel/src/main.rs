@@ -3,29 +3,47 @@
 //!
 //! The bootloader verified the image this came from, mapped it W^X at
 //! `KERNEL_BASE`, mapped all physical memory at `DIRECT_MAP`, and jumped here
-//! with `BootInfo` in RDI (TASK-018).
+//! with `BootInfo` in RDI (TASK-018). From here: the CPU's tables (TASK-019),
+//! physical memory and the kernel's own page tables (TASK-020), the heap
+//! (TASK-021), and with the `ktest` feature, every test (TASK-022).
 #![no_std]
 #![no_main]
+// Phase 1 lands piece by piece: primitives arrive a task before their callers.
+// This allowance goes at the combined closeout's /simplify (HANDOFF.md).
+#![allow(dead_code)]
 
 #[cfg(not(any(feature = "flavour-release", feature = "flavour-dev", feature = "flavour-e2e")))]
 compile_error!("build the kernel through `cargo xtask build --flavour release|dev|e2e`");
 
+extern crate alloc;
+
 #[macro_use]
 mod serial;
+#[macro_use]
+mod test;
+mod arch;
+mod exceptions;
 mod fb;
+mod fmtbuf;
+mod mm;
+mod sync;
 
+use arch::cpu;
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use fcore_abi::{BOOTINFO_MAGIC, BOOTINFO_VERSION, BootInfo, MemKind};
 
-fn rdtsc() -> u64 {
-    // SAFETY: RDTSC has no side effects.
-    unsafe { core::arch::x86_64::_rdtsc() }
-}
+static BOOT_INFO: AtomicPtr<BootInfo> = AtomicPtr::new(core::ptr::null_mut());
 
-fn halt() -> ! {
-    loop {
-        // SAFETY: interrupts are off; this parks the CPU.
-        unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)) };
-    }
+/// The boot timeline's kernel stamps (raw TSC): K0 entry, K1 memory ready.
+pub static K0: AtomicU64 = AtomicU64::new(0);
+pub static K1: AtomicU64 = AtomicU64::new(0);
+
+/// BootInfo, once the kernel has checked it.
+pub fn boot_info() -> Option<&'static BootInfo> {
+    let p = BOOT_INFO.load(Ordering::Acquire);
+    // SAFETY: set once from the bootloader's BootInfo, which lives in BOOT_DATA
+    // memory the kernel never frees.
+    if p.is_null() { None } else { Some(unsafe { &*p }) }
 }
 
 /// The kernel's first instruction.
@@ -35,34 +53,71 @@ fn halt() -> ! {
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
-    let k0 = rdtsc();
+    K0.store(cpu::rdtsc(), Ordering::Relaxed);
     // SAFETY: the bootloader passes BootInfo's direct-map address.
-    let info = unsafe { &*info };
-    klog!("freally-core {} entered (K0 {} ticks after B0)", fcore_abi::VERSION, k0.saturating_sub(info.tsc.b0));
-    if info.magic != BOOTINFO_MAGIC || info.version != BOOTINFO_VERSION {
+    let bi = unsafe { &*info };
+    klog!(
+        "freally-core {} entered (K0 {} ticks after B0)",
+        fcore_abi::VERSION,
+        K0.load(Ordering::Relaxed).saturating_sub(bi.tsc.b0)
+    );
+    if bi.magic != BOOTINFO_MAGIC || bi.version != BOOTINFO_VERSION {
         klog!("freally-core: ERROR BootInfo has the wrong magic or version");
-        halt();
+        cpu::halt_forever();
     }
+    BOOT_INFO.store(info as *mut BootInfo, Ordering::Release);
+
+    // TASK-019: the CPU's own tables, so every fault has a handler.
+    arch::gdt::init();
+    arch::idt::init();
+
+    // TASK-020: physical memory and the kernel's own page tables.
     // SAFETY: the map lives in the bootloader's BOOT_DATA pages, in the direct map.
-    let map = unsafe { core::slice::from_raw_parts(info.memory_map.ptr, info.memory_map.len as usize) };
+    let map = unsafe { core::slice::from_raw_parts(bi.memory_map.ptr, bi.memory_map.len as usize) };
+    if let Err(e) = mm::frames::init(map) {
+        exceptions::stop(e, "The memory map has no room for Freally Core.");
+    }
+    if let Err(e) = mm::paging::init(bi, map) {
+        exceptions::stop(e, "Freally Core couldn't build its page tables.");
+    }
+    K1.store(cpu::rdtsc(), Ordering::Relaxed);
     let usable: u64 = map.iter().filter(|r| r.kind == MemKind::Usable).map(|r| r.len).sum();
     klog!(
-        "freally-core: memory map {} regions, {} MiB usable; image {} bytes; RSDP {:#x}; runtime services {}",
-        map.len(),
+        "freally-core: memory ready: {} MiB usable, {} MiB free, own page tables (K1 {} ticks after K0)",
         usable >> 20,
-        info.image.len,
-        info.acpi_rsdp,
-        if info.uefi_runtime != 0 { "mapped" } else { "absent" }
+        (mm::frames::free_count() * 4096) >> 20,
+        K1.load(Ordering::Relaxed) - K0.load(Ordering::Relaxed)
     );
-    if let Some(mut f) = fb::Fb::new(&info.framebuffer) {
+
+    #[cfg(feature = "ktest")]
+    test::run_all();
+    #[cfg(not(feature = "ktest"))]
+    running(bi)
+}
+
+/// The end of initialisation, until the scheduler exists: the title, then idle.
+#[cfg(not(feature = "ktest"))]
+fn running(bi: &BootInfo) -> ! {
+    #[cfg(feature = "crash-ud2")]
+    // SAFETY: deliberately invalid, to prove the panic screen (a test build only).
+    unsafe {
+        core::arch::asm!("ud2")
+    };
+
+    if let Some(mut f) = fb::Fb::new(&bi.framebuffer) {
         fscreen::title(&mut f, fcore_abi::VERSION, "Freally Core is running.");
     }
     klog!("freally-core: showing the title");
-    halt();
+    cpu::halt_forever();
 }
 
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
-    klog!("freally-core: ERROR panic: {p}");
-    halt();
+    let mut what = fmtbuf::Buf::<200>::new();
+    let _ = core::fmt::write(&mut what, format_args!("Freally Core panicked: {}", p.message()));
+    let mut at = fmtbuf::Buf::<160>::new();
+    if let Some(l) = p.location() {
+        let _ = core::fmt::write(&mut at, format_args!("At {}:{}.", l.file(), l.line()));
+    }
+    exceptions::stop(what.as_str(), at.as_str())
 }

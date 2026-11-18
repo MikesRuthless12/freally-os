@@ -117,7 +117,9 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     c.args(["-m", &o.memory_mb.to_string(), "-smp", &o.cpus.to_string()]);
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}"));
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=1,file={}", dir.join("OVMF_VARS_4M.fd").display()));
-    c.arg("-drive").arg(format!("format=raw,file=fat:rw:{}", esp.display()));
+    // Read-only: the bootloader never writes the ESP, and a writable virtual FAT
+    // disk stalled a fresh VM's firmware on its first boot.
+    c.arg("-drive").arg(format!("if=virtio,format=raw,readonly=on,file=fat:{}", esp.display()));
     c.args(["-nic", "none"]);
     c.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
     c.arg("-qmp").arg(format!("unix:{},server=on,wait=off", o.qmp_socket().display()));

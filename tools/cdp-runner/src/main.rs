@@ -14,6 +14,8 @@ mod guard;
 
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
+#[path = "../../../e2e/os/specs/kernel.rs"]
+mod kernel;
 
 use cdp_proto::Cdp;
 use fjson::Value;
@@ -31,12 +33,14 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.release", boot::release),
     ("boot.seal", boot::seal),
     ("boot.handoff", boot::handoff),
+    ("kernel.panic_screen", kernel::panic_screen),
 ];
 
 /// A screen a spec expects, drawn on the host by `fscreen` to compare.
 pub enum Expect {
     Title { note: &'static str },
     Integrity { reason: &'static str },
+    Panic { lines: [String; 3] },
 }
 
 pub struct Ctx {
@@ -62,6 +66,7 @@ impl Ctx {
 
     /// Waits (up to 20 s) for the screen to equal `e`, pixel for pixel.
     pub fn expect_screen(&mut self, e: Expect) -> Result<(), String> {
+        let e = &e;
         let start = Instant::now();
         loop {
             let shot = self.screenshot()?;
@@ -69,9 +74,12 @@ impl Ctx {
             let mut px = vec![0u32; w * h];
             let mut c = fscreen::Canvas { px: &mut px, w, h };
             let version = env!("CARGO_PKG_VERSION");
-            match e {
+            match *e {
                 Expect::Title { note } => fscreen::title(&mut c, version, note),
                 Expect::Integrity { reason } => fscreen::integrity(&mut c, reason),
+                Expect::Panic { ref lines } => {
+                    fscreen::panic(&mut c, &[lines[0].as_str(), lines[1].as_str(), lines[2].as_str()])
+                }
             };
             let mut diff = 0usize;
             for (i, p) in px.iter().enumerate() {
@@ -130,6 +138,11 @@ impl Ctx {
             std::thread::sleep(Duration::from_millis(100));
         }
         Err(format!("COM1 never said {text:?}"))
+    }
+
+    /// The first COM1 line containing `text`.
+    pub fn log_line_with(&self, text: &str) -> Option<String> {
+        self.log().lines().find(|l| l.contains(text)).map(String::from)
     }
 
     pub fn expect_no_log(&self, text: &str) -> Result<(), String> {

@@ -5,7 +5,8 @@
     "e2e": { "flavour": "e2e" },
     "e2e-tampered": { "flavour": "e2e", "tamper": 9000 },
     "release": { "flavour": "release" },
-    "release-with-dev-image": { "flavour": "release", "image_from": "dev" }
+    "release-with-dev-image": { "flavour": "release", "image_from": "dev" },
+    "e2e-crash-ud2": { "flavour": "e2e", "kernel_features": ["crash-ud2"] }
   },
   "features": [
     {
@@ -42,6 +43,13 @@
       "setup": "e2e",
       "spec": "e2e/os/specs/boot.rs",
       "what": "Boot services exit, the runtime services move to the direct map, and Freally Core is entered with a BootInfo it accepts, then paints its screen."
+    },
+    {
+      "id": "kernel.panic_screen",
+      "task": "TASK-019",
+      "setup": "e2e-crash-ud2",
+      "spec": "e2e/os/specs/kernel.rs",
+      "what": "A kernel fault stops on the panic screen in Noto, naming the exception, its RIP and the machine state, drawn exactly as the kernel logs it."
     }
   ]
 }

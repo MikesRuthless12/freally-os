@@ -18,6 +18,8 @@ bench = false
 flavour-release = []
 flavour-dev = []
 flavour-e2e = []
+# Test only (CDP setups): end initialisation with a deliberate invalid instruction.
+crash-ud2 = []
 # The in-kernel test harness (`cargo xtask test`): runs every #[ktest], then exits QEMU.
 ktest = []
 

@@ -53,11 +53,12 @@ pub fn kernel_path() -> PathBuf {
     util::target_dir().join("x86_64-unknown-none/release/freally-core")
 }
 
-/// Builds Freally Core for a flavour (`ktest` adds the in-kernel test harness).
-pub fn build_kernel(flavour: Flavour, ktest: bool) -> Result<PathBuf, String> {
+/// Builds Freally Core for a flavour, with any extra features (`ktest`, test-only crashes).
+pub fn build_kernel(flavour: Flavour, extra: &[&str]) -> Result<PathBuf, String> {
     let mut features = format!("flavour-{}", flavour.name());
-    if ktest {
-        features.push_str(",ktest");
+    for f in extra {
+        features.push(',');
+        features.push_str(f);
     }
     util::run_ok(util::cargo().env("CARGO_ENCODED_RUSTFLAGS", kernel_rustflags()).env_remove("RUSTFLAGS").args([
         "build",
@@ -81,11 +82,11 @@ pub fn build(flavour: Flavour) -> Result<Built, String> {
 /// `signed = false` leaves the signature empty: an image no bootloader accepts,
 /// made only where there are no keys (the ci-linux container) to compare hashes.
 pub fn build_with(flavour: Flavour, signed: bool) -> Result<Built, String> {
-    build_full(flavour, signed, false)
+    build_full(flavour, signed, &[])
 }
 
-/// The whole flavour: bootloader, kernel (with the test harness when `ktest`), image.
-pub fn build_full(flavour: Flavour, signed: bool, ktest: bool) -> Result<Built, String> {
+/// The whole flavour: bootloader, kernel (with `kernel_features` added), image.
+pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> Result<Built, String> {
     let out = util::target_dir().join("freally").join(flavour.name());
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
 
@@ -106,7 +107,7 @@ pub fn build_full(flavour: Flavour, signed: bool, ktest: bool) -> Result<Built, 
     std::fs::copy(&efi_src, &efi).map_err(|e| format!("can't copy {}: {e}", efi_src.display()))?;
 
     // 2. Freally Core.
-    let kernel = build_kernel(flavour, ktest)?;
+    let kernel = build_kernel(flavour, kernel_features)?;
 
     // 3. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");
