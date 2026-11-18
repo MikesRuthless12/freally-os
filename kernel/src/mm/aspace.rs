@@ -29,6 +29,9 @@ pub mod perm {
     pub const READ: u32 = 1;
     pub const WRITE: u32 = 2;
     pub const EXEC: u32 = 4;
+    /// Kernel-internal (mmio_map): the memory type of the mapping.
+    pub const UNCACHED: u32 = 8;
+    pub const WRITE_COMBINING: u32 = 16;
 }
 
 struct Mapping {
@@ -63,6 +66,10 @@ pub fn init_cpu_protections() -> (bool, bool, bool) {
     }
     // SAFETY: each bit is set only when CPUID reports the feature.
     unsafe { cpu::set_cr4(cr4) };
+    // The PAT: entry 1 write-combining (for framebuffers), the rest as the
+    // power-on default (WB, WT, UC-, UC, repeated). Every x86-64 CPU has it.
+    // SAFETY: IA32_PAT; no mapping uses entry 1 before this.
+    unsafe { cpu::wrmsr(0x277, 0x0007_0406_0007_0106) };
     super::user::set_smap(smap);
     (smep, smap, pcid)
 }
@@ -90,6 +97,12 @@ impl AddressSpace {
         }
         if perms & perm::EXEC == 0 {
             f |= NX;
+        }
+        // PAT index 1 is write-combining (PWT); PCD|PWT is uncached.
+        if perms & perm::UNCACHED != 0 {
+            f |= paging::PWT | paging::PCD;
+        } else if perms & perm::WRITE_COMBINING != 0 {
+            f |= paging::PWT;
         }
         Ok(f)
     }

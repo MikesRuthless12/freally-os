@@ -37,8 +37,35 @@ pub struct Tss {
     iomap_base: u16,
 }
 
-static mut TSS: Tss =
-    Tss { _r0: 0, rsp: [0; 3], _r1: 0, ist: [0; 7], _r2: 0, _r3: 0, iomap_base: size_of::<Tss>() as u16 };
+/// The TSS and its I/O permission bitmap (a set bit denies the port; the
+/// final byte must be all ones). Every port is closed until a process with
+/// granted ports runs (`hw::io_switch`).
+#[repr(C, packed)]
+struct TssIo {
+    tss: Tss,
+    map: [u8; 8192 + 1],
+}
+
+static mut TSS: TssIo = TssIo {
+    tss: Tss { _r0: 0, rsp: [0; 3], _r1: 0, ist: [0; 7], _r2: 0, _r3: 0, iomap_base: size_of::<Tss>() as u16 },
+    map: [0xFF; 8192 + 1],
+};
+
+/// Opens (or closes) `len` ports from `port` in the I/O bitmap.
+pub fn io_set(port: u16, len: u16, open: bool) {
+    // SAFETY: one CPU; called by the scheduler and grant paths with interrupts off.
+    unsafe {
+        let t = &raw mut TSS;
+        for p in port as usize..(port as usize + len as usize).min(0x1_0000) {
+            let byte = &mut (*t).map[p / 8];
+            if open {
+                *byte &= !(1 << (p % 8));
+            } else {
+                *byte |= 1 << (p % 8);
+            }
+        }
+    }
+}
 
 static mut GDT: [u64; 7] = [
     0,
@@ -65,13 +92,13 @@ pub fn init() {
     // SAFETY: called once on the boot CPU before interrupts are on; nothing
     // else touches these statics yet.
     unsafe {
-        let tss = &raw mut TSS;
+        let tss = &raw mut TSS.tss;
         for (i, s) in [IST_DOUBLE_FAULT, IST_NMI, IST_MACHINE_CHECK].iter().enumerate() {
             (*tss).ist[*s as usize - 1] = stack_top(&raw const IST_STACKS[i]);
         }
         (*tss).rsp[0] = stack_top(&raw const KERNEL_ENTRY_STACK);
         let base = tss as u64;
-        let limit = (size_of::<Tss>() - 1) as u64;
+        let limit = (size_of::<TssIo>() - 1) as u64;
         let gdt = &raw mut GDT;
         (*gdt)[5] = (limit & 0xFFFF)
             | ((base & 0xFF_FFFF) << 16)
@@ -109,7 +136,7 @@ pub fn init() {
 pub fn set_kernel_stack(top: u64) {
     // SAFETY: a single aligned store; the CPU reads it only on a ring change.
     unsafe {
-        let tss = &raw mut TSS;
+        let tss = &raw mut TSS.tss;
         core::ptr::write_unaligned(&raw mut (*tss).rsp[0], top);
     }
 }

@@ -28,6 +28,7 @@ mod fault;
 mod fb;
 mod fmtbuf;
 mod futex;
+mod hw;
 mod init;
 mod ipc;
 mod mm;

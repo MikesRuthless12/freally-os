@@ -65,6 +65,16 @@ pub fn route(gsi: u32, vector: u8, dest: u32, flags: u16) -> Result<(), &'static
     Ok(())
 }
 
+/// Unmasks `gsi` (routed earlier).
+pub fn unmask(gsi: u32) {
+    let g = IOAPICS.lock();
+    if let Some(io) = g.0[..g.1].iter().find(|io| gsi >= io.gsi_base && gsi < io.gsi_base + inputs(io)) {
+        let n = gsi - io.gsi_base;
+        let low = reg(io, 0x10 + 2 * n);
+        set(io, 0x10 + 2 * n, low & !(1 << 16));
+    }
+}
+
 /// Masks `gsi` again.
 pub fn mask(gsi: u32) {
     let g = IOAPICS.lock();

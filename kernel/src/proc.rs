@@ -17,6 +17,8 @@ pub struct Process {
     pub name: [u8; 32],
     pub header: Header,
     pub inner: SpinLock<Inner>,
+    /// Port ranges `ioport_grant` opened (the scheduler reads them on every switch).
+    pub io: SpinLock<Vec<(u16, u16)>>,
 }
 
 pub struct Inner {
@@ -53,6 +55,7 @@ pub fn create(name: &str, grants: u32) -> Result<ObjectRef, FErr> {
             exit_code: None,
             grants,
         }),
+        io: SpinLock::new(Vec::new()),
     }));
     let me = as_process(&p)?;
     let mut inner = me.inner.lock();

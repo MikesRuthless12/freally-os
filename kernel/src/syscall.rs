@@ -446,6 +446,70 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let p = proc::current().ok_or(FErr::BadState)?;
             one(proc::as_process(&p)?.inner.lock().handles.duplicate(a0 as u32, a1 as u32)? as u64)
         }
+        nr::RESOURCE_CREATE => {
+            let parent = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
+            let kind = match a1 {
+                fcore_abi::resource::MMIO => crate::obj::ResourceKind::Mmio,
+                fcore_abi::resource::IO_PORT => crate::obj::ResourceKind::IoPort,
+                fcore_abi::resource::IRQ => crate::obj::ResourceKind::Irq,
+                _ => return Err(FErr::InvalidArgs),
+            };
+            let child = crate::hw::create(&parent, kind, a2, a3)?;
+            one(add_handle(Arc::new(Object::Resource(child)), rights::MANAGE | rights::DUPLICATE | rights::TRANSFER)?)
+        }
+        nr::IOPORT_GRANT => {
+            let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
+            if a2 == 0 || a1 + a2 > 0x1_0000 {
+                return Err(FErr::InvalidArgs);
+            }
+            if !crate::hw::covers(&r, crate::obj::ResourceKind::IoPort, a1, a2) {
+                return Err(FErr::AccessDenied);
+            }
+            let p = proc::current().ok_or(FErr::BadState)?;
+            let me = proc::as_process(&p)?;
+            crate::hw::grant_ports(me.pid, &me.io, a1 as u16, a2 as u16);
+            one(0)
+        }
+        nr::MMIO_MAP => {
+            let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
+            let (phys, len) = (a1, a2);
+            if len == 0 || !phys.is_multiple_of(4096) {
+                return Err(FErr::InvalidArgs);
+            }
+            if !crate::hw::covers(&r, crate::obj::ResourceKind::Mmio, phys, len) {
+                return Err(FErr::AccessDenied);
+            }
+            if crate::hw::is_kernel_memory(phys, len) {
+                return Err(FErr::AccessDenied);
+            }
+            let mut perms = crate::mm::aspace::perm::READ;
+            if a3 & fcore_abi::cache::READ_ONLY == 0 {
+                perms |= crate::mm::aspace::perm::WRITE;
+            }
+            perms |= match a3 & 3 {
+                fcore_abi::cache::WRITE_BACK => 0,
+                fcore_abi::cache::WRITE_COMBINING => crate::mm::aspace::perm::WRITE_COMBINING,
+                fcore_abi::cache::UNCACHED => crate::mm::aspace::perm::UNCACHED,
+                _ => return Err(FErr::InvalidArgs),
+            };
+            let p = proc::current().ok_or(FErr::BadState)?;
+            let aspace = proc::aspace_of(&p).ok_or(FErr::BadState)?;
+            one(aspace.map(&Vmo::wrap(phys, len), 0, len, 0, perms)?)
+        }
+        nr::INTERRUPT_BIND => {
+            let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
+            if !crate::hw::covers(&r, crate::obj::ResourceKind::Irq, a1, 1) || a1 > u32::MAX as u64 {
+                return Err(FErr::AccessDenied);
+            }
+            let line = crate::hw::bind(a1 as u32, a2 as u16)?;
+            one(add_handle(Arc::new(Object::Interrupt(line)), rights::WAIT | rights::MANAGE)?)
+        }
+        nr::INTERRUPT_ACK => {
+            let h = handle(a0, rights::MANAGE)?;
+            let Object::Interrupt(l) = &*h.object else { return Err(FErr::WrongType) };
+            crate::hw::ack(l);
+            one(0)
+        }
         nr::CLOCK_GET => one(match a0 {
             clock::MONOTONIC => crate::time::now_ns(),
             clock::BOOT => crate::time::boot_ns(),

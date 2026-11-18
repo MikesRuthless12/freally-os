@@ -413,6 +413,12 @@ pub fn schedule() {
         }
         // The address space: the thread's process's, else the kernel's (CR3 is
         // written only when it changes: each write is a VM exit and a TLB flush).
+        if let Some(p) = next.process.lock().as_ref().and_then(|p| crate::proc::as_process(p).ok()) {
+            let io = p.io.lock();
+            crate::hw::io_switch(p.pid, &io);
+        } else {
+            crate::hw::io_switch(0, &[]);
+        }
         let want = next.process.lock().as_ref().and_then(crate::proc::aspace_of);
         let want_pml4 = want.as_ref().map_or(paging::kernel_pml4(), |a| a.pml4);
         if cpu::cr3() & !0xFFF != want_pml4 {

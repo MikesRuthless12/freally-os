@@ -130,3 +130,71 @@ ktest!(syscalls_each_succeeds_and_each_error_path_is_reported, {
     proc::terminate(&p, 0);
     result
 });
+
+ktest!(hardware_access_stays_inside_each_grant, {
+    use crate::obj::handles::Handle;
+    use crate::obj::{Object, Resource, ResourceKind};
+    use alloc::sync::Arc;
+    use fcore_abi::{cache, resource};
+    let p = proc::create("hw-test", 0)?;
+    let me = crate::sched::current().ok_or("no current thread")?;
+    *me.process.lock() = Some(p.clone());
+    proc::aspace_of(&p).ok_or("no address space")?.activate();
+    let root = {
+        let pr = proc::as_process(&p)?;
+        let r = Resource { kind: ResourceKind::Root, base: 0, len: u64::MAX };
+        pr.inner.lock().handles.add(Handle { object: Arc::new(Object::Resource(r)), rights: rights::MANAGE })? as u64
+    };
+    let result = (|| -> Result<(), &'static str> {
+        // Carving: COM1's ports from the root; nothing outside them from that.
+        let (com1, _) = call(nr::RESOURCE_CREATE, root, resource::IO_PORT, 0x3F8, 8, 0, 0)?;
+        if e(call(nr::RESOURCE_CREATE, com1, resource::IO_PORT, 0x60, 1, 0, 0)) != Some(FErr::AccessDenied) {
+            return Err("a child resource widened its parent");
+        }
+        if e(call(nr::RESOURCE_CREATE, com1, resource::IRQ, 4, 1, 0, 0)) != Some(FErr::AccessDenied) {
+            return Err("an I/O-port resource made an IRQ resource");
+        }
+        // Ports: inside the grant, yes; outside, no.
+        if e(call(nr::IOPORT_GRANT, com1, 0x60, 1, 0, 0, 0)) != Some(FErr::AccessDenied) {
+            return Err("ioport_grant opened a port outside its resource");
+        }
+        call(nr::IOPORT_GRANT, com1, 0x3F8, 8, 0, 0, 0)?;
+        // MMIO: never RAM the kernel hands out; the framebuffer, yes.
+        let ram = crate::mm::frames::alloc().ok_or("no frame")?;
+        let refused = e(call(nr::MMIO_MAP, root, ram, 4096, cache::UNCACHED, 0, 0));
+        crate::mm::frames::free(ram);
+        if refused != Some(FErr::AccessDenied) {
+            return Err("mmio_map mapped RAM");
+        }
+        let fb = crate::boot_info().ok_or("no BootInfo")?.framebuffer.base;
+        let (fbres, _) = call(nr::RESOURCE_CREATE, root, resource::MMIO, fb, 4096, 0, 0)?;
+        if e(call(nr::MMIO_MAP, fbres, fb + 4096, 4096, cache::WRITE_COMBINING, 0, 0)) != Some(FErr::AccessDenied) {
+            return Err("mmio_map went past its resource");
+        }
+        let (at, _) = call(nr::MMIO_MAP, fbres, fb, 4096, cache::WRITE_COMBINING, 0, 0)?;
+        let mut px = [0u8; 4];
+        crate::mm::user::copy_from_user(&mut px, at)?;
+        // SAFETY: the framebuffer's first pixel, through the direct map.
+        let direct = unsafe { core::ptr::read_volatile((fb + fcore_abi::layout::DIRECT_MAP) as *const [u8; 4]) };
+        if px != direct {
+            return Err("the mapped framebuffer isn't the framebuffer");
+        }
+        // Interrupts: only the covered line, and only once.
+        let (irq4, _) = call(nr::RESOURCE_CREATE, root, resource::IRQ, 4, 1, 0, 0)?;
+        if e(call(nr::INTERRUPT_BIND, irq4, 1, 0, 0, 0, 0)) != Some(FErr::AccessDenied) {
+            return Err("interrupt_bind bound a line outside its resource");
+        }
+        let (line, _) = call(nr::INTERRUPT_BIND, irq4, 4, 0, 0, 0, 0)?;
+        if e(call(nr::INTERRUPT_BIND, irq4, 4, 0, 0, 0, 0)) != Some(FErr::AlreadyExists) {
+            return Err("one line was bound twice");
+        }
+        call(nr::INTERRUPT_ACK, line, 0, 0, 0, 0, 0)?;
+        call(nr::HANDLE_CLOSE, line, 0, 0, 0, 0, 0)?;
+        Ok(())
+    })();
+    crate::mm::aspace::activate_kernel();
+    crate::hw::io_switch(0, &[]);
+    *me.process.lock() = None;
+    proc::terminate(&p, 0);
+    result
+});

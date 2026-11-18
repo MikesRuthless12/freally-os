@@ -240,8 +240,10 @@ pub mod syscall {
     pub const FUTEX_WAKE: u64 = 33;
     pub const SYSTEM_INFO: u64 = 34;
     pub const UEFI_SET_VAR: u64 = 35;
+    /// `parent_h, kind, base, len` → child_h: a narrower resource (MANAGE on the parent).
+    pub const RESOURCE_CREATE: u64 = 36;
     /// One past the highest number.
-    pub const COUNT: u64 = 36;
+    pub const COUNT: u64 = 37;
 }
 
 #[cfg(test)]
@@ -294,6 +296,21 @@ pub mod memtype {
     pub const BOOT_DATA: u32 = 0x8000_0002;
     /// The verified system image, kept for conductor.
     pub const IMAGE: u32 = 0x8000_0003;
+}
+
+/// Resource kinds (`resource_create`).
+pub mod resource {
+    pub const MMIO: u64 = 1;
+    pub const IO_PORT: u64 = 2;
+    pub const IRQ: u64 = 3;
+}
+
+/// `mmio_map`'s cache argument: bits 0–1 the memory type, bit 2 read-only.
+pub mod cache {
+    pub const WRITE_BACK: u64 = 0;
+    pub const WRITE_COMBINING: u64 = 1;
+    pub const UNCACHED: u64 = 2;
+    pub const READ_ONLY: u64 = 4;
 }
 
 /// Signal bits on objects; user space may set and clear only `USER_MASK`.

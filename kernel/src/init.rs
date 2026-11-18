@@ -115,7 +115,20 @@ pub fn start_conductor() -> Result<(), &'static str> {
 /// Runs the user test program in `mode` and returns its exit code (ktest builds).
 #[cfg(feature = "ktest")]
 pub fn run_test_program(mode: u64) -> Result<i64, &'static str> {
+    run_test_program_with(mode, alloc::vec::Vec::new())
+}
+
+/// As `run_test_program`, with `handles` placed in the program's table first.
+#[cfg(feature = "ktest")]
+pub fn run_test_program_with(mode: u64, handles: alloc::vec::Vec<(u32, Handle)>) -> Result<i64, &'static str> {
     let l = load("/system/test/utest", "utest", 0)?;
+    {
+        let p = proc::as_process(&l.process).map_err(|e| e.describe())?;
+        let mut inner = p.inner.lock();
+        for (at, h) in handles {
+            inner.handles.add_at(at, h).map_err(|e| e.describe())?;
+        }
+    }
     start(&l, mode)?;
     let header: &crate::obj::Header = crate::obj::waitable(&l.process).map_err(|e| e.describe())?;
     let deadline = crate::arch::cpu::rdtsc() + crate::time::ns_to_ticks(5_000_000_000);
@@ -146,6 +159,25 @@ ktest!(user_a_null_dereference_files_a_report_with_rip_and_frames, {
     if !(USER_IMAGE_BASE..USER_STACK_TOP).contains(&r.rip) || r.frames.len() < 2 {
         return Err("the report lacks the faulting RIP or its frames");
     }
+    Ok(())
+});
+
+ktest!(user_a_granted_port_reads_and_an_ungranted_one_faults, {
+    use crate::obj::{Resource, ResourceKind};
+    let com1 = Resource { kind: ResourceKind::IoPort, base: 0x3F8, len: 8 };
+    let h = Handle { object: Arc::new(Object::Resource(com1)), rights: rights::MANAGE };
+    // Mode 3: grant COM1 through handle 4, read its line status, exit 7.
+    if crate::init::run_test_program_with(3, alloc::vec![(well_known::ROOT_RESOURCE, h)])? != 7 {
+        return Err("a granted port couldn't be read");
+    }
+    // Mode 4: the same read with no grant is a general-protection fault.
+    let before = crate::fault::latest_seq();
+    crate::init::run_test_program(4)?;
+    let r = crate::fault::latest().ok_or("no fault report")?;
+    if r.seq == before || r.kind != fwire::proto::conductor::FaultKind::GeneralProtection {
+        return Err("an ungranted port didn't fault");
+    }
+    crate::hw::io_switch(0, &[]);
     Ok(())
 });
 

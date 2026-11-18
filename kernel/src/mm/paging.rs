@@ -16,6 +16,8 @@ use fcore_abi::{BootInfo, MemRegion};
 pub const PRESENT: u64 = 1;
 pub const WRITABLE: u64 = 1 << 1;
 pub const USER: u64 = 1 << 2;
+pub const PWT: u64 = 1 << 3;
+pub const PCD: u64 = 1 << 4;
 pub const HUGE: u64 = 1 << 7;
 pub const GLOBAL: u64 = 1 << 8;
 pub const NX: u64 = 1 << 63;

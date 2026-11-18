@@ -77,6 +77,8 @@ pub enum Object {
     Event(Header),
     /// A hardware range or IRQ a driver may use (TASK-040).
     Resource(Resource),
+    /// A bound interrupt line: signalled when it fires.
+    Interrupt(Arc<crate::hw::IrqLine>),
 }
 
 /// What a resource handle permits (devmgr holds the root; drivers get slices).
@@ -105,6 +107,7 @@ impl Object {
             Object::Channel(_) => Kind::Channel,
             Object::Event(_) => Kind::Event,
             Object::Resource(_) => Kind::Resource,
+            Object::Interrupt(_) => Kind::Interrupt,
         }
     }
 
@@ -115,6 +118,7 @@ impl Object {
             Object::Channel(c) => Some(c.header()),
             Object::Process(p) => Some(&p.header),
             Object::Thread(t) => Some(&t.header),
+            Object::Interrupt(l) => Some(&l.header),
             _ => None,
         }
     }
