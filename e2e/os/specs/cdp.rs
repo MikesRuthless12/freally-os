@@ -152,3 +152,183 @@ pub fn freally(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The node `sel` finds now (0: none).
+fn q(ctx: &mut Ctx, sel: &str) -> Result<i64, String> {
+    let r = call(ctx, "DOM.querySelector", Value::obj([("nodeId", 1u32.into()), ("selector", sel.into())]))?;
+    Ok(r.get("nodeId").and_then(Value::as_i64).unwrap_or(0))
+}
+
+fn q_all(ctx: &mut Ctx, sel: &str) -> Result<Vec<i64>, String> {
+    let r = call(ctx, "DOM.querySelectorAll", Value::obj([("nodeId", 1u32.into()), ("selector", sel.into())]))?;
+    Ok(arr(&r, "nodeIds")?.iter().filter_map(Value::as_i64).collect())
+}
+
+/// Waits up to 10 s for `sel` to find a node.
+fn until_q(ctx: &mut Ctx, sel: &str) -> Result<i64, String> {
+    let start = std::time::Instant::now();
+    loop {
+        let id = q(ctx, sel)?;
+        if id != 0 {
+            return Ok(id);
+        }
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            return Err(format!("nothing matched {sel}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// Waits up to 10 s for the node `sel` finds to have `k` = `v`.
+fn until_attr(ctx: &mut Ctx, sel: &str, k: &str, v: &str) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        let id = q(ctx, sel)?;
+        if id != 0 && attr(ctx, id, k)?.as_deref() == Some(v) {
+            return Ok(());
+        }
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            let now = if id == 0 { None } else { attr(ctx, id, k)? };
+            return Err(format!("{sel} {k}: {now:?}, not {v:?}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+fn attr(ctx: &mut Ctx, id: i64, k: &str) -> Result<Option<String>, String> {
+    let r = call(ctx, "DOM.getAttributes", Value::obj([("nodeId", id.into())]))?;
+    let a = arr(&r, "attributes")?;
+    Ok(a.chunks(2).find(|p| p[0].as_str() == Some(k)).and_then(|p| p.get(1)?.as_str().map(String::from)))
+}
+
+/// A click in the middle of node `id`, with the real mouse.
+fn click(ctx: &mut Ctx, id: i64) -> Result<(), String> {
+    let m = call(ctx, "DOM.getBoxModel", Value::obj([("nodeId", id.into())]))?;
+    let quad: Vec<i64> = m
+        .get("model")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_i64)
+        .collect();
+    let [x0, y0, x1, _, _, y1, ..] = quad[..] else { return Err(format!("no box for node {id}")) };
+    crate::stage::move_to(ctx, ((x0 + x1) / 2) as i32, ((y0 + y1) / 2) as i32)?;
+    crate::stage::button(ctx, true)?;
+    crate::stage::button(ctx, false)
+}
+
+fn type_keys(ctx: &mut Ctx, text: &str) -> Result<(), String> {
+    for c in text.chars() {
+        let code = format!("Key{}", c.to_ascii_uppercase());
+        crate::stage::key(ctx, &code, true)?;
+        crate::stage::key(ctx, &code, false)?;
+    }
+    Ok(())
+}
+
+/// `@cdp.dom`: the desktop's apps as a document: the Rack's keys, Monitor's
+/// tabs and sort headers, the launcher's search and rows, the terminal's
+/// screen. Each is found by a selector, worked by its box on screen with
+/// the real mouse and keyboard, and read back from its attributes (and the
+/// app's own door) (TASK-063).
+pub fn dom(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("desktop: the Rack is up")?;
+    ctx.expect_log("cdpd: ready")?;
+    const RACK: &str = "WINDOW[data-owner=\"desktop\"]";
+    let apps = until_q(ctx, &format!("{RACK} BUTTON[data-testid=\"rack-launcher\"]"))?;
+    if attr(ctx, apps, "aria-label")?.as_deref() != Some("Apps") {
+        return Err("the launcher key isn't called Apps".into());
+    }
+    // Monitor from its Rack key: its tabs appear; the key says it's running.
+    let key = until_q(ctx, &format!("{RACK} BUTTON[data-testid=\"rack-monitor\"]"))?;
+    click(ctx, key)?;
+    const MON: &str = "WINDOW[data-owner=\"monitor\"]";
+    let boot = until_q(ctx, &format!("{MON} TABLIST TAB[aria-label=\"Boot\"]"))?;
+    until_attr(ctx, &format!("{RACK} [data-testid=\"rack-monitor\"]"), "aria-valuenow", "running")?;
+    // A tab by its box: selected, the others not, and Monitor agrees.
+    click(ctx, boot)?;
+    until_attr(ctx, &format!("{MON} [data-testid=\"tab-boot\"]"), "aria-selected", "true")?;
+    let procs = q(ctx, &format!("{MON} [data-testid=\"tab-processes\"]"))?;
+    if attr(ctx, procs, "aria-selected")?.as_deref() != Some("false") {
+        return Err("Processes is still selected".into());
+    }
+    if !ctx.door("monitor state")?.iter().any(|l| l == "tab Boot") {
+        return Err("Monitor doesn't say Boot".into());
+    }
+    if q(ctx, &format!("{MON} TABLE ROW[aria-label=\"S4\"]"))? == 0 {
+        return Err("no S4 row under Boot".into());
+    }
+    // Back to Processes; sort by Memory: the header says so, Monitor too.
+    let procs = q(ctx, &format!("{MON} [data-testid=\"tab-processes\"]"))?;
+    click(ctx, procs)?;
+    let memory = until_q(ctx, &format!("{MON} BUTTON[data-testid=\"sort-memory\"]"))?;
+    click(ctx, memory)?;
+    until_attr(ctx, &format!("{MON} [data-testid=\"sort-memory\"]"), "aria-pressed", "true")?;
+    if !ctx.door("monitor state")?.iter().any(|l| l.starts_with("sort Memory")) {
+        return Err("Monitor isn't sorted by memory".into());
+    }
+    if q_all(ctx, &format!("{MON} BUTTON[aria-pressed=\"true\"]"))?.len() != 1 {
+        return Err("more than one header says it sorts".into());
+    }
+    // The launcher: Super opens it, its search focused; typing narrows the
+    // rows; a click on one starts its app and closes the launcher.
+    crate::stage::key(ctx, "MetaLeft", true)?;
+    crate::stage::key(ctx, "MetaLeft", false)?;
+    const SEARCH: &str = "[data-testid=\"launcher-search\"]";
+    until_attr(ctx, SEARCH, "data-focused", "true")?;
+    type_keys(ctx, "term")?;
+    until_attr(ctx, SEARCH, "aria-valuenow", "term")?;
+    let rows = q_all(ctx, "LISTBOX OPTION")?;
+    if rows.len() != 1 || attr(ctx, rows[0], "aria-label")?.as_deref() != Some("Terminal") {
+        return Err(format!("{} rows for \"term\"", rows.len()));
+    }
+    let started = ctx.log_count("desktop: started terminal");
+    click(ctx, rows[0])?;
+    ctx.expect_log_count("desktop: started terminal", started + 1)?;
+    let start = std::time::Instant::now();
+    while q(ctx, SEARCH)? != 0 {
+        if start.elapsed() > std::time::Duration::from_secs(5) {
+            return Err("the launcher stayed open".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // The terminal: brought forward by Target.activateTarget; what's typed
+    // is its screen's value.
+    let term = until_q(ctx, "WINDOW[data-owner=\"terminal\"]")?;
+    let wid = attr(ctx, term, "data-window-id")?.ok_or("no window id")?;
+    call(ctx, "Target.activateTarget", Value::obj([("targetId", wid.as_str().into())]))?;
+    const SCREEN: &str = "WINDOW[data-owner=\"terminal\"] TEXTBOX[data-testid=\"terminal-screen\"]";
+    until_attr(ctx, SCREEN, "data-focused", "true")?;
+    type_keys(ctx, "ver")?;
+    let start = std::time::Instant::now();
+    loop {
+        let screen = q(ctx, SCREEN)?;
+        let v = attr(ctx, screen, "aria-valuenow")?.unwrap_or_default();
+        if v.ends_with("$ ver") {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            return Err(format!("the screen's line is {v:?}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    for _ in 0..3 {
+        crate::stage::key(ctx, "Backspace", true)?;
+        crate::stage::key(ctx, "Backspace", false)?;
+    }
+    // The AX tree says the same in its own words.
+    let ax = call(ctx, "Accessibility.getFullAXTree", none())?;
+    let has = |role: &str, name: &str| {
+        arr(&ax, "nodes").is_ok_and(|n| {
+            n.iter().any(|v| {
+                v.get("role").and_then(|r| r.get("value")).and_then(Value::as_str) == Some(role)
+                    && v.get("name").and_then(|r| r.get("value")).and_then(Value::as_str) == Some(name)
+            })
+        })
+    };
+    if !has("tab", "Boot") || !has("textbox", "Terminal") || !has("button", "Apps") {
+        return Err("the AX tree misses Monitor's Boot tab, the terminal or the Apps key".into());
+    }
+    Ok(())
+}

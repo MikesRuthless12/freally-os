@@ -169,6 +169,13 @@
       "what": "cdpd's methods through cdp-host: the targets, the processes (conductor first), the boot timeline, the faults, readBack of stage's theme, the metrics and the Log domain, each agreeing with the real services."
     },
     {
+      "id": "cdp.dom",
+      "task": "TASK-063",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/cdp.rs",
+      "what": "The apps as a document: the Rack's keys, Monitor's tabs and sort headers, the launcher's search and rows (a click on one starts its app), the terminal's screen. Each found by a selector, worked by its box with the real mouse and keyboard, read back from its attributes and the app; the AX tree agrees."
+    },
+    {
       "id": "monitor.tabs",
       "task": "TASK-062",
       "setup": "e2e",

@@ -72,6 +72,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("shell.builtins", terminal::builtins),
     ("monitor.tabs", monitor::tabs),
     ("cdp.freally", cdp_specs::freally),
+    ("cdp.dom", cdp_specs::dom),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

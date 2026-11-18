@@ -27,6 +27,7 @@ use fstd::handle::Handle;
 use fstd::ipc::{Channel, Client};
 use fstd::time::{Duration, Instant};
 use fui::theme::{Mode, Theme};
+use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::logger as lg;
 use fwire::proto::stage as st;
@@ -192,6 +193,7 @@ struct Term {
     clipboard: String,
     focused: bool,
     shift: bool,
+    ax: fstd::ax::Publisher,
 }
 
 fn run(_bootstrap: u32) -> i64 {
@@ -271,6 +273,7 @@ impl Term {
             selecting: false,
             clipboard: String::new(),
             focused: true,
+            ax: Default::default(),
             shift: false,
         };
         t.grid.feed(b"Freally Shell. Type help to see the commands.\r\n");
@@ -305,6 +308,15 @@ impl Term {
             Vec::new(),
             deadline(),
         );
+        // Its tree: the screen, a text box whose value is the cursor's line.
+        let pad = self.theme.px(PAD) as i32;
+        let (cw, ch) = (self.grid.cols as i32 * self.cell.w, self.grid.rows as i32 * self.cell.h);
+        let state = if self.focused { ax::FOCUSED } else { 0 };
+        let mut n =
+            fstd::ax::node(ax::ROOT, ax::TEXTBOX, "Terminal", state, (pad, pad, cw.max(0) as u32, ch.max(0) as u32));
+        n.testid = String::from("terminal-screen");
+        n.value = String::from(self.grid.text(self.grid.y).trim_end());
+        self.ax.publish(&mut self.stage, self.window, &ax::Tree { nodes: alloc::vec![n] });
     }
 
     /// Text from the shell (its `\n` made `\r\n`) to the screen.

@@ -28,6 +28,7 @@ use fui::draw;
 use fui::layout::Rect;
 use fui::text::{FontData, Fonts, words};
 use fui::theme::{Mode, TextStyle, Theme, Tok};
+use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::logger as lg;
 use fwire::proto::monitor as mon;
@@ -77,6 +78,7 @@ struct Monitor {
     /// Conductor didn't answer: the banner.
     unreachable: bool,
     last_sample: u64,
+    ax: fstd::ax::Publisher,
 }
 
 fn fonts() -> Result<Fonts<'static>, String> {
@@ -158,6 +160,7 @@ impl Monitor {
             logger: None,
             unreachable: false,
             last_sample: 0,
+            ax: Default::default(),
         };
         m.refresh();
         m.draw();
@@ -493,6 +496,141 @@ impl Monitor {
             Vec::new(),
             deadline(),
         );
+        let tree = self.ax_tree();
+        self.ax.publish(&mut self.stage, self.window, &tree);
+    }
+
+    /// What's on screen, for the accessibility tree (TASK-063): the tabs,
+    /// then the tab shown: its sort headers and table, its stages, its
+    /// faults, or its chips.
+    fn ax_tree(&self) -> ax::Tree {
+        let t = self.theme;
+        let px = |v: u32| t.px(v) as i32;
+        let node = fstd::ax::node;
+        let id = |n: &mut ax::Node, testid: String| n.testid = testid;
+        let tab_w = t.px(140);
+        let mut nodes = alloc::vec![node(
+            ax::ROOT,
+            ax::TABLIST,
+            "Monitor's views",
+            0,
+            (px(PAD), 0, tab_w * TABS.len() as u32, t.px(TAB_H))
+        )];
+        for (i, name) in TABS.iter().enumerate() {
+            let state = if i == self.tab { ax::SELECTED } else { 0 };
+            let mut n = node(0, ax::TAB, name, state, (px(PAD) + i as i32 * tab_w as i32, 0, tab_w, t.px(TAB_H)));
+            id(&mut n, alloc::format!("tab-{}", name.to_ascii_lowercase()));
+            nodes.push(n);
+        }
+        if self.unreachable {
+            nodes.push(node(
+                ax::ROOT,
+                ax::TEXT,
+                "Monitor couldn't reach the system service.",
+                0,
+                (px(PAD), px(TAB_H) + px(12), 600, 24),
+            ));
+            return ax::Tree { nodes };
+        }
+        let top = px(TAB_H) + px(12);
+        match self.tab {
+            0 => {
+                for (k, (name, x, col)) in COLS.iter().enumerate() {
+                    let Some(col) = col else { continue };
+                    let next = COLS.get(k + 1).map_or(W, |c| c.1);
+                    let on = *col == self.procs.sort;
+                    let mut n = node(
+                        ax::ROOT,
+                        ax::BUTTON,
+                        &alloc::format!("Sort by {name}"),
+                        if on { ax::PRESSED } else { 0 },
+                        (px(*x), top, t.px(next - x), t.px(24)),
+                    );
+                    id(&mut n, alloc::format!("sort-{}", name.to_ascii_lowercase()));
+                    if on {
+                        n.value = String::from(if self.procs.descending { "descending" } else { "ascending" });
+                    }
+                    nodes.push(n);
+                }
+                let table = nodes.len() as u32;
+                let mut tb = node(
+                    ax::ROOT,
+                    ax::TABLE,
+                    "Processes",
+                    0,
+                    (px(8), top + px(24), self.w - t.px(16), t.px(ROW_H) * self.procs.rows.len() as u32),
+                );
+                id(&mut tb, String::from("processes"));
+                nodes.push(tb);
+                for (i, r) in self.procs.rows.iter().enumerate() {
+                    let mut row = node(
+                        table,
+                        ax::ROW,
+                        &r.proc.name,
+                        0,
+                        (px(8), top + px(24) + i as i32 * px(ROW_H), self.w - t.px(16), t.px(ROW_H)),
+                    );
+                    row.value = r.proc.state.clone();
+                    nodes.push(row);
+                }
+            }
+            1 => {
+                let table = nodes.len() as u32;
+                nodes.push(node(
+                    ax::ROOT,
+                    ax::TABLE,
+                    "Boot stages",
+                    0,
+                    (px(PAD), top, self.w - t.px(2 * PAD), t.px(ROW_H) * 15),
+                ));
+                if let Some(b) = &self.boot {
+                    for (i, (name, ms, _)) in b.stages.iter().enumerate() {
+                        let mut row = node(
+                            table,
+                            ax::ROW,
+                            name,
+                            0,
+                            (px(PAD), top + i as i32 * px(ROW_H), self.w - t.px(2 * PAD), t.px(ROW_H)),
+                        );
+                        row.value = alloc::format!("{ms:.1} ms");
+                        nodes.push(row);
+                    }
+                }
+            }
+            2 => {
+                let mut ry = top;
+                for (i, f) in self.faults.iter().enumerate() {
+                    let open = self.open_fault == Some(i);
+                    let mut n = node(
+                        ax::ROOT,
+                        ax::BUTTON,
+                        &alloc::format!("{}: {}", f.service, f.message),
+                        if open { ax::EXPANDED } else { 0 },
+                        (px(8), ry, self.w - t.px(16), t.px(ROW_H)),
+                    );
+                    id(&mut n, alloc::format!("fault-{}", f.seq));
+                    nodes.push(n);
+                    ry += px(ROW_H) + if open { px(20) * (3 + f.frames.len() as i32) } else { 0 };
+                }
+            }
+            _ => {
+                let svc = alloc::format!("Service: {}", self.log.service.as_deref().unwrap_or("all"));
+                let lvl = alloc::format!(
+                    "Level: {}",
+                    ["all", "debug", "info", "warn", "error"]
+                        .get(self.log.min_level as usize)
+                        .copied()
+                        .unwrap_or("all")
+                );
+                let mut a = node(ax::ROOT, ax::BUTTON, &svc, 0, (px(PAD), top, t.px(240), t.px(24)));
+                id(&mut a, String::from("chip-service"));
+                let mut b = node(ax::ROOT, ax::BUTTON, &lvl, 0, (px(260), top, t.px(200), t.px(24)));
+                id(&mut b, String::from("chip-level"));
+                nodes.push(a);
+                nodes.push(b);
+            }
+        }
+        ax::Tree { nodes }
     }
 
     /// A click at (x, y) on the surface.

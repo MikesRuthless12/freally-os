@@ -28,6 +28,22 @@ pub fn publish(stage: &mut Client, window_id: u32, tree: &ax::Tree) -> Result<()
         .map(|_| ())
 }
 
+/// Publishes a window's tree when it differs from the last one published
+/// (a hover redraws often; its tree seldom changes).
+#[derive(Default)]
+pub struct Publisher {
+    last: alloc::vec::Vec<u8>,
+}
+
+impl Publisher {
+    pub fn publish(&mut self, stage: &mut Client, window_id: u32, tree: &ax::Tree) {
+        let bytes = fwire::to_payload(tree);
+        if bytes != self.last && publish(stage, window_id, tree).is_ok() {
+            self.last = bytes;
+        }
+    }
+}
+
 /// A node: `parent` its index (`ax::ROOT` for the root), bounds in surface pixels.
 pub fn node(parent: u32, role: u8, name: &str, state: u32, (x, y, w, h): (i32, i32, u32, u32)) -> ax::Node {
     ax::Node {

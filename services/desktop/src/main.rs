@@ -33,6 +33,7 @@ use fui::hardware::{Hardware, KeyLook, Lamp};
 use fui::layout::Rect;
 use fui::text::{FontData, Fonts, words};
 use fui::theme::{Mode, TextStyle, Theme, Tok};
+use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::stage as st;
 use svc_desktop::clock;
@@ -102,6 +103,9 @@ struct Desktop {
     shortcuts: Option<Channel>,
     clock: String,
     stamped: bool,
+    /// The Rack's and the launcher's accessibility trees (TASK-063).
+    rack_ax: fstd::ax::Publisher,
+    launcher_ax: fstd::ax::Publisher,
 }
 
 fn deadline() -> u64 {
@@ -301,6 +305,8 @@ impl Desktop {
             shortcuts,
             clock: String::new(),
             stamped: false,
+            rack_ax: Default::default(),
+            launcher_ax: Default::default(),
         };
         d.services();
         d.draw_rack();
@@ -378,6 +384,35 @@ impl Desktop {
             Tok::PrimaryInk,
         );
         present(&mut self.stage, &mut self.rack);
+        // Its tree: each key a button (dimmed where the app isn't here, its
+        // value "running" while it runs), and the clock.
+        let mut nodes = Vec::new();
+        for (i, (k, p)) in keys.iter().zip(&places).enumerate() {
+            let (name, testid) = match k {
+                Key::Launcher => (String::from("Apps"), String::from("rack-launcher")),
+                Key::App(a) => (self.known[*a].app.name.clone(), alloc::format!("rack-{}", self.known[*a].app.service)),
+            };
+            let mut state = 0;
+            if !avail[i] {
+                state |= ax::DISABLED;
+            }
+            if hovered == Some(i) {
+                state |= ax::HOVERED;
+            }
+            if pressed == Some(i) {
+                state |= ax::PRESSED;
+            }
+            let mut n = fstd::ax::node(ax::ROOT, ax::BUTTON, &name, state, (p.x, p.y, p.size, p.size));
+            n.testid = testid;
+            if lit[i] {
+                n.value = String::from("running");
+            }
+            nodes.push(n);
+        }
+        let mut c = fstd::ax::node(ax::ROOT, ax::TEXT, &text, 0, (well.x, well.y, well.w, well.h));
+        c.testid = String::from("rack-clock");
+        nodes.push(c);
+        self.rack_ax.publish(&mut self.stage, self.rack.id, &ax::Tree { nodes });
         if !self.stamped {
             self.stamped = true;
             if let Err(e) = fstd::service::stamp(14, rdtsc()) {
@@ -457,6 +492,7 @@ impl Desktop {
         match window(&mut self.stage, &req) {
             Ok(win) => {
                 self.launcher = Some((win, Launcher::default()));
+                self.launcher_ax = Default::default();
                 self.draw_launcher();
                 fstd::info!("desktop: the launcher is open");
             }
@@ -539,9 +575,32 @@ impl Desktop {
                 Tok::Text2,
             );
         }
-        if let Some((win, _)) = self.launcher.as_mut() {
-            present(&mut self.stage, win);
+        let Some((win, _)) = self.launcher.as_mut() else { return };
+        present(&mut self.stage, win);
+        let id = win.id;
+        // Its tree: the search field, then the list and its rows.
+        let mut search =
+            fstd::ax::node(ax::ROOT, ax::TEXTBOX, "Find an app", ax::FOCUSED, (well.x, well.y, well.w, well.h));
+        search.testid = String::from("launcher-search");
+        search.value = query.clone();
+        let shown = matches.len().min(LAUNCHER_ROWS);
+        let mut list = fstd::ax::node(
+            ax::ROOT,
+            ax::LISTBOX,
+            "Apps",
+            0,
+            (pad / 2, top, w - pad as u32, (shown as i32 * row_h) as u32),
+        );
+        list.testid = String::from("launcher-list");
+        let mut nodes = alloc::vec![search, list];
+        for (row, &i) in matches.iter().take(LAUNCHER_ROWS).enumerate() {
+            let y = top + row as i32 * row_h;
+            let state = if row == selected { ax::SELECTED } else { 0 };
+            let mut o = fstd::ax::node(1, ax::OPTION, &apps[i].name, state, (pad / 2, y, w - pad as u32, row_h as u32));
+            o.testid = alloc::format!("launcher-{}", apps[i].service);
+            nodes.push(o);
         }
+        self.launcher_ax.publish(&mut self.stage, id, &ax::Tree { nodes });
     }
 
     /// Starts (or brings forward) the app behind a known entry.
@@ -648,6 +707,30 @@ impl Desktop {
                         }
                     }
                     launcher::Outcome::Nothing => {}
+                }
+            }
+            st::EV_POINTER => {
+                // A click on a row starts its app.
+                let Ok(e) = fwire::from_payload::<st::Pointer>(p) else { return };
+                if e.kind != st::PointerKind::Down || e.buttons & 1 == 0 {
+                    return;
+                }
+                let t = self.theme;
+                let top = t.px(16) as i32 + t.px(40) as i32 + t.px(8) as i32;
+                let row_h = t.px(LAUNCHER_ROW) as i32;
+                if e.y < top {
+                    return;
+                }
+                let row = ((e.y - top) / row_h) as usize;
+                let apps = self.apps();
+                let Some((_, l)) = self.launcher.as_ref() else { return };
+                let Some(&i) = launcher::filter(&apps, &l.query).get(row).filter(|_| row < LAUNCHER_ROWS) else {
+                    return;
+                };
+                let service = apps[i].service.clone();
+                self.close_launcher();
+                if let Some(k) = self.known.iter().position(|k| k.app.service == service) {
+                    self.start(k);
                 }
             }
             st::EV_FOCUS => {

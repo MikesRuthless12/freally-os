@@ -41,7 +41,11 @@ pub fn call(
         && let Some(d) = door
     {
         let id = params.get("targetId").and_then(Value::as_str).unwrap_or("");
-        return d.line(&format!("stage focus {id}")).map(|_| Value::Obj(Vec::new())).map_err(|e| (-32000, e));
+        let lines = d.line(&format!("stage focus {id}")).map_err(|e| (-32000, e))?;
+        return match lines.iter().find(|l| l.starts_with("error")) {
+            Some(e) => Err((-32000, e.clone())),
+            None => Ok(Value::Obj(Vec::new())),
+        };
     }
     match method {
         "Page.captureScreenshot" => screenshot(qmp, shot_dir, params).map_err(|e| (-32000, e)),

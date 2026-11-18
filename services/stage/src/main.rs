@@ -258,7 +258,14 @@ impl Stage {
             }
             st::FOCUS_WINDOW => {
                 fwire::from_payload::<st::ById>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|b| {
-                    self.own(conn, b.window_id)?;
+                    // The test door may bring any window forward (e2e images:
+                    // CDP's Target.activateTarget); anyone else, their own.
+                    let door = cfg!(feature = "flavour-e2e") && matches!(name.as_str(), "conductor" | "cdpd");
+                    if door {
+                        self.desk.windows.get(b.window_id).ok_or((FErr::NotFound, "no such window"))?;
+                    } else {
+                        self.own(conn, b.window_id)?;
+                    }
                     let mut out = Vec::new();
                     self.desk.focus(b.window_id, &mut out);
                     self.apply(out);
