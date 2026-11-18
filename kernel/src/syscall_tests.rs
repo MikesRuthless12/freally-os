@@ -36,15 +36,14 @@ ktest!(syscalls_each_succeeds_and_each_error_path_is_reported, {
         // be read or run, as the image's handles are.
         let (map_only, _) = call(nr::HANDLE_DUPLICATE, vmo, rights::MAP as u64, 0, 0, 0, 0)?;
         for want in [perm::READ, perm::READ | perm::EXEC] {
-            if e(call(nr::VM_MAP, well_known::SELF_ASPACE as u64, map_only, 0, 4096, 0, want as u64))
+            if e(call(nr::VM_MAP, well_known::SELF_ASPACE as u64, map_only, 0, 4096, 0, want))
                 != Some(FErr::AccessDenied)
             {
                 return Err("vm_map mapped a VMO its handle may only MAP, readable or runnable");
             }
         }
         let (readable, _) = call(nr::HANDLE_DUPLICATE, vmo, (rights::MAP | rights::READ) as u64, 0, 0, 0, 0)?;
-        let (at2, _) =
-            call(nr::VM_MAP, well_known::SELF_ASPACE as u64, readable, 0, 4096, 0, (perm::READ | perm::EXEC) as u64)?;
+        let (at2, _) = call(nr::VM_MAP, well_known::SELF_ASPACE as u64, readable, 0, 4096, 0, perm::READ | perm::EXEC)?;
         call(nr::VM_UNMAP, well_known::SELF_ASPACE as u64, at2, 4096, 0, 0, 0)?;
         if e(call(nr::VMO_CREATE, 4096, 1, 0, 0, 0, 0)) != Some(FErr::AccessDenied) {
             return Err("a contiguous VMO without the DMA grant");
