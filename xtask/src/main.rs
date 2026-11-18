@@ -18,6 +18,7 @@ mod run;
 mod screen;
 mod showcase;
 mod site;
+mod sync_hardware;
 mod sync_kit;
 mod util;
 mod validate;
@@ -73,6 +74,8 @@ fn main() -> ExitCode {
         Some("build") => build::build_cmd(rest),
         Some("validate") => validate::validate_cmd(rest),
         Some("sync-kit") => sync_kit::sync_kit_cmd(rest),
+        Some("sync-hardware") => sync_hardware::sync_hardware_cmd(rest),
+        Some("assets") => sync_hardware::assets_cmd(rest),
         Some("pack") => pack::pack_cmd(rest),
         Some("sign") => pack::sign_cmd(rest),
         Some("verify") => verify_cmd(rest),

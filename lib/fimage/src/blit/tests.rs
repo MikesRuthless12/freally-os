@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: Apache-2.0
+//! Golden tests: compositing, clipping, 9-slice, FIMG and the downscale,
+//! each pixel worked out by hand.
+
+extern crate std;
+
+use super::*;
+use crate::fimg::{self, Fimg};
+use alloc::vec;
+use alloc::vec::Vec;
+
+fn img(w: u32, h: u32, slice: [u16; 4], px: &[u8]) -> Fimg<'_> {
+    Fimg { width: w, height: h, scale: 1, slice, pixels: px }
+}
+
+#[test]
+fn over_blends_premultiplied() {
+    // Opaque replaces; transparent keeps; half-transparent red on blue.
+    assert_eq!(over(0x0000FF, [0, 255, 0, 255]), 0x00FF00);
+    assert_eq!(over(0x123456, [0, 0, 0, 0]), 0x123456);
+    // Red at 50% premultiplied is (0, 0, 128, 128) in BGRA.
+    assert_eq!(over(0x0000FF, [0, 0, 128, 128]), 0x80007F);
+}
+
+#[test]
+fn draw_clips_to_the_surface() {
+    let px = [0u8, 255, 0, 255].repeat(4); // 2×2 opaque green
+    let src = img(2, 2, [0; 4], &px);
+    let mut buf = vec![0u32; 9];
+    let mut s = Surface { px: &mut buf, width: 3, height: 3, stride: 3 };
+    s.draw(&src, 2, -1); // only the bottom-left of the image lands, at (2, 0)
+    assert_eq!(buf, [0, 0, 0x00FF00, 0, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn nine_keeps_corners_and_stretches_the_rest() {
+    // 3×3 source, insets 1: each cell its own colour.
+    let colours: [[u8; 4]; 9] = core::array::from_fn(|i| [i as u8 * 10, 0, 0, 255]);
+    let px: Vec<u8> = colours.iter().flatten().copied().collect();
+    let src = img(3, 3, [1, 1, 1, 1], &px);
+    let mut buf = vec![0u32; 5 * 4];
+    let mut s = Surface { px: &mut buf, width: 5, height: 4, stride: 5 };
+    s.nine(&src, 0, 0, 5, 4);
+    let at = |x: usize, y: usize| buf[y * 5 + x] & 0xFF;
+    // Corners as drawn.
+    assert_eq!([at(0, 0), at(4, 0), at(0, 3), at(4, 3)], [0, 20, 60, 80]);
+    // The top edge stretched across, the left edge down, the middle both.
+    assert_eq!([at(1, 0), at(2, 0), at(3, 0)], [10, 10, 10]);
+    assert_eq!([at(0, 1), at(0, 2)], [30, 30]);
+    assert!((1..4).all(|x| (1..3).all(|y| at(x, y) == 40)));
+}
+
+#[test]
+fn fimg_round_trips_and_refuses_damage() {
+    let px = vec![1u8; 2 * 3 * 4];
+    let bytes = fimg::encode(2, 3, 2, [0, 1, 0, 1], &px);
+    assert_eq!(bytes.len(), fimg::HEADER_LEN + px.len());
+    let f = fimg::parse(&bytes).unwrap();
+    assert_eq!((f.width, f.height, f.scale, f.slice), (2, 3, 2, [0, 1, 0, 1]));
+    assert_eq!(f.pixels, &px[..]);
+    assert!(fimg::parse(&bytes[..bytes.len() - 1]).is_err());
+    let mut bad = bytes.clone();
+    bad[16] = 4; // scale 4
+    assert!(fimg::parse(&bad).is_err());
+    let wide = fimg::encode(2, 3, 1, [2, 0, 1, 0], &px); // insets 3 > width 2
+    assert!(fimg::parse(&wide).is_err());
+}
+
+#[test]
+fn rgba_becomes_premultiplied_bgra() {
+    assert_eq!(fimg::from_rgba(&[200, 100, 50, 255]), [50, 100, 200, 255]);
+    assert_eq!(fimg::from_rgba(&[200, 100, 50, 0]), [0, 0, 0, 0]);
+    assert_eq!(fimg::from_rgba(&[255, 255, 255, 128]), [128, 128, 128, 128]);
+}
+
+#[test]
+fn downscale_averages_by_area() {
+    // 3×3 → 1×1: the mean of all nine.
+    let px: Vec<u8> = (0..9u8).flat_map(|i| [i * 10, 0, 0, 255]).collect();
+    let (w, h, out) = fimg::downscale(3, 3, &px, 1, 3);
+    assert_eq!((w, h), (1, 1));
+    assert_eq!(out, [40, 0, 0, 255]);
+    // 3×3 → 2×2 (2/3): the top-left target covers source (0,0) fully,
+    // (1,0) and (0,1) by half, (1,1) by a quarter: (0 + 5 + 15 + 10) / 2.25.
+    let (w, h, out) = fimg::downscale(3, 3, &px, 2, 3);
+    assert_eq!((w, h), (2, 2));
+    assert_eq!(out[0], ((0.0 + 10.0 * 0.5 + 30.0 * 0.5 + 40.0 * 0.25) / 2.25f64).round() as u8);
+}

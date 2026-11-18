@@ -52,6 +52,10 @@ opt-level = 1
 [profile.dev.package.fcrypto]
 opt-level = 3
 
+# xtask decodes the playbook's PNGs and scales them (cargo xtask assets).
+[profile.dev.package.fimage]
+opt-level = 3
+
 [profile.release]
 panic = "abort"
 opt-level = 3

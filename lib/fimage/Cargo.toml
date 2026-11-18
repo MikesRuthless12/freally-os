@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "fimage"
-description = "Freally's own image code: the PNG encoder (stored deflate) and its decoder, PPM reading; FIMG, blits and 9-slice come in Phase 3."
+description = "Freally's own image code: FIMG, blits and 9-slice; the PNG encoder; PPM reading; and, for the host only, a full PNG decoder."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[features]
+# The DEFLATE and PNG decoders: for xtask reading the playbook's renders. The
+# image never carries a decoder for an outside format (FR-025).
+decode = []
 
 [lints]
 workspace = true

@@ -1,0 +1,232 @@
+{
+  "variant": "dark",
+  "bg": "#090c09",
+  "accent": "#79d920",
+  "fader": {
+    "track": {
+      "file": "fader_track.webp",
+      "w": 258,
+      "h": 852
+    },
+    "slotX": 183.0,
+    "travel": {
+      "top": 126.0,
+      "bottom": 726.0
+    },
+    "minDb": -96.0,
+    "maxDb": 6.0,
+    "marks": [
+      {
+        "db": 6,
+        "y": 126.0
+      },
+      {
+        "db": 0,
+        "y": 161.29
+      },
+      {
+        "db": -10,
+        "y": 220.12
+      },
+      {
+        "db": -20,
+        "y": 278.94
+      },
+      {
+        "db": -30,
+        "y": 337.76
+      },
+      {
+        "db": -40,
+        "y": 396.59
+      },
+      {
+        "db": -60,
+        "y": 514.24
+      },
+      {
+        "db": null,
+        "y": 726.0
+      }
+    ],
+    "unity": 161.29,
+    "cap": {
+      "file": "fader_cap.webp",
+      "w": 102,
+      "h": 174
+    },
+    "capShadow": {
+      "file": "fader_cap_shadow.webp",
+      "w": 216,
+      "h": 288
+    }
+  },
+  "knob": {
+    "atlas": "knob_atlas.webp",
+    "pointer": "knob_pointer.webp",
+    "shadow": "knob_shadow.webp",
+    "frames": 16,
+    "cols": 4,
+    "rows": 4,
+    "framePx": 256,
+    "periodDeg": 9.0,
+    "stepDeg": 0.5625,
+    "frameDirection": "clockwise",
+    "bodyShare": 0.8
+  },
+  "button": {
+    "atlas": "button_atlas.webp",
+    "frameW": 400,
+    "frameH": 180,
+    "frames": [
+      "rest",
+      "hover",
+      "press0",
+      "press1",
+      "press2",
+      "press3",
+      "press4",
+      "press5"
+    ],
+    "slice": {
+      "inline": 64,
+      "block": 40
+    },
+    "key": {
+      "w": 320,
+      "h": 100
+    }
+  },
+  "toggle": {
+    "atlas": "toggle_atlas.webp",
+    "framePx": 128,
+    "cols": 4,
+    "rows": 1,
+    "frames": [
+      "off",
+      "on",
+      "offPressed",
+      "onPressed"
+    ]
+  },
+  "slider": {
+    "thumb": {
+      "file": "slider_thumb.webp",
+      "w": 136,
+      "h": 88,
+      "pill": {
+        "w": 112.0,
+        "h": 64.0
+      }
+    }
+  },
+  "switch": {
+    "track": {
+      "on": {
+        "file": "switch_track_on.webp",
+        "w": 314,
+        "h": 147
+      },
+      "off": {
+        "file": "switch_track_off.webp",
+        "w": 314,
+        "h": 147
+      }
+    },
+    "knob": {
+      "file": "switch_knob.webp",
+      "w": 115,
+      "h": 115
+    },
+    "knobShadow": {
+      "file": "switch_knob_shadow.webp",
+      "w": 202,
+      "h": 202
+    },
+    "endPx": 73.6,
+    "knobPx": 105.6
+  },
+  "meter": {
+    "cell": {
+      "tiles": {
+        "off": {
+          "green": "meter_cell_off_green.webp",
+          "yellow": "meter_cell_off_yellow.webp",
+          "red": "meter_cell_off_red.webp"
+        },
+        "on": {
+          "green": "meter_cell_on_green.webp",
+          "yellow": "meter_cell_on_yellow.webp",
+          "red": "meter_cell_on_red.webp"
+        }
+      },
+      "across": {
+        "off": {
+          "green": "meter_cell_off_green_across.webp",
+          "yellow": "meter_cell_off_yellow_across.webp",
+          "red": "meter_cell_off_red_across.webp"
+        },
+        "on": {
+          "green": "meter_cell_on_green_across.webp",
+          "yellow": "meter_cell_on_yellow_across.webp",
+          "red": "meter_cell_on_red_across.webp"
+        }
+      },
+      "w": 12,
+      "pitch": 6,
+      "cell": 4,
+      "gap": 2,
+      "scale": 4,
+      "px": {
+        "w": 24,
+        "h": 48
+      }
+    },
+    "zones": {
+      "yellowFromDb": -12,
+      "redFromDb": -3
+    },
+    "colours": {
+      "green": "#79d920",
+      "yellow": "#f5cf3a",
+      "red": "#ff3b30"
+    },
+    "bezel": {
+      "file": "meter_bezel.webp",
+      "w": 144,
+      "h": 288,
+      "slice": 44,
+      "margin": 24,
+      "window": {
+        "x": 44,
+        "y": 44,
+        "w": 56,
+        "h": 200
+      }
+    },
+    "glass": {
+      "file": "meter_glass.webp",
+      "w": 56,
+      "h": 200,
+      "blend": "screen",
+      "opacity": 0.4
+    }
+  },
+  "lamp": {
+    "tiles": {
+      "off": "lamp_off.webp",
+      "on": "lamp_on.webp",
+      "warn": "lamp_warn.webp",
+      "stop": "lamp_stop.webp"
+    },
+    "colours": {
+      "on": "#79d920",
+      "warn": "#f5cf3a",
+      "stop": "#ff3b30"
+    },
+    "tile": 10,
+    "lamp": 8,
+    "scale": 4,
+    "px": 40
+  }
+}

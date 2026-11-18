@@ -100,9 +100,9 @@ pub struct Decoded {
     pub pixels: Vec<u8>,
 }
 
-/// Decodes a PNG whose deflate stream uses only stored blocks and whose rows
-/// use filter 0, as [`encode`] writes. Checks every CRC and the Adler-32.
-pub fn decode_stored(png: &[u8]) -> Result<Decoded, &'static str> {
+/// The header's facts and the joined IDAT data of an 8-bit RGB or RGBA,
+/// non-interlaced PNG, every chunk's CRC checked.
+fn chunks(png: &[u8]) -> Result<(u32, u32, u8, Vec<u8>), &'static str> {
     if png.get(..8) != Some(&SIGNATURE[..]) {
         return Err("not a PNG");
     }
@@ -136,7 +136,64 @@ pub fn decode_stored(png: &[u8]) -> Result<Decoded, &'static str> {
         }
         p += 12 + len;
     }
-    if channels == 0 || z.len() < 6 || z[0] & 0x0F != 8 {
+    if channels == 0 {
+        return Err("no IHDR");
+    }
+    Ok((w, h, channels, z))
+}
+
+/// Decodes any 8-bit RGB or RGBA PNG that isn't interlaced (every deflate
+/// block type, every row filter): `xtask` reading the playbook's renders
+/// (feature `decode`; the image never carries it, FR-025).
+#[cfg(feature = "decode")]
+pub fn decode(png: &[u8]) -> Result<Decoded, &'static str> {
+    let (w, h, channels, z) = chunks(png)?;
+    let raw = crate::inflate::zlib(&z)?;
+    let bpp = channels as usize;
+    let row = w as usize * bpp;
+    if raw.len() != (row + 1) * h as usize {
+        return Err("wrong amount of pixel data");
+    }
+    let mut pixels: Vec<u8> = alloc::vec![0; row * h as usize];
+    for y in 0..h as usize {
+        let line = &raw[y * (row + 1)..(y + 1) * (row + 1)];
+        let (filter, src) = (line[0], &line[1..]);
+        for i in 0..row {
+            let a = if i >= bpp { pixels[y * row + i - bpp] } else { 0 };
+            let b = if y > 0 { pixels[(y - 1) * row + i] } else { 0 };
+            let c = if y > 0 && i >= bpp { pixels[(y - 1) * row + i - bpp] } else { 0 };
+            let x = src[i];
+            pixels[y * row + i] = match filter {
+                0 => x,
+                1 => x.wrapping_add(a),
+                2 => x.wrapping_add(b),
+                3 => x.wrapping_add(((a as u16 + b as u16) / 2) as u8),
+                4 => x.wrapping_add(paeth(a, b, c)),
+                _ => return Err("an unknown row filter"),
+            };
+        }
+    }
+    Ok(Decoded { w, h, channels, pixels })
+}
+
+#[cfg(feature = "decode")]
+fn paeth(a: u8, b: u8, c: u8) -> u8 {
+    let p = a as i16 + b as i16 - c as i16;
+    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
+    if pa <= pb && pa <= pc {
+        a
+    } else if pb <= pc {
+        b
+    } else {
+        c
+    }
+}
+
+/// Decodes a PNG whose deflate stream uses only stored blocks and whose rows
+/// use filter 0, as [`encode`] writes. Checks every CRC and the Adler-32.
+pub fn decode_stored(png: &[u8]) -> Result<Decoded, &'static str> {
+    let (w, h, channels, z) = chunks(png)?;
+    if z.len() < 6 || z[0] & 0x0F != 8 {
         return Err("bad zlib stream");
     }
     let mut raw = Vec::new();

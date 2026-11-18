@@ -14,7 +14,7 @@ fsi = { workspace = true, features = ["build"] }
 fsvc.workspace = true
 ffont = { workspace = true, features = ["raster"] }
 fscreen.workspace = true
-fimage.workspace = true
+fimage = { workspace = true, features = ["decode"] }
 fjson.workspace = true
 cdp-proto.workspace = true
 
