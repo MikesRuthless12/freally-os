@@ -110,16 +110,20 @@ pub fn wait_one(h: &Header, signals: u32, deadline: u64) -> Result<u32, FErr> {
     loop {
         let me = sched::current().ok_or(FErr::BadState)?;
         h.waiters.lock().push(me.clone());
+        // Blocked before the check: a signal set after it wakes us (TASK-036).
+        sched::prepare_wait();
         let now = h.get();
         if now & signals != 0 {
+            sched::cancel_wait();
             h.waiters.lock().retain(|t| !Arc::ptr_eq(t, &me));
             return Ok(now);
         }
         if deadline != u64::MAX && crate::arch::cpu::rdtsc() >= deadline {
+            sched::cancel_wait();
             h.waiters.lock().retain(|t| !Arc::ptr_eq(t, &me));
             return Err(FErr::TimedOut);
         }
-        sched::block_until(deadline);
+        sched::wait(deadline);
         h.waiters.lock().retain(|t| !Arc::ptr_eq(t, &me));
         // Killed: unwind (the thread ends on its way back to user mode).
         if sched::dying() {
@@ -135,10 +139,13 @@ pub fn wait_many(items: &[(&Header, u32)], deadline: u64) -> Result<usize, FErr>
         for (h, _) in items {
             h.waiters.lock().push(me.clone());
         }
+        sched::prepare_wait();
         let hit = items.iter().position(|(h, s)| h.get() & s != 0);
         let timed_out = deadline != u64::MAX && crate::arch::cpu::rdtsc() >= deadline;
         if hit.is_none() && !timed_out {
-            sched::block_until(deadline);
+            sched::wait(deadline);
+        } else {
+            sched::cancel_wait();
         }
         for (h, _) in items {
             h.waiters.lock().retain(|t| !Arc::ptr_eq(t, &me));
@@ -275,7 +282,10 @@ pub fn bench() -> u64 {
         }
     }
     ENDS.store(alloc::boxed::Box::leak(alloc::boxed::Box::new(channel_pair())), Ordering::Release);
+    // Both on this CPU: the bench is the handoff's round trip, not an IPI's.
+    let _ = sched::pin_current(0);
     if let Ok(t) = sched::create("bench-server", sched::Class::Interactive, server, 0, false) {
+        sched::pin(&t, 0);
         sched::start(&t);
     }
     // SAFETY: as above.
@@ -293,3 +303,67 @@ pub fn bench() -> u64 {
     RTT.store(median, Ordering::Relaxed);
     median
 }
+
+ktest!(ipc_no_wake_is_lost_between_cpus, {
+    use core::sync::atomic::{AtomicPtr, AtomicU64};
+    // Two threads on two CPUs bat a signal back and forth: a wake that comes
+    // between a waiter's check and its sleep, if lost, leaves one waiting
+    // for a second (then the test fails, instead of hanging).
+    const ROUNDS: u64 = 20_000;
+    static PAIR: AtomicPtr<(Header, Header)> = AtomicPtr::new(core::ptr::null_mut());
+    static LOST: AtomicU64 = AtomicU64::new(0);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    fn second() -> u64 {
+        crate::arch::cpu::rdtsc() + crate::time::ns_to_ticks(1_000_000_000)
+    }
+    extern "C" fn ponger(_: u64) {
+        // SAFETY: set (to a leaked pair) before this thread starts.
+        let (ping, pong) = unsafe { &*PAIR.load(Ordering::Acquire) };
+        for _ in 0..ROUNDS {
+            if wait_one(ping, signal::SIGNALED, second()).is_err() {
+                LOST.fetch_add(1, Ordering::SeqCst);
+                break;
+            }
+            ping.update(signal::SIGNALED, 0);
+            pong.update(0, signal::SIGNALED);
+        }
+        DONE.store(true, Ordering::Release);
+    }
+    let n = crate::smp::online();
+    if n < 2 {
+        klog!("    skipped: one CPU (this test needs -smp 2 or more)");
+        return Ok(());
+    }
+    let here = {
+        let _irq = crate::arch::cpu::IrqOff::new();
+        crate::smp::this().index as usize
+    };
+    let pair: &'static (Header, Header) =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new((Header::new(), Header::new())));
+    PAIR.store(pair as *const _ as *mut _, Ordering::Release);
+    LOST.store(0, Ordering::SeqCst);
+    DONE.store(false, Ordering::SeqCst);
+    let t = sched::create("ponger", sched::Class::Normal, ponger, 0, false)?;
+    sched::pin(&t, (here + 1) % n);
+    sched::start(&t);
+    let (ping, pong) = pair;
+    let start = crate::arch::cpu::rdtsc();
+    for _ in 0..ROUNDS {
+        ping.update(0, signal::SIGNALED);
+        if wait_one(pong, signal::SIGNALED, second()).is_err() {
+            LOST.fetch_add(1, Ordering::SeqCst);
+            break;
+        }
+        pong.update(signal::SIGNALED, 0);
+    }
+    let ns = crate::time::ticks_to_ns(crate::arch::cpu::rdtsc() - start);
+    while !DONE.load(Ordering::Acquire) {
+        sched::sleep_ns(1_000_000);
+    }
+    klog!("    {} round trips between CPU {} and CPU {}: {} µs each", ROUNDS, here, (here + 1) % n, ns / ROUNDS / 1000);
+    if LOST.load(Ordering::SeqCst) != 0 {
+        Err("a wake between CPUs was lost (a wait sat out its full second)")
+    } else {
+        Ok(())
+    }
+});

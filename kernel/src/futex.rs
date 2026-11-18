@@ -27,8 +27,11 @@ pub fn wait(addr: u64, expected: u32, deadline: u64) -> Result<(), FErr> {
             return Err(FErr::ShouldWait);
         }
         w.push((key, addr, me.clone()));
+        // Blocked while still listed: a wake from another CPU once the lock
+        // is let go finds it blocked (TASK-036).
+        sched::prepare_wait();
     }
-    sched::block_until(deadline);
+    sched::wait(deadline);
     let mut w = WAITERS.lock();
     let still_waiting = w.iter().any(|(_, _, t)| Arc::ptr_eq(t, &me));
     w.retain(|(_, _, t)| !Arc::ptr_eq(t, &me));

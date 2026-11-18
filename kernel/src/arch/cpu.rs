@@ -131,6 +131,25 @@ pub fn interrupts_on() {
     unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
 }
 
+/// Interrupts off until dropped, then back as they were.
+pub struct IrqOff(bool);
+
+impl IrqOff {
+    pub fn new() -> IrqOff {
+        let was = interrupts_enabled();
+        interrupts_off();
+        IrqOff(was)
+    }
+}
+
+impl Drop for IrqOff {
+    fn drop(&mut self) {
+        if self.0 {
+            interrupts_on();
+        }
+    }
+}
+
 pub fn halt_forever() -> ! {
     loop {
         interrupts_off();

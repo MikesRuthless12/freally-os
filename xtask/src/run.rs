@@ -168,9 +168,12 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
         Flavour::Release => {}
     }
     if o.headless {
-        // Nothing reads QEMU's terminal in a headless run: no monitor, no stdin
-        // (an inherited terminal could stall a fresh VM's firmware).
-        c.args(["-display", "none", "-monitor", "none"]);
+        // Nothing reads QEMU's terminal in a headless run: no stdin (an
+        // inherited terminal could stall a fresh VM's firmware). Its monitor
+        // is a socket beside QMP's (which cdp-host holds): `info registers -a`
+        // there shows where each CPU is when a run stalls.
+        c.args(["-display", "none"]);
+        c.arg("-monitor").arg(format!("unix:{},server=on,wait=off", o.dir().join("hmp.sock").display()));
         c.stdin(std::process::Stdio::null());
     }
     c

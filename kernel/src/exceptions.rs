@@ -70,6 +70,11 @@ fn fixup(rip: u64) -> Option<u64> {
 static EXEC_PROBE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn exception(f: &mut Frame) {
+    // NMIs carry shootdowns and the panic stop (TASK-036), from user mode too.
+    if f.vector == 2 {
+        crate::smp::on_nmi();
+        return;
+    }
     if f.is_user() {
         crate::fault::user_fault(f);
         return;
@@ -104,6 +109,7 @@ pub fn unexpected_interrupt(f: &mut Frame) {
 /// Logs, paints the panic screen and halts. Never returns.
 pub fn stop(what: &str, detail: &str) -> ! {
     cpu::interrupts_off();
+    crate::smp::stop_others();
     klog!("freally-core: ERROR {what}. {detail}");
     crate::fault::write_last_panic(what, detail);
     #[cfg(feature = "ktest")]

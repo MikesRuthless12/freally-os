@@ -21,7 +21,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-const HOST_PORT: u16 = 9433;
+pub(crate) const HOST_PORT: u16 = 9433;
 const PORT_OFFSET: u16 = 200;
 
 struct Feature {
@@ -50,7 +50,7 @@ fn coverage() -> Result<(Value, Vec<Feature>), String> {
     Ok((v, features))
 }
 
-fn tool(name: &str) -> std::path::PathBuf {
+pub(crate) fn tool(name: &str) -> std::path::PathBuf {
     util::target_dir().join("debug").join(name)
 }
 

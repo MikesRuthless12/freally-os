@@ -17,7 +17,7 @@ use crate::obj::{Header, Object, ObjectRef, Resource, ResourceKind, signal};
 use crate::sync::SpinLock;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use fcore_abi::{FErr, MemKind};
 
 /// Whether `r` covers `[base, base + len)` of `kind`.
@@ -50,16 +50,14 @@ pub fn create(parent: &Resource, kind: ResourceKind, base: u64, len: u64) -> Res
 
 // ── I/O ports ──────────────────────────────────────────────────────────────
 
-/// The pid whose ports the bitmap opens now (0: none).
-static IO_OWNER: AtomicU32 = AtomicU32::new(0);
-static IO_OPEN: SpinLock<Vec<(u16, u16)>> = SpinLock::new(Vec::new());
-
 /// Called by the scheduler before `pid`'s thread runs (`ranges` its ports).
 pub fn io_switch(pid: u32, ranges: &[(u16, u16)]) {
-    if IO_OWNER.load(Ordering::Relaxed) == pid {
+    // This CPU's TSS (each CPU has its own bitmap, TASK-036). Interrupts off.
+    let c = crate::smp::this();
+    let mut open = c.io_open.lock();
+    if c.io_owner.load(Ordering::Relaxed) == pid && open.as_slice() == ranges {
         return;
     }
-    let mut open = IO_OPEN.lock();
     for &(p, n) in open.iter() {
         crate::arch::gdt::io_set(p, n, false);
     }
@@ -68,7 +66,7 @@ pub fn io_switch(pid: u32, ranges: &[(u16, u16)]) {
         crate::arch::gdt::io_set(p, n, true);
         open.push((p, n));
     }
-    IO_OWNER.store(pid, Ordering::Relaxed);
+    c.io_owner.store(pid, Ordering::Relaxed);
 }
 
 /// Opens `[port, port + len)` for the calling process (already checked).
@@ -80,8 +78,9 @@ pub fn grant_ports(pid: u32, list: &SpinLock<Vec<(u16, u16)>>, port: u16, len: u
         }
         l.clone()
     };
-    // Reapply now: the caller is running.
-    IO_OWNER.store(0, Ordering::Relaxed);
+    // Reapply now, on the CPU the caller runs on (its other CPUs at their
+    // next switch to it: the ranges differ).
+    let _irq = crate::arch::cpu::IrqOff::new();
     io_switch(pid, &ranges);
 }
 

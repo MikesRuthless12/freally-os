@@ -91,6 +91,11 @@ impl Port {
     /// The ISA line is edge-triggered: a UART whose interrupt was still
     /// pending when the line was acked holds it high and never makes another
     /// edge. Interrupts off and on again: a fresh edge if anything is pending.
+    /// The UART has an interrupt pending (IIR bit 0 clear).
+    fn pending(&self) -> bool {
+        fstd::sys::inb(self.reg(2)) & 0x01 == 0
+    }
+
     fn kick(&self) {
         fstd::sys::outb(self.reg(1), 0);
         fstd::sys::outb(self.reg(1), self.ier);
@@ -321,8 +326,16 @@ fn run(_bootstrap: u32) -> i64 {
                 items.push([ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]);
             }
         }
-        // A held port is retried soon: the client may have caught up.
-        let deadline = if ports.iter().any(|p| p.held) { Instant::after(Duration::from_millis(2)) } else { u64::MAX };
+        // COM1 and COM3 share IRQ 4, edge-triggered: while one port holds the
+        // line high, the other's interrupt makes no new edge, and nothing
+        // would ever wake us for it. A port with an interrupt pending as we
+        // go to wait gets 2 ms for its edge, then is served anyway. A held
+        // port is retried as soon: the client may have caught up.
+        let deadline = if ports.iter().any(|p| p.held) || ports.iter().any(Port::pending) {
+            Instant::after(Duration::from_millis(2))
+        } else {
+            u64::MAX
+        };
         let first_conn = irqs.len() + 1;
         let first_client = first_conn + conns.len();
         match fstd::sys::wait_many(&items, deadline) {
@@ -356,7 +369,15 @@ fn run(_bootstrap: u32) -> i64 {
                     ports[i].take_writes();
                 }
             }
-            Err(FErr::TimedOut) => {}
+            // Pending without an edge (or a held port's retry): done here. No
+            // kick: the IIR check above already stands in for the edge.
+            Err(FErr::TimedOut) => {
+                for p in ports.iter_mut() {
+                    p.receive();
+                    p.send();
+                    p.update_ier();
+                }
+            }
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),
         }
         // Hand over what arrived; send what the client gave.

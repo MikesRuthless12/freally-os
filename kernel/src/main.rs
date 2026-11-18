@@ -36,6 +36,7 @@ mod obj;
 mod proc;
 mod rand;
 mod sched;
+mod smp;
 mod sync;
 mod syscall;
 #[cfg(feature = "ktest")]
@@ -100,8 +101,9 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
     }
     BOOT_INFO.store(info as *mut BootInfo, Ordering::Release);
 
-    // TASK-019: the CPU's own tables, so every fault has a handler.
-    arch::gdt::init();
+    // TASK-019: the CPU's own tables, so every fault has a handler; TASK-036:
+    // its block at GS.
+    smp::init_bsp();
     arch::idt::init();
 
     // TASK-020: physical memory and the kernel's own page tables.
@@ -134,6 +136,7 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
     arch::ioapic::init(&tables.madt);
     exceptions::route(arch::apic::TIMER_VECTOR, timer::interrupt);
     exceptions::route(arch::apic::SPURIOUS_VECTOR, timer::spurious);
+    exceptions::route(arch::apic::RESCHED_VECTOR, sched::resched_interrupt);
     let source = time::init(tables.hpet, bi.tsc.b0);
     K2.store(cpu::rdtsc(), Ordering::Relaxed);
     klog!(
@@ -166,11 +169,14 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
 
     // TASK-024–028: protections, system calls, the scheduler.
     let (smep, smap, pcid) = mm::aspace::init_cpu_protections();
-    syscall::init();
+    syscall::init_cpu();
     if let Err(e) = sched::init() {
         exceptions::stop(e, "Freally Core couldn't start its scheduler.");
     }
     klog!("freally-core: scheduler ready (SMEP {smep}, SMAP {smap}, PCID {pcid})");
+
+    // TASK-036: every other CPU, K3.
+    smp::start_aps();
 
     #[cfg(feature = "bench-ipc")]
     {

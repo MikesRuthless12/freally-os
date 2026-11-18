@@ -164,6 +164,8 @@ impl AddressSpace {
         for p in 0..m.len / FRAME {
             paging::unmap(self.pml4, m.addr + p * FRAME);
         }
+        // Before the mapping's VMO can free its frames: off every CPU's TLB.
+        crate::smp::tlb::user(self.pml4, m.addr, m.len / FRAME);
         Ok(())
     }
 
@@ -172,16 +174,18 @@ impl AddressSpace {
         let flags = Self::flags(perms)?;
         let maps = self.maps.lock();
         let m = maps.iter().find(|m| m.addr == addr && m.len == len.next_multiple_of(FRAME)).ok_or(FErr::NotFound)?;
-        for p in 0..m.len / FRAME {
-            paging::protect(self.pml4, m.addr + p * FRAME, flags).map_err(|_| FErr::InvalidArgs)?;
-        }
-        Ok(())
+        let r = (0..m.len / FRAME)
+            .try_for_each(|p| paging::protect(self.pml4, m.addr + p * FRAME, flags).map_err(|_| FErr::InvalidArgs));
+        crate::smp::tlb::user(self.pml4, m.addr, m.len / FRAME);
+        r
     }
 
-    /// Makes this the CPU's address space.
+    /// Makes this the CPU's address space. Interrupts off. The CPU says so
+    /// before it loads it, so a shootdown either asks it or comes before.
     pub fn activate(&self) {
         let pcid_on = cpu::cr4() & (1 << 17) != 0;
         let v = if pcid_on { self.pml4 | self.pcid as u64 } else { self.pml4 };
+        crate::smp::this().pml4.store(self.pml4, Ordering::SeqCst);
         // SAFETY: the upper half is the kernel's, so the kernel stays mapped.
         unsafe { cpu::set_cr3(v) };
     }
@@ -213,6 +217,7 @@ impl Drop for AddressSpace {
 
 /// Back to the kernel's own tables.
 pub fn activate_kernel() {
+    crate::smp::this().pml4.store(paging::kernel_pml4(), Ordering::SeqCst);
     // SAFETY: the kernel's PML4 maps everything the kernel uses.
     unsafe { cpu::set_cr3(paging::kernel_pml4()) };
 }

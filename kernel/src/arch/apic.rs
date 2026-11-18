@@ -10,6 +10,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use fcore_abi::layout::DIRECT_MAP;
 
 pub const TIMER_VECTOR: u8 = 32;
+/// Another CPU asks this one to reschedule (TASK-036).
+pub const RESCHED_VECTOR: u8 = 33;
 pub const SPURIOUS_VECTOR: u8 = 255;
 
 const IA32_APIC_BASE: u32 = 0x1B;
@@ -68,22 +70,31 @@ pub fn tsc_deadline_supported() -> bool {
     cpu::cpuid(1, 0).ecx & (1 << 24) != 0
 }
 
-/// Turns on this CPU's local APIC; returns its ID.
+/// Turns on the boot CPU's local APIC; returns its ID.
 pub fn init(lapic_addr: u64, pics: bool) -> u32 {
     if pics {
         mask_pics();
     }
     // SAFETY: IA32_APIC_BASE exists on every x86-64 CPU.
     let base = unsafe { cpu::rdmsr(IA32_APIC_BASE) };
-    let has_x2 = cpu::cpuid(1, 0).ecx & (1 << 21) != 0;
-    if has_x2 {
+    if cpu::cpuid(1, 0).ecx & (1 << 21) != 0 {
+        X2APIC.store(true, Ordering::Relaxed);
+    } else {
+        XAPIC_BASE.store(if lapic_addr != 0 { lapic_addr } else { base & 0xF_FFFF_F000 }, Ordering::Relaxed);
+    }
+    init_cpu()
+}
+
+/// Turns on this CPU's local APIC, in the boot CPU's mode; returns its ID.
+pub fn init_cpu() -> u32 {
+    // SAFETY: IA32_APIC_BASE exists on every x86-64 CPU.
+    let base = unsafe { cpu::rdmsr(IA32_APIC_BASE) };
+    if x2apic() {
         // SAFETY: enabling x2APIC mode (bit 10) together with the APIC (bit 11).
         unsafe { cpu::wrmsr(IA32_APIC_BASE, base | (1 << 11) | (1 << 10)) };
-        X2APIC.store(true, Ordering::Relaxed);
     } else {
         // SAFETY: the APIC enable bit.
         unsafe { cpu::wrmsr(IA32_APIC_BASE, base | (1 << 11)) };
-        XAPIC_BASE.store(if lapic_addr != 0 { lapic_addr } else { base & 0xF_FFFF_F000 }, Ordering::Relaxed);
     }
     write(REG_TPR, 0);
     write(REG_SVR, 0x100 | SPURIOUS_VECTOR as u32); // enabled, spurious vector 255
@@ -109,11 +120,39 @@ pub fn arm_deadline(tsc: u64) {
 
 /// Sends interrupt `vector` to the CPU with APIC ID `dest` (fixed, edge).
 pub fn send_ipi(dest: u32, vector: u8) {
+    icr(dest, vector as u32);
+}
+
+/// Sends an NMI to the CPU with APIC ID `dest` (TLB shootdowns, the panic stop).
+pub fn send_nmi(dest: u32) {
+    icr(dest, 0x4400); // NMI, assert
+}
+
+/// INIT to an AP: it waits for a SIPI (TASK-036).
+pub fn send_init(dest: u32) {
+    icr(dest, 0x4500); // INIT, assert
+}
+
+/// A startup IPI: the AP starts in real mode at `page` × 4 KiB (below 1 MiB).
+pub fn send_sipi(dest: u32, page: u8) {
+    icr(dest, 0x4600 | page as u32); // STARTUP, assert
+}
+
+/// Writes the ICR, with interrupts off (an interrupt between the xAPIC's two
+/// writes could send its own IPI in between), waiting for the xAPIC to take it.
+fn icr(dest: u32, low: u32) {
+    let _irq = cpu::IrqOff::new();
     if x2apic() {
         // SAFETY: the x2APIC ICR is one 64-bit MSR.
-        unsafe { cpu::wrmsr(0x830, ((dest as u64) << 32) | vector as u64) };
+        unsafe { cpu::wrmsr(0x830, ((dest as u64) << 32) | low as u64) };
     } else {
+        while read(REG_ICR) & (1 << 12) != 0 {
+            core::hint::spin_loop();
+        }
         write(REG_ICR_HIGH, dest << 24);
-        write(REG_ICR, vector as u32);
+        write(REG_ICR, low);
+        while read(REG_ICR) & (1 << 12) != 0 {
+            core::hint::spin_loop();
+        }
     }
 }

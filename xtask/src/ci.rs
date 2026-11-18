@@ -202,6 +202,15 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
         }),
     ));
     g.push((
+        "boot-check",
+        Box::new(move || {
+            if container {
+                return Ok(String::from("SKIP: the container has no KVM to time boots against"));
+            }
+            crate::boot_check::check(5, 2)
+        }),
+    ));
+    g.push((
         "validate",
         Box::new(move || {
             let lines = crate::validate::validate(!container)?;

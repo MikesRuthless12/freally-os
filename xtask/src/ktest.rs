@@ -42,6 +42,8 @@ pub fn run(timeout_secs: u64) -> Result<(Vec<Outcome>, Result<String, String>), 
     let built = build::build_full(Flavour::Dev, true, &["ktest"], &[])?;
     let mut o = VmOptions::new(Flavour::Dev, "ktest");
     o.headless = true;
+    // Every test on each of 8 CPUs (TASK-036).
+    o.cpus = 8;
     o.tcg = !std::path::Path::new("/dev/kvm").exists();
     o.port_offset = 500;
     let start = Instant::now();

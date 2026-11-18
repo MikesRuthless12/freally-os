@@ -64,10 +64,43 @@ impl fmt::Write for Com1 {
     }
 }
 
+/// One line at a time on COM1 from every CPU (TASK-036): held while a line is
+/// written, interrupts off. A CPU that waits 2 ms writes anyway: a fault or
+/// NMI on the CPU holding it must still get its line out.
+static LINE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub struct Line {
+    held: bool,
+    _irq: crate::arch::cpu::IrqOff,
+}
+
+pub fn line() -> Line {
+    let irq = crate::arch::cpu::IrqOff::new();
+    let give_up = crate::arch::cpu::rdtsc() + (1 << 23);
+    loop {
+        if LINE.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            return Line { held: true, _irq: irq };
+        }
+        if crate::arch::cpu::rdtsc() > give_up {
+            return Line { held: false, _irq: irq };
+        }
+        core::hint::spin_loop();
+    }
+}
+
+impl Drop for Line {
+    fn drop(&mut self) {
+        if self.held {
+            LINE.store(false, Ordering::Release);
+        }
+    }
+}
+
 /// `klog!("…")`: one line on COM1 (nothing in the release flavour).
 #[macro_export]
 macro_rules! klog {
     ($($arg:tt)*) => {{
+        let _line = $crate::serial::line();
         let _ = core::fmt::Write::write_fmt(&mut $crate::serial::Com1, format_args!($($arg)*));
         let _ = core::fmt::Write::write_str(&mut $crate::serial::Com1, "\n");
     }};

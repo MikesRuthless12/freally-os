@@ -4,6 +4,7 @@
 
 mod atlas;
 mod bench;
+mod boot_check;
 mod build;
 mod cdp;
 mod ci;
@@ -87,6 +88,7 @@ fn main() -> ExitCode {
         Some("screen") => screen::screen_cmd(rest),
         Some("run") => run::run_cmd(rest),
         Some("cdp") => cdp::cdp_cmd(rest),
+        Some("boot-check") => boot_check::boot_check_cmd(rest),
         Some("ci") => ci::ci_cmd(rest),
         Some("ci-linux") => ci_linux::ci_linux_cmd(rest),
         Some("hashes") => build::hashes_cmd(rest),

@@ -11,6 +11,7 @@
 //!   `cdpd` in Phase 3; Phase 0 has no controls.
 
 mod art;
+mod bootcheck;
 mod guard;
 mod inventory;
 mod site;
@@ -149,6 +150,8 @@ pub struct Ctx {
     /// asked which control had the keyboard.
     pub inv: inventory::Inventory,
     key_probe: Option<Instant>,
+    /// What the spec's line should also say (printed under it).
+    notes: Vec<String>,
 }
 
 impl Ctx {
@@ -252,7 +255,7 @@ impl Ctx {
         for _ in 0..20 {
             let params =
                 Value::obj([("cursor", cursor.into()), ("limit", 500u32.into()), ("minLevel", "warning".into())]);
-            let r = self.cdp.call("Log.read", params).map_err(|e| format!("the guard: Log.read: {e}"))?;
+            let r = self.guard_call("Log.read", params).map_err(|e| format!("the guard: Log.read: {e}"))?;
             let entries = r.get("entries").and_then(Value::as_array).unwrap_or_default().to_vec();
             bad.extend(guard::bad_records(&entries, &self.allowed_errors));
             let next = r.get("next").and_then(Value::as_i64).unwrap_or(0) as u64;
@@ -266,8 +269,7 @@ impl Ctx {
         }
         if !self.allow_faults {
             let f = self
-                .cdp
-                .call("Freally.getFaults", Value::obj([("sinceSeq", w.fault.into())]))
+                .guard_call("Freally.getFaults", Value::obj([("sinceSeq", w.fault.into())]))
                 .map_err(|e| format!("the guard: getFaults: {e}"))?;
             let new = f.get("faults").and_then(Value::as_array).unwrap_or_default();
             if !new.is_empty() {
@@ -275,14 +277,28 @@ impl Ctx {
             }
         }
         if !self.allow_restarts {
-            let p =
-                self.cdp.call("Freally.getProcesses", Value::Obj(Vec::new())).map_err(|e| format!("the guard: {e}"))?;
+            let p = self
+                .guard_call("Freally.getProcesses", Value::Obj(Vec::new()))
+                .map_err(|e| format!("the guard: {e}"))?;
             let again = guard::restarted(&w.restarts, &guard::restarts(&p));
             if !again.is_empty() {
                 return Err(format!("the guard: restarted {}", again.join(", ")));
             }
         }
         Ok(())
+    }
+
+    /// One of the guard's calls through the test door. A door still busy from
+    /// a heavy spec (`@serial.echo`'s 256 KB on a loaded host) can sit out
+    /// cdp-host's 15 s; it's asked once more, and the spec's line says so.
+    fn guard_call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        match self.cdp.call(method, params.clone()) {
+            Err(e) if e.contains("went quiet") => {
+                self.notes.push(format!("the test door was quiet for the guard's {method}; asked again"));
+                self.cdp.call(method, params)
+            }
+            r => r,
+        }
     }
 
     /// `ERROR` lines containing any of `patterns` don't fail this spec.
@@ -545,6 +561,18 @@ fn main() {
     if let Some(dir) = arg("--site") {
         std::process::exit(site_leg(PathBuf::from(dir), &arg("--specs").unwrap_or_default()));
     }
+    if args.iter().any(|a| a == "--boot-check") {
+        let com1 = PathBuf::from(arg("--com1-log").unwrap_or_default());
+        let r = connect(&arg("--endpoint").unwrap_or_default()).and_then(|mut c| bootcheck::run(&mut c, &com1));
+        match r {
+            Ok(v) => println!("{}", v.to_json()),
+            Err(e) => {
+                eprintln!("cdp-runner: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let (Some(endpoint), Some(com1), Some(specs)) = (arg("--endpoint"), arg("--com1-log"), arg("--specs")) else {
         eprintln!("cdp-runner --endpoint HOST:PORT --com1-log PATH --specs id,id [--failures DIR] | --list");
         std::process::exit(2);
@@ -570,6 +598,7 @@ fn main() {
         door_open: None,
         inv: inventory::Inventory::default(),
         key_probe: None,
+        notes: Vec::new(),
     };
     // A cold host (WSL just restarted, its caches empty) can take far longer
     // than a spec's 10 s to start the VM: wait up to 60 s for the
@@ -614,6 +643,9 @@ fn main() {
                 red += 1;
                 println!("▶ @{id} … fail ({secs:.1}s)\n    {e}");
             }
+        }
+        for n in ctx.notes.drain(..) {
+            println!("    note: {n}");
         }
     }
     if let Some(out) = arg("--inventory-out")

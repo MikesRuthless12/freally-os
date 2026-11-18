@@ -157,7 +157,7 @@ fn gate(handler: u64, ist: u8) -> Gate {
     }
 }
 
-/// Fills and loads the IDT.
+/// Fills and loads the IDT (the boot CPU, once).
 pub fn init() {
     // SAFETY: called once before interrupts are on.
     unsafe {
@@ -171,14 +171,20 @@ pub fn init() {
             };
             (*idt)[v] = gate(stub, ist);
         }
-        #[repr(C, packed)]
-        struct Pointer {
-            limit: u16,
-            base: u64,
-        }
-        let ptr = Pointer { limit: (size_of::<[Gate; 256]>() - 1) as u16, base: idt as u64 };
-        core::arch::asm!("lidt [{}]", in(reg) &ptr, options(readonly, nostack, preserves_flags));
     }
+    load();
+}
+
+/// Loads the IDT on this CPU (every CPU shares the one table, TASK-036).
+pub fn load() {
+    #[repr(C, packed)]
+    struct Pointer {
+        limit: u16,
+        base: u64,
+    }
+    let ptr = Pointer { limit: (size_of::<[Gate; 256]>() - 1) as u16, base: &raw const IDT as u64 };
+    // SAFETY: the table is filled (by `init`, on the boot CPU) before any CPU loads it.
+    unsafe { core::arch::asm!("lidt [{}]", in(reg) &ptr, options(readonly, nostack, preserves_flags)) };
 }
 
 /// The handler a vector ≥ 32 is routed to.

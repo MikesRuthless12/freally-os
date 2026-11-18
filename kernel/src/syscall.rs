@@ -35,19 +35,10 @@ pub struct Frame {
     pub rsp: u64,
 }
 
-/// Per-CPU data at GS while in the kernel: the current thread's kernel stack
-/// top, and a slot for the user RSP during entry.
-#[repr(C)]
-struct PerCpu {
-    kernel_rsp: u64,
-    user_rsp: u64,
-}
-
-static mut PERCPU: PerCpu = PerCpu { kernel_rsp: 0, user_rsp: 0 };
-
+/// The stack this CPU's syscall entry switches to (`gs:[0]`, the CPU's block,
+/// TASK-036): the running thread's. The scheduler sets it, interrupts off.
 pub fn set_kernel_rsp(top: u64) {
-    // SAFETY: one CPU; written by the scheduler with interrupts off.
-    unsafe { PERCPU.kernel_rsp = top };
+    crate::smp::this().kernel_rsp.store(top, core::sync::atomic::Ordering::Relaxed);
 }
 
 core::arch::global_asm!(
@@ -118,22 +109,19 @@ unsafe extern "C" {
     pub fn enter_user(rip: u64, rsp: u64, arg: u64) -> !;
 }
 
-pub fn init() {
+/// This CPU's SYSCALL MSRs (every CPU, as it starts; GS is `smp`'s).
+pub fn init_cpu() {
     const EFER: u32 = 0xC000_0080;
     const STAR: u32 = 0xC000_0081;
     const LSTAR: u32 = 0xC000_0082;
     const FMASK: u32 = 0xC000_0084;
-    const GS_BASE: u32 = 0xC000_0101;
-    const KERNEL_GS_BASE: u32 = 0xC000_0102;
-    // SAFETY: the MSRs every x86-64 CPU has for SYSCALL; GS points at this CPU's data.
+    // SAFETY: the MSRs every x86-64 CPU has for SYSCALL.
     unsafe {
         cpu::wrmsr(EFER, cpu::rdmsr(EFER) | 1);
         cpu::wrmsr(STAR, (0x10u64 << 48) | ((gdt::KERNEL_CS as u64) << 32));
         cpu::wrmsr(LSTAR, syscall_entry as *const () as u64);
         // Mask IF, TF, DF, AC and NT on entry.
         cpu::wrmsr(FMASK, 0x0004_7700);
-        cpu::wrmsr(GS_BASE, &raw const PERCPU as u64);
-        cpu::wrmsr(KERNEL_GS_BASE, 0);
     }
 }
 
@@ -645,7 +633,7 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
     let mut out: Vec<u8> = Vec::new();
     match t {
         topic::CPU => {
-            let cpus = crate::acpi().map_or(1, |a| a.madt.cpu_count) as u64;
+            let cpus = crate::smp::online() as u64;
             out.extend_from_slice(&cpus.to_le_bytes());
             out.extend_from_slice(&crate::time::tsc_hz().to_le_bytes());
         }
