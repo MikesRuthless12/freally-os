@@ -17,5 +17,9 @@ ui = ["dep:ffont", "dep:fimage"]
 ffont = { workspace = true, features = ["raster"], optional = true }
 fimage = { workspace = true, optional = true }
 
+[dev-dependencies]
+fimage = { workspace = true, features = ["decode"] }
+fjson.workspace = true
+
 [lints]
 workspace = true

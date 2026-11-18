@@ -29,6 +29,10 @@ pub enum Tok {
     Success,
     Warning,
     Error,
+    MeterGreen,
+    MeterYellow,
+    MeterRed,
+    MeterOff,
 }
 
 /// The type scale (vision § 5): size and line height at 100 %, and weight.
@@ -101,6 +105,10 @@ impl Theme {
             Tok::Success => pick!(COLOR_SUCCESS),
             Tok::Warning => pick!(COLOR_WARNING),
             Tok::Error => pick!(COLOR_ERROR),
+            Tok::MeterGreen => pick!(COLOR_METER_GREEN),
+            Tok::MeterYellow => pick!(COLOR_METER_YELLOW),
+            Tok::MeterRed => pick!(COLOR_METER_RED),
+            Tok::MeterOff => pick!(COLOR_METER_OFF),
         }
     }
 

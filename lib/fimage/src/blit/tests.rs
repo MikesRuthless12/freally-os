@@ -86,3 +86,47 @@ fn downscale_averages_by_area() {
     assert_eq!((w, h), (2, 2));
     assert_eq!(out[0], ((0.0 + 10.0 * 0.5 + 30.0 * 0.5 + 40.0 * 0.25) / 2.25f64).round() as u8);
 }
+
+#[test]
+fn turned_quarter_turns_exactly() {
+    // A B / C D, a quarter turn counter-clockwise: B D / A C.
+    let px = [[1u8, 0, 0, 255], [2, 0, 0, 255], [3, 0, 0, 255], [4, 0, 0, 255]].concat();
+    let src = img(2, 2, [0; 4], &px);
+    let mut buf = vec![0u32; 4];
+    let mut s = Surface { px: &mut buf, width: 2, height: 2, stride: 2 };
+    s.turned(&src, (1.0, 1.0), 0.0, 1.0);
+    assert_eq!(buf, vec![1, 2, 3, 4], "no turn: drawn as it is");
+    let mut buf = vec![0u32; 4];
+    let mut s = Surface { px: &mut buf, width: 2, height: 2, stride: 2 };
+    s.turned(&src, (1.0, 1.0), 1.0, 0.0);
+    assert_eq!(buf, vec![2, 4, 1, 3]);
+}
+
+#[test]
+fn turned_samples_between_pixels_and_fades_at_its_edge() {
+    let px = [0u8, 0, 200, 255];
+    let src = img(1, 1, [0; 4], &px);
+    let mut buf = vec![0u32; 9];
+    let mut s = Surface { px: &mut buf, width: 3, height: 3, stride: 3 };
+    // Half a pixel off the grid: four pixels share it, a quarter each.
+    s.turned(&src, (1.0, 1.0), 0.0, 1.0);
+    let reds: Vec<u32> = buf.iter().map(|p| p >> 16 & 0xFF).collect();
+    assert_eq!(reds, vec![50, 50, 0, 50, 50, 0, 0, 0, 0]);
+}
+
+#[test]
+fn screen_lightens_at_its_opacity() {
+    let white = [255u8, 255, 255, 255];
+    let black = [0u8, 0, 0, 255];
+    let mut buf = vec![0x000000u32, 0x808080, 0x204060];
+    let mut s = Surface { px: &mut buf, width: 3, height: 1, stride: 3 };
+    s.screen(&img(1, 1, [0; 4], &white), 0, 0, 2, 1, 255);
+    assert_eq!(&buf[..2], &[0xFFFFFF, 0xFFFFFF], "white screened at full: white");
+    let mut s = Surface { px: &mut buf, width: 3, height: 1, stride: 3 };
+    s.screen(&img(1, 1, [0; 4], &black), 2, 0, 1, 1, 255);
+    assert_eq!(buf[2], 0x204060, "black screens to nothing");
+    let mut dark = vec![0u32];
+    let mut s = Surface { px: &mut dark, width: 1, height: 1, stride: 1 };
+    s.screen(&img(1, 1, [0; 4], &white), 0, 0, 1, 1, 102);
+    assert_eq!(dark[0], 0x666666, "40 %");
+}

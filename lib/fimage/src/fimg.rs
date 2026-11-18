@@ -85,6 +85,20 @@ pub fn from_rgba(rgba: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A render's PNG (straight RGBA, drawn at `render_scale`) as a FIMG for UI
+/// scale `scale`: premultiplied, area-averaged down, its 9-slice insets
+/// (given at the render's scale) scaled with it. For the host: the image
+/// carries the FIMGs, never a PNG decoder.
+#[cfg(feature = "decode")]
+pub fn from_png(png: &[u8], scale: u32, render_scale: u32, slice: [u32; 4]) -> Result<Vec<u8>, &'static str> {
+    let d = crate::png::decode(png)?;
+    if d.channels != 4 {
+        return Err("a render that isn't RGBA");
+    }
+    let (w, h, px) = downscale(d.w, d.h, &from_rgba(&d.pixels), scale, render_scale);
+    Ok(encode(w, h, scale as u8, slice.map(|v| (v * scale / render_scale) as u16), &px))
+}
+
 /// Area-averaged downscale of premultiplied pixels by `num/den` (2/3 for 3x
 /// to 2x, 1/3 for 3x to 1x): each target pixel is the coverage-weighted mean
 /// of the source pixels under it. Premultiplied, so edges don't darken.

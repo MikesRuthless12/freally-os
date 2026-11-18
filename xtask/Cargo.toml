@@ -15,7 +15,7 @@ fsvc.workspace = true
 ffont = { workspace = true, features = ["raster"] }
 fscreen.workspace = true
 fimage = { workspace = true, features = ["decode"] }
-fui.workspace = true
+fui = { workspace = true, features = ["ui"] }
 fjson.workspace = true
 cdp-proto.workspace = true
 

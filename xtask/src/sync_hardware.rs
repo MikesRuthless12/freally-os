@@ -14,12 +14,11 @@
 //!   The image carries the FIMGs the OS draws (from TASK-056's controls).
 
 use crate::util;
+use fui::hardware::{RENDER_SCALE, slice_of};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const THEMES: [&str; 2] = ["dark", "light"];
-/// The renders' density: `hardware.json` gives each piece at 4x.
-const RENDER_SCALE: u32 = 4;
 
 fn source() -> PathBuf {
     util::repo_root().parent().map(|p| p.join("Freally/renders/hardware")).unwrap_or_default()
@@ -103,11 +102,6 @@ pub fn gate() -> Result<String, String> {
     Ok(format!("{n} files, sealed"))
 }
 
-/// 9-slice insets at the render's scale, by file (from `hardware.json`).
-fn slice_of(name: &str) -> u32 {
-    if name == "meter_bezel.png" { 44 } else { 0 }
-}
-
 /// `cargo xtask assets`: every PNG of the set as FIMG at 3x, 2x and 1x.
 pub fn assets_cmd(_args: &[String]) -> Result<(), String> {
     let start = std::time::Instant::now();
@@ -122,17 +116,10 @@ pub fn assets() -> Result<(usize, usize), String> {
     for theme in THEMES {
         for f in wanted(&copy_dir().join(theme))?.iter().filter(|f| f.ends_with(".png")) {
             let png = std::fs::read(copy_dir().join(theme).join(f)).map_err(|e| e.to_string())?;
-            let d = fimage::png::decode(&png).map_err(|e| format!("{theme}/{f}: {e}"))?;
-            if d.channels != 4 {
-                return Err(format!("{theme}/{f}: not RGBA"));
-            }
-            let premul = fimage::fimg::from_rgba(&d.pixels);
             let stem = f.trim_end_matches(".png");
-            let name = Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             for scale in [3u32, 2, 1] {
-                let (w, h, px) = fimage::fimg::downscale(d.w, d.h, &premul, scale, RENDER_SCALE);
-                let inset = (slice_of(&name) * scale / RENDER_SCALE) as u16;
-                let file = fimage::fimg::encode(w, h, scale as u8, [inset; 4], &px);
+                let file = fimage::fimg::from_png(&png, scale, RENDER_SCALE, slice_of(stem))
+                    .map_err(|e| format!("{theme}/{f}: {e}"))?;
                 let to = out.join(theme).join(format!("{stem}@{scale}x.fimg"));
                 std::fs::create_dir_all(to.parent().unwrap_or(&out)).map_err(|e| e.to_string())?;
                 std::fs::write(&to, &file).map_err(|e| e.to_string())?;

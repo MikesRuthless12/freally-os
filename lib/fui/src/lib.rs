@@ -10,6 +10,9 @@
 //! - `text`: Noto in three weights and Mono, as fallback chains.
 //! - `strings`: the catalogs; no interface words in code.
 //! - `a11y`: every node's role, name, state, value, bounds and test id.
+//! - `controls`: what each control does with a key, and how it's drawn:
+//!   `hardware` (the playbook's rendered set, lit and moved) and `draw`
+//!   (anti-aliased shapes in linear light, for what the art doesn't hold).
 //!
 //! The tree and everything that allocates is feature `ui`; without it, fui
 //! is the colours, tokens and theme the bootloader's screens use.
@@ -21,6 +24,12 @@ extern crate alloc;
 #[cfg(feature = "ui")]
 pub mod a11y;
 pub mod color;
+#[cfg(feature = "ui")]
+pub mod controls;
+#[cfg(feature = "ui")]
+pub mod draw;
+#[cfg(feature = "ui")]
+pub mod hardware;
 #[cfg(feature = "ui")]
 pub mod layout;
 #[cfg(feature = "ui")]
