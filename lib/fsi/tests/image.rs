@@ -90,3 +90,17 @@ fn reserved_and_signature_bytes_are_covered() {
         assert!(verify(&bad, &trusted()).is_err(), "byte {byte}");
     }
 }
+
+/// `recheck_file` is conductor's check before it uses a file (TASK-046): a
+/// changed byte in that file is caught, a path not in the TOC refused, and
+/// the other files still read.
+#[test]
+fn recheck_file_catches_a_changed_file() {
+    let mut image = sample(10);
+    let (entry, bytes) = fsi::recheck_file(&image, "/system/NOTICE").expect("an intact file rechecks");
+    assert_eq!(bytes, vec![b'n'; 5000].as_slice());
+    image[entry.offset as usize + 1234] ^= 0x01;
+    assert_eq!(fsi::recheck_file(&image, "/system/NOTICE").err(), Some(FsiError::BadFile));
+    assert!(fsi::recheck_file(&image, "/system/version").is_ok());
+    assert_eq!(fsi::recheck_file(&image, "/system/nope").err(), Some(FsiError::BadToc));
+}

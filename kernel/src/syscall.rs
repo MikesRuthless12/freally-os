@@ -204,19 +204,26 @@ extern "C" fn dispatch(f: &mut Frame) {
     }
 }
 
+/// `debug_log` (dev only): a line straight to the kernel's log, marked
+/// `debug_log`. The kernel is stripped, so `xtask validate` proves the
+/// release kernel lacks this path by that text (and the dev kernel has it).
+#[cfg(feature = "flavour-dev")]
+#[inline(never)]
+fn debug_log(ptr: u64, len: u64) -> Result<(), FErr> {
+    let mut b = alloc::vec![0u8; len.min(512) as usize];
+    copy_from_user(&mut b, ptr)?;
+    let pid = proc::current().and_then(|p| proc::as_process(&p).ok().map(|x| x.pid)).unwrap_or(0);
+    klog!("debug_log [pid {}] {}", pid, core::str::from_utf8(&b).unwrap_or("(not UTF-8)"));
+    Ok(())
+}
+
 /// The table itself. `Ok((rax, rdx))`.
 #[allow(clippy::too_many_arguments)]
 pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Result<(u64, u64), FErr> {
     let one = |v: u64| Ok((v, 0));
     match n {
         #[cfg(feature = "flavour-dev")]
-        nr::DEBUG_LOG => {
-            let mut b = alloc::vec![0u8; a1.min(512) as usize];
-            copy_from_user(&mut b, a0)?;
-            let name = proc::current().and_then(|p| proc::as_process(&p).ok().map(|x| x.pid)).unwrap_or(0);
-            klog!("[pid {}] {}", name, core::str::from_utf8(&b).unwrap_or("(not UTF-8)"));
-            one(0)
-        }
+        nr::DEBUG_LOG => debug_log(a0, a1).map(|_| (0, 0)),
         nr::PROCESS_CREATE => {
             if grants() & grant::PROCESS_CREATE == 0 {
                 return Err(FErr::AccessDenied);

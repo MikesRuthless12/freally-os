@@ -192,6 +192,13 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
             })
         }),
     ));
+    g.push((
+        "validate",
+        Box::new(move || {
+            let lines = crate::validate::validate(!container)?;
+            Ok(format!("FR-037 and the manifest rules, {} checks on three flavours", lines.len()))
+        }),
+    ));
     g.push(("no-third-party", Box::new(gates::third_party::check)));
     g.push(("no-AI", Box::new(gates::content::no_ai)));
     g.push(("denylist", Box::new(gates::content::denylist)));

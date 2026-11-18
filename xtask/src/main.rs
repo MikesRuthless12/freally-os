@@ -19,6 +19,7 @@ mod screen;
 mod showcase;
 mod site;
 mod util;
+mod validate;
 
 use std::process::ExitCode;
 
@@ -69,6 +70,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor::doctor(),
         Some("keygen") => keys::keygen(rest),
         Some("build") => build::build_cmd(rest),
+        Some("validate") => validate::validate_cmd(rest),
         Some("pack") => pack::pack_cmd(rest),
         Some("sign") => pack::sign_cmd(rest),
         Some("verify") => verify_cmd(rest),
