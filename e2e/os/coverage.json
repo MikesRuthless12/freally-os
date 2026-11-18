@@ -134,6 +134,20 @@
       "what": "Screenshots and injected input for the Brain and cdpd only; a window's accessibility tree kept; the UI scale reaching stage and every window, the strip growing with it, off-step scales refused."
     },
     {
+      "id": "desktop.rack",
+      "task": "TASK-059",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/desktop.rs",
+      "what": "The Rack along the foot, stamped S4: the launcher, Terminal and Monitor keys from the hardware set (apps not in the image at 40 %), their LEDs, the 12-hour clock in its well; a key's tooltip after 600 ms, gone when the pointer leaves; the launcher key opens the launcher."
+    },
+    {
+      "id": "desktop.launcher",
+      "task": "TASK-059",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/desktop.rs",
+      "what": "Super opens the launcher, 560 px wide, centred 30 % down, focused; typing shows in its well and 'No app called…' below; Backspace, Esc, Super toggling; Super+T asks for Terminal."
+    },
+    {
       "id": "input.absent",
       "task": "TASK-043",
       "setup": "e2e-no-ps2",

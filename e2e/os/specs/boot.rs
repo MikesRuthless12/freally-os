@@ -58,13 +58,14 @@ pub fn conductor(ctx: &mut Ctx) -> Result<(), String> {
     desktop(ctx)
 }
 
-/// Stage's first frame is on the screen: the dark ground everywhere, and
-/// the fleet cursor's ring at the centre (never an arrow; the desktop's
-/// wallpaper and Rack join them in TASK-059). From S3 the screen is stage's;
+/// The desktop is on the screen: the dark ground everywhere, the fleet
+/// cursor's ring at the centre (never an arrow), and the Rack along the foot
+/// (the wallpaper joins them when its render lands, TASK-052). From S3 the screen is stage's;
 /// the bootloader's title stays only in `@boot.title`'s image, which has no
 /// stage.
 fn desktop(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("stage: first frame")?;
+    ctx.expect_log("desktop: the Rack is up")?;
     ctx.expect_screen(Expect::Desktop(fui::tokens_gen::dark::COLOR_BG.xrgb()))
 }
 

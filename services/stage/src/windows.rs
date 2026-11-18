@@ -105,7 +105,7 @@ impl Window {
         match self.kind {
             Kind::Panel => 0,
             Kind::Normal | Kind::Fullscreen => 1,
-            Kind::Popup => 2,
+            Kind::Popup | Kind::Tooltip => 2,
         }
     }
 }
@@ -197,7 +197,7 @@ impl Windows {
         let frame_h = if kind == Kind::Normal { h + self.strip } else { h };
         let frame = match kind {
             Kind::Fullscreen => Rect::new(0, 0, sw, sh),
-            Kind::Panel | Kind::Popup => Rect::new(at.0, at.1, w, frame_h),
+            Kind::Panel | Kind::Popup | Kind::Tooltip => Rect::new(at.0, at.1, w, frame_h),
             Kind::Normal => {
                 // Centred, each next one 32 px further down and right, wrapping.
                 let step = 32 * (self.placed % 8) as i32;
@@ -224,7 +224,7 @@ impl Windows {
         let layer = win.layer();
         let at = self.list.iter().position(|o| o.layer() > layer).unwrap_or(self.list.len());
         self.list.insert(at, win);
-        if kind != Kind::Panel {
+        if !matches!(kind, Kind::Panel | Kind::Tooltip) {
             self.focus(id);
         }
         id
@@ -287,7 +287,8 @@ impl Windows {
 
     /// The topmost window under (x, y), and where on it.
     pub fn hit(&self, x: i32, y: i32) -> Option<(WindowId, Part)> {
-        let w = self.list.iter().rev().find(|w| w.frame.contains(x, y))?;
+        // A tooltip lets the pointer through.
+        let w = self.list.iter().rev().find(|w| w.kind != Kind::Tooltip && w.frame.contains(x, y))?;
         if let Some(c) = self.close_rect(w)
             && c.contains(x, y)
         {

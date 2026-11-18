@@ -50,9 +50,9 @@ pub struct Conductor {
     pub s2: u64,
     pub s3: u64,
     pub s4: u64,
-    /// The image's fonts, each copied once into a VMO; services granted
-    /// `fonts` get read-only duplicates.
-    fonts: Vec<(String, Handle)>,
+    /// The image's data files (fonts, hardware bundles), each copied once
+    /// into a VMO; services granted them get read-only duplicates.
+    data: Vec<(String, Handle)>,
     /// Lines for the test door to send (e2e): the restart reports.
     pub door_out: Vec<String>,
     /// The A/B record (TASK-045).
@@ -103,7 +103,7 @@ impl Conductor {
             s2: 0,
             s3: 0,
             s4: 0,
-            fonts: Vec::new(),
+            data: Vec::new(),
             door_out: Vec::new(),
             boot,
             firmware: None,
@@ -123,15 +123,28 @@ impl Conductor {
         self.start_due();
     }
 
-    /// The image's fonts (`/system/fonts/*.ttf`), each in a VMO of its own,
-    /// made on first use: `font:<file>` → the VMO, holding the file's length
-    /// (u64, little-endian) and then the file (`fstd::service::font` reads it).
-    fn font_vmos(&mut self) -> &[(String, Handle)] {
-        if self.fonts.is_empty() {
-            for path in self.image.paths().unwrap_or_default() {
-                let Some(file) = path.strip_prefix("/system/fonts/").filter(|f| f.ends_with(".ttf")) else {
-                    continue;
-                };
+    /// The data files a grant hands out, each in a VMO of its own made on
+    /// first use, holding the file's length (u64, little-endian) and then the
+    /// file (`fstd::service::data` reads it): `fonts` gives
+    /// `/system/fonts/*.ttf` as `font:<file>`; `hardware` gives
+    /// `/system/assets/hardware-<n>x.fbnd` as `hardware:<n>x`.
+    fn data_vmos(&mut self, grant: &str) -> Vec<(String, Handle)> {
+        let (dir, suffix, prefix) = match grant {
+            "fonts" => ("/system/fonts/", ".ttf", "font:"),
+            "hardware" => ("/system/assets/hardware-", ".fbnd", "hardware:"),
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for path in self.image.paths().unwrap_or_default() {
+            let Some(file) = path.strip_prefix(dir).and_then(|f| f.strip_suffix(suffix).map(|stem| (f, stem))) else {
+                continue;
+            };
+            let name = if grant == "fonts" {
+                alloc::format!("{prefix}{}", file.0)
+            } else {
+                alloc::format!("{prefix}{}", file.1)
+            };
+            if !self.data.iter().any(|(n, _)| *n == name) {
                 let made = self.image.file(&path).ok().and_then(|bytes| {
                     let vmo = Handle::from_raw(fstd::sys::vmo_create(bytes.len() as u64 + 8).ok()?)?;
                     fstd::sys::vmo_write(vmo.raw(), 0, &(bytes.len() as u64).to_le_bytes()).ok()?;
@@ -139,23 +152,32 @@ impl Conductor {
                     Some(vmo)
                 });
                 match made {
-                    Some(vmo) => self.fonts.push((alloc::format!("font:{file}"), vmo)),
-                    None => fstd::error!("conductor: can't hand out {path}"),
+                    Some(vmo) => self.data.push((name.clone(), vmo)),
+                    None => {
+                        fstd::error!("conductor: can't hand out {path}");
+                        continue;
+                    }
                 }
             }
+            // Read-only: the bytes, their length, and nothing to write with.
+            if let Some(d) = self
+                .data
+                .iter()
+                .find(|(n, _)| *n == name)
+                .and_then(|(_, v)| v.duplicate(rights::READ | rights::MAP | rights::TRANSFER).ok())
+            {
+                out.push((name, d));
+            }
         }
-        &self.fonts
+        out
     }
 
     /// The handles a manifest's grants carry, by name.
     fn granted_handles(&mut self, m: &Manifest) -> Vec<(String, Handle)> {
         let mut out = Vec::new();
-        if m.grants.iter().any(|g| g == "fonts") {
-            // Read-only: the font's bytes, its length, and nothing to write with.
-            for (name, vmo) in self.font_vmos() {
-                if let Ok(d) = vmo.duplicate(rights::READ | rights::MAP | rights::TRANSFER) {
-                    out.push((name.clone(), d));
-                }
+        for g in ["fonts", "hardware"] {
+            if m.grants.iter().any(|x| x == g) {
+                out.extend(self.data_vmos(g));
             }
         }
         let dup = |h: u32, r: u32| {
@@ -294,8 +316,12 @@ impl Conductor {
         let want: c::ByName =
             fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
         let caller_m = self.services.iter().find(|s| s.m.name == caller).map(|s| s.m.clone());
-        let allowed =
-            want.name == "logger" || want.name == "stage" || caller_m.is_some_and(|m| m.after.contains(&want.name));
+        let demand = self.services.iter().any(|s| s.m.name == want.name && s.m.start == fsvc::Start::Demand);
+        // The desktop starts apps: it may reach any service started on demand.
+        let allowed = want.name == "logger"
+            || want.name == "stage"
+            || (caller == "desktop" && demand)
+            || caller_m.is_some_and(|m| m.after.contains(&want.name));
         if !allowed {
             return Err((FErr::AccessDenied, alloc::format!("{caller} may not connect to {}", want.name)));
         }
@@ -304,6 +330,21 @@ impl Conductor {
             .iter()
             .find(|s| s.m.name == want.name)
             .ok_or((FErr::NotFound, alloc::format!("no service is called {}", want.name)))?;
+        // A demand service not running yet starts now; the caller waits for it.
+        if target.endpoint.is_none()
+            && target.m.start == fsvc::Start::Demand
+            && target.child.is_none()
+            && target.start_at.is_none()
+            && matches!(target.state, ServiceState::Waiting | ServiceState::Stopped)
+        {
+            let name = want.name.clone();
+            if let Some(s) = self.services.iter_mut().find(|s| s.m.name == name) {
+                s.start_at = Some(Instant::now().as_ns());
+            }
+            self.start_due();
+            return Err((FErr::ShouldWait, alloc::format!("{name} is starting")));
+        }
+        let target = self.services.iter().find(|s| s.m.name == want.name).ok_or((FErr::NotFound, String::new()))?;
         let endpoint =
             target.endpoint.as_ref().ok_or((FErr::ShouldWait, alloc::format!("{} isn't ready yet", want.name)))?;
         let (a, b) = Channel::pair().map_err(|e| (e, String::from("channel_create")))?;
@@ -346,9 +387,9 @@ impl Conductor {
     }
 
     /// S2 (PRD § 3): the framebuffer and input drivers are ready, an input
-    /// driver that found no hardware and ended cleanly counting as ready. The
-    /// system is up: a trial slot's 10 s start (until the desktop's
-    /// input-ready mark, Phase 3), and conductor says the boot so far.
+    /// driver that found no hardware and ended cleanly counting as ready;
+    /// conductor says the boot so far. (A trial slot's 10 s start at S4, when
+    /// the desktop takes input: `stamp`.)
     pub fn check_s2(&mut self) {
         if self.s2 != 0 {
             return;
@@ -361,7 +402,6 @@ impl Conductor {
         };
         if ready("drv-gop-fb", false) && ready("drv-i8042", true) {
             self.s2 = rdtsc();
-            self.boot.up();
             self.firmware = self.firmware_times();
             fstd::info!("conductor: boot: {}", boot_line(&self.stages()));
         }
@@ -381,6 +421,10 @@ impl Conductor {
         }
         *slot = s.tsc;
         fstd::info!("conductor: boot: {}", boot_line(&self.stages()));
+        // The desktop takes input: a trial slot's 10 s start (PRD § 3, rule 4).
+        if s.stage == 14 {
+            self.boot.up();
+        }
         Ok(Vec::new())
     }
 

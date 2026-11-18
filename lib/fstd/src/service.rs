@@ -121,11 +121,16 @@ pub fn stamp(stage: u8, tsc: u64) -> Result<(), CallError> {
     Ok(())
 }
 
-/// The font a `fonts` grant carried as `font:<file>` (FR-026): conductor
+/// The font a `fonts` grant carried as `font:<file>` (FR-026).
+pub fn font(file: &str) -> Result<&'static [u8], FErr> {
+    data(&alloc::format!("font:{file}"))
+}
+
+/// A data file a grant carried (`font:<file>`, `hardware:<n>x`): conductor
 /// writes its length (u64, little-endian) and then the file; mapped
 /// read-only for as long as the service runs.
-pub fn font(file: &str) -> Result<&'static [u8], FErr> {
-    let h = take_handle(&alloc::format!("font:{file}")).ok_or(FErr::NotFound)?;
+pub fn data(name: &str) -> Result<&'static [u8], FErr> {
+    let h = take_handle(name).ok_or(FErr::NotFound)?;
     let mut len = [0u8; 8];
     crate::sys::vmo_read(h.raw(), 0, &mut len)?;
     let len = u64::from_le_bytes(len);
@@ -141,4 +146,12 @@ pub fn font(file: &str) -> Result<&'static [u8], FErr> {
     core::mem::forget(h);
     // SAFETY: the kernel just mapped len + 8 readable bytes at `at`; they stay mapped.
     Ok(unsafe { core::slice::from_raw_parts((at + 8) as *const u8, len as usize) })
+}
+
+/// Asks conductor `ordinal` with `req` (a method conductor serves, such as
+/// `list_services`), waiting up to 2 s for the answer.
+pub fn ask<Req: fwire::Wire, Rep: fwire::Wire>(ordinal: u32, req: &Req) -> Result<Rep, CallError> {
+    let mut st = STATE.0.borrow_mut();
+    let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
+    Ok(s.directory.call::<_, Rep>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(2)))?.0)
 }

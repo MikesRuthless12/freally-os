@@ -60,6 +60,28 @@ pub const FONTS: &[(&str, Kind)] = &[
     ("OFL.txt", Kind::Data),
 ];
 
+/// The UI scales the image carries the hardware set at: 1x (the VM, and
+/// 100 %) and 2x (the OMEN's 150 % and up, drawn from the larger).
+pub const HARDWARE_SCALES: [u32; 2] = [1, 2];
+
+/// The hardware set's pieces the OS draws (`fui::hardware::PIECES`), both
+/// themes, as FIMGs at `scale`, in one bundle: `dark/<piece>`, `light/<piece>`.
+pub fn hardware_bundle(scale: u32) -> Result<Vec<u8>, String> {
+    let dir = util::repo_root().join("assets/hardware");
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for theme in ["dark", "light"] {
+        for piece in fui::hardware::PIECES {
+            let png = std::fs::read(dir.join(theme).join(format!("{piece}.png")))
+                .map_err(|e| format!("assets/hardware/{theme}/{piece}.png: {e}"))?;
+            let fimg = fimage::fimg::from_png(&png, scale, fui::hardware::RENDER_SCALE, fui::hardware::slice_of(piece))
+                .map_err(|e| format!("{theme}/{piece}: {e}"))?;
+            files.push((format!("{theme}/{piece}"), fimg));
+        }
+    }
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    Ok(fimage::bundle::build(&refs))
+}
+
 /// Packs the flavour's image, unsigned, with `key_id` set for its signing key.
 /// `user` lists each user program: its image path, its kind and its built ELF.
 pub fn pack(
@@ -84,6 +106,9 @@ pub fn pack(
     for (file, kind) in FONTS {
         let bytes = std::fs::read(root.join("assets/fonts/noto").join(file)).map_err(|e| format!("{file}: {e}"))?;
         b.add(&format!("/system/fonts/{file}"), *kind, 0, bytes);
+    }
+    for scale in HARDWARE_SCALES {
+        b.add(&format!("/system/assets/hardware-{scale}x.fbnd"), Kind::Asset, 0, hardware_bundle(scale)?);
     }
     let elf = std::fs::read(kernel).map_err(|e| format!("{}: {e} (build it: cargo xtask build)", kernel.display()))?;
     b.add("/system/kernel", Kind::Kernel, 0, elf);

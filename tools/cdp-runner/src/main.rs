@@ -15,6 +15,8 @@ mod site;
 
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
+#[path = "../../../e2e/os/specs/desktop.rs"]
+mod desktop;
 #[path = "../../../e2e/os/specs/kernel.rs"]
 mod kernel;
 #[path = "../../../e2e/os/specs/services.rs"]
@@ -58,6 +60,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("stage.windows", stage::windows),
     ("ui.cursor", stage::cursor),
     ("stage.doors", stage::doors),
+    ("desktop.rack", desktop::rack),
+    ("desktop.launcher", desktop::launcher),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -86,10 +90,15 @@ pub enum Expect {
     },
     /// One colour everywhere, `0xRRGGBB`.
     Fill(u32),
-    /// Stage's first frame: the ground everywhere but the fleet cursor's
-    /// square at the screen's centre, where the ring must show (TASK-058).
+    /// The desktop: the ground everywhere but the fleet cursor's square at
+    /// the screen's centre, where the ring must show (TASK-058), and the
+    /// Rack's band along the foot, its faceplate under a border line
+    /// (TASK-059; its keys and clock are `@desktop.rack`'s).
     Desktop(u32),
 }
+
+/// The Rack's height at 100 %.
+const RACK_H: usize = 56;
 
 /// The fleet cursor's square, centred on the screen: 64 × 64.
 const CURSOR_BOX: usize = 32;
@@ -150,6 +159,9 @@ impl Ctx {
                 if cursor && (i % w).abs_diff(cx) < CURSOR_BOX && (i / w).abs_diff(cy) < CURSOR_BOX {
                     continue;
                 }
+                if cursor && i / w >= h - RACK_H {
+                    continue;
+                }
                 let a = &shot.pixels[i * 3..i * 3 + 3];
                 if [(p >> 16) as u8, (p >> 8) as u8, *p as u8] != [a[0], a[1], a[2]] {
                     diff += 1;
@@ -161,6 +173,18 @@ impl Ctx {
                 greenish(shot.pixels[i], shot.pixels[i + 1], shot.pixels[i + 2])
             };
             if cursor && !(ring(cx + 16, cy) && ring(cx - 16, cy) && ring(cx, cy + 16) && ring(cx, cy - 16)) {
+                diff += 1;
+            }
+            // The Rack: its border line, and its faceplate in the middle (clear
+            // of the keys at the left and the clock at the right).
+            let at = |x: usize, y: usize| {
+                let i = (y * w + x) * 3;
+                (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
+            };
+            if cursor
+                && (at(cx, h - RACK_H) != fui::tokens_gen::dark::COLOR_BORDER.xrgb()
+                    || at(cx, h - RACK_H / 2) != fui::tokens_gen::dark::COLOR_SURFACE.xrgb())
+            {
                 diff += 1;
             }
             if diff == 0 {
@@ -176,6 +200,16 @@ impl Ctx {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
+    }
+
+    /// Keeps a screenshot as `<failures>/../shots/<name>.png`: a picture of a
+    /// surface for the owner, from the real screen.
+    pub fn keep_shot(&mut self, name: &str) -> Result<(), String> {
+        let shot = self.screenshot()?;
+        let dir = self.failures.parent().map(|p| p.join("shots")).unwrap_or_else(|| self.failures.join("shots"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(format!("{name}.png")), fimage::png::encode(shot.w, shot.h, 3, &shot.pixels))
+            .map_err(|e| e.to_string())
     }
 
     /// Writes actual, expected and diff PNGs for a failed comparison.

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = desktop
+binary      = /system/services/desktop
+description = Draws the Rack along the bottom of the screen, its clock and keys, and the launcher.
+start       = boot
+after       = logger, stage
+restart     = always
+class       = interactive
+grants      = fonts, hardware
+flavours    = release, dev, e2e

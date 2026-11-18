@@ -245,6 +245,14 @@ dependencies = [
 [[package]]
 name = "svc-desktop"
 version = "0.1.0"
+dependencies = [
+ "fcore-abi",
+ "ffont",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
 
 [[package]]
 name = "svc-devmgr"

@@ -57,8 +57,10 @@ pub const GRANTS: &[&str] = &[
     "framebuffer",
     "input",
     "serial",
-    // Data: the image's fonts, each a read-only VMO.
+    // Data: the image's fonts, each a read-only VMO; the hardware set's
+    // bundles (one per UI scale).
     "fonts",
+    "hardware",
 ];
 
 /// Services that may never be in a release image (FR-037).

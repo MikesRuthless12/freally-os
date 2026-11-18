@@ -325,6 +325,11 @@ pub mod stage {
     pub const INJECT_INPUT: u32 = 10;
     pub const SET_THEME: u32 = 11;
     pub const SET_SCALE: u32 = 12;
+    /// The desktop's: the global shortcuts that are its to act on (the
+    /// launcher, Monitor, Terminal), on a channel of their own.
+    pub const SUBSCRIBE_SHORTCUTS: u32 = 13;
+    /// The screen's size, the UI scale and the theme.
+    pub const SCREEN: u32 = 14;
     /// The e2e door's read-backs (e2e images only; conductor's door only).
     pub const LIST_WINDOWS: u32 = 100;
     pub const POINTER: u32 = 101;
@@ -337,6 +342,8 @@ pub mod stage {
     pub const EV_THEME: u32 = 5;
     pub const EV_SCALE: u32 = 6;
     pub const EV_CLOSE_REQUESTED: u32 = 7;
+    /// On the shortcuts channel.
+    pub const EV_SHORTCUT: u32 = 8;
 
     wire_enum! {
         pub enum Kind {
@@ -349,6 +356,9 @@ pub mod stage {
             Popup = 2,
             /// The whole screen, undecorated.
             Fullscreen = 3,
+            /// Above everything, placed by its client, never focused, and the
+            /// pointer passes through it.
+            Tooltip = 4,
         }
     }
 
@@ -472,6 +482,8 @@ pub mod stage {
             Down = 1,
             Up = 2,
             Wheel = 3,
+            /// The pointer left the window (or went onto another one above it).
+            Leave = 4,
         }
     }
 
@@ -483,5 +495,26 @@ pub mod stage {
 
     wire_struct! {
         pub struct Focus { pub focused: bool }
+    }
+
+    wire_enum! {
+        pub enum Shortcut {
+            Launcher = 0,
+            Monitor = 1,
+            Terminal = 2,
+        }
+    }
+
+    wire_struct! {
+        pub struct ShortcutEvent { pub shortcut: Shortcut }
+    }
+
+    wire_struct! {
+        /// `subscribe_shortcuts`' reply: the channel (handle 0) they arrive on.
+        pub struct Subscribed { pub events: HandleRef }
+    }
+
+    wire_struct! {
+        pub struct ScreenInfo { pub w: u32, pub h: u32, pub scale_pct: u16, pub theme: Theme }
     }
 }

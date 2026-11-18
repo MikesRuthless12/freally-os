@@ -43,6 +43,8 @@ pub struct Desk {
     drag: Option<(WindowId, i32, i32)>,
     /// The window a held button went down on.
     grab: Option<WindowId>,
+    /// The window whose surface the pointer is over, to tell it when it leaves.
+    over: Option<WindowId>,
     shortcuts: Shortcuts,
     /// Alt+Tab: the order it walks and where it's got to.
     cycle: Option<(Vec<WindowId>, usize)>,
@@ -60,6 +62,7 @@ impl Desk {
             buttons: 0,
             drag: None,
             grab: None,
+            over: None,
             shortcuts: Shortcuts::default(),
             cycle: None,
         }
@@ -119,6 +122,9 @@ impl Desk {
         if self.grab == Some(id) {
             self.grab = None;
         }
+        if self.over == Some(id) {
+            self.over = None;
+        }
         if let Some((order, _)) = &mut self.cycle {
             order.retain(|&w| w != id);
         }
@@ -176,6 +182,7 @@ impl Desk {
             if released & LEFT != 0 {
                 self.drag = None;
             }
+            self.leave_if_left(out);
             return;
         }
 
@@ -230,6 +237,38 @@ impl Desk {
         }
         if buttons == 0 {
             self.grab = None;
+        }
+        self.leave_if_left(out);
+    }
+
+    /// The window the pointer was over hears that it left, unless a held
+    /// button still has the pointer with it.
+    fn leave_if_left(&mut self, out: &mut Vec<Effect>) {
+        if self.grab.is_some() {
+            return;
+        }
+        let now = match self.windows.hit(self.x, self.y) {
+            Some((id, Part::Surface { .. })) => Some(id),
+            _ => None,
+        };
+        if now != self.over {
+            if let Some(old) = self.over
+                && let Some(w) = self.windows.get(old)
+            {
+                let r = self.windows.surface_rect(w);
+                out.push(Effect::Send(
+                    old,
+                    Event::Pointer(Pointer {
+                        x: self.x - r.x,
+                        y: self.y - r.y,
+                        buttons: self.buttons,
+                        kind: PointerKind::Leave,
+                        dx: 0,
+                        dy: 0,
+                    }),
+                ));
+            }
+            self.over = now;
         }
     }
 }

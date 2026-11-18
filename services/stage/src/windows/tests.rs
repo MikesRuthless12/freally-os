@@ -142,3 +142,14 @@ fn rects_intersect_and_unite() {
     assert!(a.intersect(&Rect::new(20, 20, 1, 1)).is_empty());
     assert_eq!(Rect::default().union(&b), b);
 }
+
+#[test]
+fn a_tooltip_sits_on_top_never_focused_and_the_pointer_passes_through() {
+    let mut ws = screen();
+    let a = normal(&mut ws, "a", 400, 300); // (300, 234)
+    let tip = ws.create("tip", Kind::Tooltip, (80, 24), (0, 0), (350, 300), ME);
+    assert_eq!(ws.stack().last().unwrap().id, tip, "on top");
+    assert_eq!(ws.focused(), Some(a), "never focused");
+    assert_eq!(ws.hit(360, 310), Some((a, Part::Surface { x: 60, y: 44 })), "the pointer passes through");
+    assert!(!ws.cycle_order().contains(&tip));
+}

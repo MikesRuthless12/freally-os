@@ -164,3 +164,24 @@ fn a_panel_hears_the_pointer_but_keeps_its_place() {
         matches!(sends(&out).last(), Some((w, Event::Pointer(Pointer { kind: PointerKind::Down, .. }))) if *w == wall)
     );
 }
+
+#[test]
+fn a_window_hears_when_the_pointer_leaves_it() {
+    let mut d = desk();
+    let a = open(&mut d, 400, 300); // surface (300, 266) 400 × 300
+    let mut out = Vec::new();
+    d.mouse(0, 0, 0, 0, &mut out);
+    d.mouse(1, 0, 0, 0, &mut out); // inside: a hears the move
+    out.clear();
+    d.mouse(-450, 0, 0, 0, &mut out); // off it
+    assert_eq!(
+        sends(&out),
+        vec![(a, Event::Pointer(Pointer { x: -249, y: 134, buttons: 0, kind: PointerKind::Leave, dx: 0, dy: 0 }))]
+    );
+    out.clear();
+    d.mouse(-5, 0, 0, 0, &mut out);
+    assert!(sends(&out).is_empty(), "told once");
+    // Onto its strip: off its surface, so it hears that too.
+    d.mouse(500, -150, 0, 0, &mut out); // (546, 250): the strip
+    assert!(sends(&out).is_empty(), "never was over it since");
+}

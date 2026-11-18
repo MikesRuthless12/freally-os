@@ -15,6 +15,7 @@
 extern crate alloc;
 
 pub mod blit;
+pub mod bundle;
 pub mod fimg;
 #[cfg(feature = "decode")]
 pub mod inflate;

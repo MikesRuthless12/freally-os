@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The desktop (TASK-059): the Rack and the launcher on the real screen,
+//! worked with the real mouse and keyboard.
+
+use crate::Ctx;
+use crate::stage::{button, key, move_to};
+use fui::tokens_gen::dark;
+use std::time::{Duration, Instant};
+
+const RACK_H: i32 = 56;
+
+/// The raw `stage list` lines.
+fn windows(ctx: &Ctx) -> Result<Vec<String>, String> {
+    ctx.door("stage list")
+}
+
+/// Waits up to 10 s for stage to have (or not have) a window titled `title`.
+fn expect_window(ctx: &Ctx, title: &str, there: bool) -> Result<String, String> {
+    let start = Instant::now();
+    loop {
+        let lines = windows(ctx)?;
+        let found = lines.iter().find(|l| l.ends_with(&format!("title={title}"))).cloned();
+        if found.is_some() == there {
+            return Ok(found.unwrap_or_default());
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(format!("{title} {}: {lines:?}", if there { "never opened" } else { "never closed" }));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn luma(p: u32) -> u32 {
+    ((p >> 16 & 0xFF) * 299 + (p >> 8 & 0xFF) * 587 + (p & 0xFF) * 114) / 1000
+}
+
+/// Waits for the log to say `text` more than `before` times.
+fn expect_more(ctx: &Ctx, text: &str, before: usize) -> Result<(), String> {
+    let start = Instant::now();
+    while ctx.log_count(text) <= before {
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(format!("COM1 never said {text:?} again"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// `@desktop.rack`: the Rack along the screen's foot, stamped S4. Three keys
+/// (the launcher, Terminal, Monitor) from the hardware set, the apps this
+/// image doesn't carry yet at 40 %, each LED unlit; the 12-hour clock in its
+/// well. A key's tooltip after 600 ms ("Not available yet." for an app the
+/// image lacks), gone when the pointer leaves; the launcher key opens the
+/// launcher (TASK-059, FR-030).
+pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("desktop: the Rack is up, 3 keys, ")?;
+    ctx.expect_log(" S4=")?;
+    let line = ctx.log_line_with("desktop: the Rack is up").unwrap_or_default();
+    let clock = line.rsplit(", ").next().unwrap_or_default();
+    let ok = clock.ends_with(" AM") || clock.ends_with(" PM");
+    let (h, m) = clock.trim_end_matches(" AM").trim_end_matches(" PM").split_once(':').unwrap_or(("", ""));
+    if !ok || !(1..=12).contains(&h.parse::<u32>().unwrap_or(0)) || m.len() != 2 || m.parse::<u32>().unwrap_or(99) > 59
+    {
+        return Err(format!("the clock says {clock:?}, not 12-hour h:mm AM/PM"));
+    }
+    let shot = ctx.screenshot()?;
+    let (sw, sh) = (shot.w as i32, shot.h as i32);
+    let top = sh - RACK_H;
+    let at = |x: i32, y: i32| {
+        let i = (y as usize * shot.w as usize + x as usize) * 3;
+        (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
+    };
+    if at(sw / 2, top) != dark::COLOR_BORDER.xrgb() || at(sw / 2, top + 28) != dark::COLOR_SURFACE.xrgb() {
+        return Err("no Rack faceplate along the foot".into());
+    }
+    // Keys at x 8, 56, 104 (40 px): the launcher's face, and the absent apps'
+    // faded toward the faceplate.
+    let face = |x0: i32| (x0 + 6..x0 + 34).map(|x| luma(at(x, top + 3 + 34))).max().unwrap_or(0);
+    let (launcher, terminal) = (face(8), face(56));
+    let plate = luma(dark::COLOR_SURFACE.xrgb());
+    if launcher <= plate + 8 || terminal >= launcher {
+        return Err(format!("keys: launcher {launcher}, Terminal {terminal}, the faceplate {plate}"));
+    }
+    // The clock: green digits in a well at the right.
+    let digits = (sw - 200..sw - 24)
+        .flat_map(|x| (top + 8..sh - 8).map(move |y| (x, y)))
+        .filter(|&(x, y)| crate::stage::green(at(x, y)))
+        .count();
+    if digits < 40 {
+        return Err(format!("no clock digits at the Rack's right ({digits} green pixels)"));
+    }
+
+    ctx.keep_shot("desktop")?;
+    // Hover Terminal: its tooltip after 600 ms; gone when the pointer leaves.
+    move_to(ctx, 56 + 20, top + 3 + 20)?;
+    let tip = expect_window(ctx, "Tooltip", true)?;
+    if !tip.contains("kind=Tooltip") || !tip.contains("focused=false") {
+        return Err(format!("the tooltip isn't an unfocused tooltip: {tip}"));
+    }
+    move_to(ctx, sw / 2, sh / 2)?;
+    expect_window(ctx, "Tooltip", false)?;
+    // A window opening over the Rack under a still pointer: the Rack hears
+    // the pointer leave (still over the key's place), and the tooltip goes.
+    move_to(ctx, 56 + 20, top + 3 + 20)?;
+    expect_window(ctx, "Tooltip", true)?;
+    let cover = ctx.door("stage open 1280 768 303030 Cover")?;
+    let id =
+        cover.iter().find_map(|l| l.strip_prefix("window ")).ok_or(format!("stage open said {cover:?}"))?.to_string();
+    move_to(ctx, 56 + 21, top + 3 + 20)?;
+    expect_window(ctx, "Tooltip", false)?;
+    crate::stage::ok(ctx, &format!("stage close {id}"))?;
+    expect_window(ctx, "Cover", false)?;
+    // The launcher key: its tooltip, then a press opens the launcher.
+    let opened = ctx.log_count("desktop: the launcher is open");
+    move_to(ctx, 8 + 20, top + 3 + 20)?;
+    expect_window(ctx, "Tooltip", true)?;
+    button(ctx, true)?;
+    button(ctx, false)?;
+    expect_more(ctx, "desktop: the launcher is open", opened)?;
+    expect_window(ctx, "Launcher", true)?;
+    expect_window(ctx, "Tooltip", false)?;
+    key(ctx, "Escape", true)?;
+    key(ctx, "Escape", false)?;
+    expect_window(ctx, "Launcher", false)?;
+    move_to(ctx, sw / 2, sh / 2)?;
+    Ok(())
+}
+
+/// `@desktop.launcher`: Super opens the launcher, centred 30 % from the top
+/// and focused; typing fills its well ("No app called 'xyz'." when nothing
+/// matches); Backspace takes it back; Esc closes it, and Super toggles it.
+/// Super+T asks for Terminal, which this image doesn't carry yet (TASK-059).
+pub fn launcher(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("desktop: the Rack is up")?;
+    let opened = ctx.log_count("desktop: the launcher is open");
+    key(ctx, "MetaLeft", true)?;
+    key(ctx, "MetaLeft", false)?;
+    expect_more(ctx, "desktop: the launcher is open", opened)?;
+    let line = expect_window(ctx, "Launcher", true)?;
+    let num = |name: &str| {
+        line.split_whitespace()
+            .find_map(|w| w.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(-1)
+    };
+    let (x, y, w) = (num("x"), num("y"), num("w"));
+    let shot = ctx.screenshot()?;
+    if (x + w / 2 - shot.w as i32 / 2).abs() > 1 || (y - shot.h as i32 * 3 / 10).abs() > 1 || w != 560 {
+        return Err(format!("the launcher isn't 560 px wide, centred, 30 % down: {line}"));
+    }
+    if !line.contains("focused=true") {
+        return Err(format!("the launcher doesn't have focus: {line}"));
+    }
+    // Typing shows in the well, and "No app called 'xyz'." below it.
+    let row = |ctx: &mut Ctx, ry: i32, x0: i32, x1: i32| -> Result<Vec<u32>, String> {
+        let shot = ctx.screenshot()?;
+        Ok((x0..x1)
+            .map(|px| {
+                let i = (ry as usize * shot.w as usize + px as usize) * 3;
+                (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
+            })
+            .collect())
+    };
+    let well = |ctx: &mut Ctx| row(ctx, y + 36, x + 24, x + w - 24);
+    let before = well(ctx)?;
+    for k in ["KeyX", "KeyY", "KeyZ"] {
+        key(ctx, k, true)?;
+        key(ctx, k, false)?;
+    }
+    let start = Instant::now();
+    while well(ctx)? == before {
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err("typing didn't show in the launcher's well".into());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    ctx.keep_shot("launcher")?;
+    let message = row(ctx, y + 82, x + 16, x + 300)?.into_iter().filter(|&p| p != dark::COLOR_SURFACE.xrgb()).count();
+    if message < 8 {
+        return Err("no \"No app called 'xyz'.\" under the well".into());
+    }
+    for _ in 0..3 {
+        key(ctx, "Backspace", true)?;
+        key(ctx, "Backspace", false)?;
+    }
+    // Esc closes it; Super opens and closes it again.
+    key(ctx, "Escape", true)?;
+    key(ctx, "Escape", false)?;
+    expect_window(ctx, "Launcher", false)?;
+    for want in [true, false] {
+        key(ctx, "MetaLeft", true)?;
+        key(ctx, "MetaLeft", false)?;
+        expect_window(ctx, "Launcher", want)?;
+    }
+    // Super+T: Terminal isn't in this image yet; the desktop says so.
+    let asked = ctx.log_count("desktop: terminal isn't in this image yet");
+    key(ctx, "MetaLeft", true)?;
+    key(ctx, "KeyT", true)?;
+    key(ctx, "KeyT", false)?;
+    key(ctx, "MetaLeft", false)?;
+    expect_more(ctx, "desktop: terminal isn't in this image yet", asked)?;
+    if windows(ctx)?.iter().any(|l| l.ends_with("title=Launcher")) {
+        return Err("Super+T opened the launcher".into());
+    }
+    Ok(())
+}

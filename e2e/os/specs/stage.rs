@@ -9,14 +9,14 @@ use fui::tokens_gen::{dark, light};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
-struct Win {
-    id: u32,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    focused: bool,
-    z: u32,
+pub(crate) struct Win {
+    pub(crate) id: u32,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    pub(crate) focused: bool,
+    pub(crate) z: u32,
 }
 
 fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
@@ -24,7 +24,7 @@ fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
 }
 
 /// Stage's windows, bottom to top, and its theme.
-fn list(ctx: &Ctx) -> Result<(Vec<Win>, String), String> {
+pub(crate) fn list(ctx: &Ctx) -> Result<(Vec<Win>, String), String> {
     let lines = ctx.door("stage list")?;
     let mut out = Vec::new();
     let mut theme = String::new();
@@ -50,7 +50,7 @@ fn list(ctx: &Ctx) -> Result<(Vec<Win>, String), String> {
     Ok((out, theme))
 }
 
-fn win(ws: &[Win], id: u32) -> Result<Win, String> {
+pub(crate) fn win(ws: &[Win], id: u32) -> Result<Win, String> {
     ws.iter().find(|w| w.id == id).cloned().ok_or(format!("window {id} isn't on screen: {ws:?}"))
 }
 
@@ -62,7 +62,7 @@ fn open(ctx: &Ctx, w: u32, h: u32, rgb: u32, title: &str) -> Result<u32, String>
         .ok_or(format!("stage open said {lines:?}"))
 }
 
-fn ok(ctx: &Ctx, cmd: &str) -> Result<(), String> {
+pub(crate) fn ok(ctx: &Ctx, cmd: &str) -> Result<(), String> {
     let lines = ctx.door(cmd)?;
     if lines != ["ok"] {
         return Err(format!("{cmd}: {lines:?}"));
@@ -90,7 +90,7 @@ fn mouse(ctx: &mut Ctx, params: Vec<(&str, Value)>) -> Result<(), String> {
 
 /// Moves the pointer to (x, y) with the real mouse, in steps, and waits
 /// until stage has it there.
-fn move_to(ctx: &mut Ctx, x: i32, y: i32) -> Result<(), String> {
+pub(crate) fn move_to(ctx: &mut Ctx, x: i32, y: i32) -> Result<(), String> {
     let (mut px, mut py) = pointer(ctx)?;
     let start = Instant::now();
     while (px, py) != (x, y) {
@@ -108,14 +108,14 @@ fn move_to(ctx: &mut Ctx, x: i32, y: i32) -> Result<(), String> {
     Ok(())
 }
 
-fn button(ctx: &mut Ctx, down: bool) -> Result<(), String> {
+pub(crate) fn button(ctx: &mut Ctx, down: bool) -> Result<(), String> {
     let kind = if down { "mousePressed" } else { "mouseReleased" };
     mouse(ctx, vec![("type", kind.into()), ("button", "left".into())])?;
     std::thread::sleep(Duration::from_millis(100));
     Ok(())
 }
 
-fn key(ctx: &mut Ctx, code: &str, down: bool) -> Result<(), String> {
+pub(crate) fn key(ctx: &mut Ctx, code: &str, down: bool) -> Result<(), String> {
     let kind = if down { "keyDown" } else { "keyUp" };
     ctx.cdp.call("Input.dispatchKeyEvent", Value::obj([("type", kind.into()), ("code", code.into())]))?;
     std::thread::sleep(Duration::from_millis(60));
@@ -131,7 +131,7 @@ fn alt(ctx: &mut Ctx, code: &str) -> Result<(), String> {
 }
 
 /// Waits up to 10 s for stage's windows to satisfy `want`.
-fn until(ctx: &Ctx, what: &str, want: impl Fn(&[Win]) -> bool) -> Result<Vec<Win>, String> {
+pub(crate) fn until(ctx: &Ctx, what: &str, want: impl Fn(&[Win]) -> bool) -> Result<Vec<Win>, String> {
     let start = Instant::now();
     loop {
         let (ws, _) = list(ctx)?;
@@ -146,7 +146,7 @@ fn until(ctx: &Ctx, what: &str, want: impl Fn(&[Win]) -> bool) -> Result<Vec<Win
 }
 
 /// Waits up to 10 s for every (x, y) on the screen to be its colour.
-fn expect_pixels(ctx: &mut Ctx, want: &[(i32, i32, u32, &str)]) -> Result<(), String> {
+pub(crate) fn expect_pixels(ctx: &mut Ctx, want: &[(i32, i32, u32, &str)]) -> Result<(), String> {
     let start = Instant::now();
     loop {
         let shot = ctx.screenshot()?;
@@ -287,13 +287,13 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// The screen's pixel at (x, y), 0xRRGGBB.
-fn pixel(ctx: &mut Ctx, x: i32, y: i32) -> Result<u32, String> {
+pub(crate) fn pixel(ctx: &mut Ctx, x: i32, y: i32) -> Result<u32, String> {
     let shot = ctx.screenshot()?;
     let i = (y as usize * shot.w as usize + x as usize) * 3;
     Ok((shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32)
 }
 
-fn green(p: u32) -> bool {
+pub(crate) fn green(p: u32) -> bool {
     crate::greenish((p >> 16) as u8, (p >> 8) as u8, p as u8)
 }
 

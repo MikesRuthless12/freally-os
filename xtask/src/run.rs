@@ -130,6 +130,9 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
         c.args(["-accel", "kvm", "-cpu", "host"]);
     }
     c.args(["-m", &o.memory_mb.to_string(), "-smp", &o.cpus.to_string()]);
+    // The RTC on local time, as Windows keeps it on the OMEN: the Rack's clock
+    // reads the RTC as the time (time zones come with Settings).
+    c.args(["-rtc", "base=localtime"]);
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}"));
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=1,file={}", dir.join("OVMF_VARS_4M.fd").display()));
     // Read-only: the bootloader never writes the ESP, and a writable virtual FAT

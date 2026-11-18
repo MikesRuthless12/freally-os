@@ -84,6 +84,8 @@ struct Stage {
     /// where the cursor was and is.
     refresh: Vec<Rect>,
     cursor: Cursor,
+    /// The desktop's shortcuts channel, once it subscribes.
+    shortcuts: Option<Channel>,
     stamped: bool,
 }
 
@@ -151,6 +153,7 @@ fn run(_bootstrap: u32) -> i64 {
         damage: alloc::vec![Rect::new(0, 0, screen.w, screen.h)],
         refresh: Vec::new(),
         cursor: Cursor::new(screen.w as i32 / 2, screen.h as i32 / 2, Instant::now().as_ns()),
+        shortcuts: None,
         stamped: false,
         screen,
     };
@@ -283,6 +286,28 @@ impl Stage {
                     self.set_scale(sc.pct);
                     Ok((Vec::new(), Vec::new()))
                 })
+            }
+            st::SCREEN => Ok((
+                fwire::to_payload(&st::ScreenInfo {
+                    w: self.screen.w,
+                    h: self.screen.h,
+                    scale_pct: (self.theme.scale * 100.0 + 0.5) as u16,
+                    theme: if self.theme.mode == Mode::Light { st::Theme::Light } else { st::Theme::Dark },
+                }),
+                Vec::new(),
+            )),
+            st::SUBSCRIBE_SHORTCUTS => {
+                if name != "desktop" {
+                    Err((FErr::AccessDenied, "the shortcuts are the desktop's"))
+                } else {
+                    match Channel::pair() {
+                        Ok((mine, theirs)) => {
+                            self.shortcuts = Some(mine);
+                            Ok((fwire::to_payload(&st::Subscribed { events: HandleRef(0) }), alloc::vec![theirs.0]))
+                        }
+                        Err(_) => Err((FErr::NoMemory, "no channel")),
+                    }
+                }
             }
             st::SCREENSHOT => {
                 fwire::from_payload::<st::Screenshot>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|s| {
@@ -552,7 +577,21 @@ impl Stage {
                         let _ = w.events.send(&m, Vec::new());
                     }
                 }
-                Effect::Action(a) => fstd::info!("stage: shortcut {a:?}"),
+                Effect::Action(a) => {
+                    use svc_stage::shortcuts::Action;
+                    let s = match a {
+                        Action::Launcher => Some(st::Shortcut::Launcher),
+                        Action::Monitor => Some(st::Shortcut::Monitor),
+                        Action::Terminal => Some(st::Shortcut::Terminal),
+                        _ => None,
+                    };
+                    fstd::info!("stage: shortcut {a:?}");
+                    if let (Some(s), Some(ch)) = (s, &self.shortcuts)
+                        && let Ok(e) = fwire::event(st::EV_SHORTCUT, &st::ShortcutEvent { shortcut: s })
+                    {
+                        let _ = ch.send(&e, Vec::new());
+                    }
+                }
             }
         }
     }
