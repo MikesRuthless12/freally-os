@@ -18,14 +18,7 @@ use alloc::vec::Vec;
 use fcore_abi::FErr;
 
 /// Signals (bits of an object's signal word).
-pub mod signal {
-    pub const READABLE: u32 = 1 << 0;
-    pub const WRITABLE: u32 = 1 << 1;
-    pub const PEER_CLOSED: u32 = 1 << 2;
-    pub const TERMINATED: u32 = 1 << 3;
-    pub const SIGNALED: u32 = 1 << 4;
-    pub const USER_MASK: u32 = 0xFF00_0000;
-}
+pub use fcore_abi::signal;
 
 /// What an object is (`FErr::WrongType` when a call gets the wrong one).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -27,6 +27,10 @@ ktest = []
 
 [dependencies]
 fcore-abi.workspace = true
+fcrypto.workspace = true
+felf.workspace = true
+fsi.workspace = true
+fwire.workspace = true
 ffont.workspace = true
 fscreen.workspace = true
 

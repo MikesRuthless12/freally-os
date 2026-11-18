@@ -28,6 +28,7 @@ mod fault;
 mod fb;
 mod fmtbuf;
 mod futex;
+mod init;
 mod ipc;
 mod mm;
 mod obj;
@@ -107,6 +108,9 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
     if let Err(e) = mm::frames::init(map) {
         exceptions::stop(e, "The memory map has no room for Freally Core.");
     }
+    // TASK-031: before anything else allocates a frame.
+    // TASK-031: before anything else allocates a frame.
+    fault::claim_last_panic_page();
     if let Err(e) = mm::paging::init(bi, map) {
         exceptions::stop(e, "Freally Core couldn't build its page tables.");
     }
@@ -192,7 +196,12 @@ fn running(bi: &BootInfo) -> ! {
         fscreen::title(&mut f, fcore_abi::VERSION, "Freally Core is running.");
     }
     klog!("freally-core: showing the title");
-    cpu::halt_forever();
+
+    // TASK-030: conductor, PID 1. The boot thread's work is done.
+    if let Err(e) = init::start_conductor() {
+        exceptions::stop(e, "Freally Core couldn't start conductor.");
+    }
+    sched::exit_current()
 }
 
 #[panic_handler]

@@ -34,6 +34,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.seal", boot::seal),
     ("boot.handoff", boot::handoff),
     ("kernel.panic_screen", kernel::panic_screen),
+    ("kernel.last_panic", kernel::last_panic),
+    ("boot.conductor", boot::conductor),
 ];
 
 /// A screen a spec expects, drawn on the host by `fscreen` to compare.
@@ -143,6 +145,28 @@ impl Ctx {
     /// The first COM1 line containing `text`.
     pub fn log_line_with(&self, text: &str) -> Option<String> {
         self.log().lines().find(|l| l.contains(text)).map(String::from)
+    }
+
+    /// A warm reboot (RAM kept), as a restart button does.
+    pub fn reset(&mut self) -> Result<(), String> {
+        self.cdp.call("Page.reload", Value::Obj(Vec::new())).map(|_| ())
+    }
+
+    /// How many COM1 lines contain `text`.
+    pub fn log_count(&self, text: &str) -> usize {
+        self.log().lines().filter(|l| l.contains(text)).count()
+    }
+
+    /// Waits up to 10 s for at least `n` COM1 lines containing `text`.
+    pub fn expect_log_count(&self, text: &str, n: usize) -> Result<(), String> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            if self.log_count(text) >= n {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(format!("COM1 said {text:?} {} times, not {n}", self.log_count(text)))
     }
 
     pub fn expect_no_log(&self, text: &str) -> Result<(), String> {

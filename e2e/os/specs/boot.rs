@@ -36,6 +36,26 @@ pub fn seal(ctx: &mut Ctx) -> Result<(), String> {
 
 /// `@boot.handoff`: boot services exit, the runtime services move to the direct
 /// map, and Freally Core is entered with a BootInfo it accepts (TASK-018).
+/// `@boot.conductor`: Freally Core starts conductor from the image as PID 1
+/// (its ELF re-checked against the TOC, loaded W^X); conductor says it started,
+/// and the kernel stamps C0 when it first enters user mode (TASK-030).
+pub fn conductor(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("freally-core: scheduler ready (SMEP")?;
+    ctx.expect_log("freally-core: conductor started (C0 ")?;
+    ctx.expect_log("[pid 1] conductor: started")?;
+    let line = ctx.log_line_with("conductor started (C0 ").ok_or("no C0 line")?;
+    let ms: u64 = line
+        .split("(C0 ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .ok_or("the C0 line has no time")?;
+    if ms == 0 || ms > 3_000 {
+        return Err(format!("C0 came {ms} ms after B0 (the boot budget is 3,000 ms)"));
+    }
+    ctx.expect_screen(Expect::Title { note: "Freally Core is running." })
+}
+
 pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("freally-boot: boot services exited")?;
     ctx.expect_log("freally-boot: runtime services moved")?;

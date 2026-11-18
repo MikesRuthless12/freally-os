@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "fstd"
-description = "fstd: the Freally standard library."
+description = "fstd: the Freally standard library (log, time, handles, channels, the service client)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[dependencies]
+fcore-abi.workspace = true
+frt.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

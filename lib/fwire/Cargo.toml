@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "fwire"
-description = "fwire: IPC message encoding."
+description = "fwire: IPC message encoding (the 16-byte header, strict payloads, the service protocols)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

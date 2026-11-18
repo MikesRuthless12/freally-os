@@ -70,6 +70,9 @@ fn fixup(rip: u64) -> Option<u64> {
 static EXEC_PROBE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn exception(f: &mut Frame) {
+    if f.is_user() {
+        crate::fault::user_fault(f);
+    }
     if f.vector == 14 && f.error & 0x10 != 0 && EXEC_PROBE.swap(false, Ordering::SeqCst) {
         LAST_FIXED_VECTOR.store(14, Ordering::Relaxed);
         f.rip = probe_exec_fix as *const () as u64;
@@ -101,6 +104,7 @@ pub fn unexpected_interrupt(f: &mut Frame) {
 pub fn stop(what: &str, detail: &str) -> ! {
     cpu::interrupts_off();
     klog!("freally-core: ERROR {what}. {detail}");
+    crate::fault::write_last_panic(what, detail);
     #[cfg(feature = "ktest")]
     crate::test::panicked(what);
     if let Some(info) = crate::boot_info()

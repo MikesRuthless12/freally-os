@@ -6,6 +6,24 @@ use crate::{Ctx, Expect};
 /// `@kernel.panic_screen`: a kernel fault (a deliberate `ud2` in a test build)
 /// stops on the panic screen naming the exception and its RIP; the screen is
 /// drawn exactly as the kernel's own log line describes it (TASK-019).
+/// `@kernel.last_panic`: a kernel panic writes the last-panic page; after a
+/// warm reboot (QMP `system_reset`, RAM kept) the next boot files it as a
+/// fault report from `freally-core` and logs it (TASK-031).
+pub fn last_panic(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.allow_errors(&["An invalid instruction (#UD) in Freally Core"]);
+    ctx.expect_log("freally-core: ERROR An invalid instruction (#UD) in Freally Core at 0xffffffff8")?;
+    ctx.expect_no_log("freally-core: the last boot stopped:")?;
+    ctx.reset()?;
+    ctx.expect_log("freally-core: the last boot stopped: An invalid instruction (#UD) in Freally Core at 0xffffffff8")?;
+    ctx.expect_log("freally-core: fault in freally-core (pid 0)")?;
+    // The test build stops again on the same ud2: one report per boot, never two.
+    ctx.expect_log_count("freally-core: ERROR An invalid instruction (#UD)", 2)?;
+    if ctx.log_count("the last boot stopped:") != 1 {
+        return Err("the last-panic page was filed more than once".into());
+    }
+    Ok(())
+}
+
 pub fn panic_screen(ctx: &mut Ctx) -> Result<(), String> {
     ctx.allow_errors(&["An invalid instruction (#UD) in Freally Core"]);
     ctx.expect_log("freally-core: ERROR An invalid instruction (#UD) in Freally Core at 0xffffffff8")?;

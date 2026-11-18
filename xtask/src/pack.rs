@@ -6,7 +6,7 @@ use crate::keys::{self, KeyName};
 use crate::util;
 use fcore_abi::Flavour;
 use fsi::{ImageBuilder, Kind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The key that signs a flavour's image. Release uses staging until `v0.8.0`.
@@ -50,7 +50,8 @@ pub fn build_facts() -> Result<([u8; 20], u64), String> {
 }
 
 /// Packs the flavour's image, unsigned, with `key_id` set for its signing key.
-pub fn pack(flavour: Flavour, out: &Path, kernel: &Path) -> Result<(), String> {
+/// `user` lists each user program: its image path, its kind and its built ELF.
+pub fn pack(flavour: Flavour, out: &Path, kernel: &Path, user: &[(String, Kind, PathBuf)]) -> Result<(), String> {
     let (build_id, created) = build_facts()?;
     let public = keys::committed_public(signing_key(flavour))?;
     let root = util::repo_root();
@@ -65,6 +66,10 @@ pub fn pack(flavour: Flavour, out: &Path, kernel: &Path) -> Result<(), String> {
     b.add("/system/NOTICE", Kind::Data, 0, notice);
     let elf = std::fs::read(kernel).map_err(|e| format!("{}: {e} (build it: cargo xtask build)", kernel.display()))?;
     b.add("/system/kernel", Kind::Kernel, 0, elf);
+    for (path, kind, elf) in user {
+        let bytes = std::fs::read(elf).map_err(|e| format!("{}: {e}", elf.display()))?;
+        b.add(path, *kind, 0, bytes);
+    }
     let image = b.build(&public)?;
     std::fs::write(out, image).map_err(|e| format!("can't write {}: {e}", out.display()))
 }
@@ -87,7 +92,9 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    pack(flavour, &out, &crate::build::kernel_path())?;
+    let programs: Vec<&crate::build::UserProgram> = crate::build::PROGRAMS.iter().collect();
+    let user = crate::build::build_user(&programs)?;
+    pack(flavour, &out, &crate::build::kernel_path(), &user)?;
     println!("pack: {} (unsigned, for the {} key)", out.display(), signing_key(flavour).as_str());
     Ok(())
 }

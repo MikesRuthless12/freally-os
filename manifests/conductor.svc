@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Conductor is PID 1: Freally Core starts it from the image, with every grant.
+name        = conductor
+binary      = /system/conductor
+description = Starts every other service, restarts any that fail, and keeps their fault reports.
+start       = boot
+restart     = never
+class       = normal
+grants      = process-create, realtime, dma, faults
+flavours    = release, dev, e2e

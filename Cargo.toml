@@ -27,6 +27,10 @@ ffont = { path = "lib/ffont" }
 fscreen = { path = "lib/fscreen" }
 fimage = { path = "lib/fimage" }
 fjson = { path = "lib/fjson" }
+felf = { path = "lib/felf" }
+frt = { path = "lib/frt" }
+fstd = { path = "lib/fstd" }
+fwire = { path = "lib/fwire" }
 cdp-proto = { path = "tools/cdp-proto" }
 
 [workspace.lints.rust]

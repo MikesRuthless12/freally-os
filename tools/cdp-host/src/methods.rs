@@ -12,6 +12,8 @@ pub fn call(qmp: &mut Qmp, shot_dir: &Path, method: &str, params: &Value) -> Res
         "Page.captureScreenshot" => screenshot(qmp, shot_dir, params).map_err(|e| (-32000, e)),
         "Input.dispatchKeyEvent" => key(qmp, params).map_err(|e| (-32000, e)),
         "Input.dispatchMouseEvent" => mouse(qmp, params).map_err(|e| (-32000, e)),
+        // A warm reboot: QMP `system_reset` keeps RAM (the last-panic page survives it).
+        "Page.reload" => qmp.execute("system_reset", None).map(|_| Value::Obj(Vec::new())).map_err(|e| (-32000, e)),
         "Target.getTargets" => Ok(Value::obj([("targetInfos", Value::Arr(vec![desktop_target()]))])),
         "Freally.quit" => {
             let _ = qmp.execute("quit", None);

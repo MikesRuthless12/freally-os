@@ -252,3 +252,25 @@ pub fn verify<'a>(image: &'a [u8], trusted: &[[u8; 32]]) -> Result<Verified<'a>,
 
     Ok(Verified { header, key_index, image })
 }
+
+/// One file of an image the bootloader has already verified in full (the
+/// signature, every Merkle block, every TOC hash), checked again on its own:
+/// the header and TOC must add up, and the file's bytes must match its TOC
+/// hash. For Freally Core, which starts conductor from that same image in
+/// memory; this re-checks, it never stands in for `verify`.
+pub fn recheck_file<'a>(image: &'a [u8], path: &str) -> Result<(TocEntry, &'a [u8]), FsiError> {
+    let h = Header::parse(image)?;
+    let toc_end = h.toc_offset.checked_add(h.toc_len).ok_or(FsiError::BadLayout)?;
+    if toc_end > h.tree_offset || h.tree_offset > image.len() as u64 || !h.toc_len.is_multiple_of(TOC_ENTRY_LEN as u64)
+    {
+        return Err(FsiError::BadLayout);
+    }
+    let toc = &image[h.toc_offset as usize..toc_end as usize];
+    toc::check(toc, image.len() as u64, h.tree_offset)?;
+    let e = TocIter::new(toc).find(|e| e.path() == path).ok_or(FsiError::BadToc)?;
+    let bytes = &image[e.offset as usize..(e.offset + e.len) as usize];
+    if !ct::eq(&sha256(bytes), &e.sha256) {
+        return Err(FsiError::BadFile);
+    }
+    Ok((e, bytes))
+}

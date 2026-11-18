@@ -154,6 +154,20 @@ pub fn free(phys: u64) {
     free_contig(phys, 1)
 }
 
+/// Takes one particular frame out of the free pool. False if it isn't free
+/// (not usable RAM, or already taken).
+pub fn reserve(phys: u64) -> bool {
+    let mut g = FRAMES.lock();
+    let Some(f) = g.as_mut() else { return false };
+    let fr = phys / FRAME;
+    if fr >= f.frames || f.used(fr) {
+        return false;
+    }
+    f.set(fr, true);
+    f.free -= 1;
+    true
+}
+
 /// Free frames now.
 pub fn free_count() -> u64 {
     FRAMES.lock().as_ref().map_or(0, |f| f.free)

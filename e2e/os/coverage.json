@@ -3,6 +3,7 @@
   "about": "Every feature of Freally OS, one tagged spec each, driven over CDP by tools/cdp-runner. A feature without a spec, or a spec without a feature, fails the run.",
   "setups": {
     "e2e": { "flavour": "e2e" },
+    "dev": { "flavour": "dev" },
     "e2e-tampered": { "flavour": "e2e", "tamper": 9000 },
     "release": { "flavour": "release" },
     "release-with-dev-image": { "flavour": "release", "image_from": "dev" },
@@ -50,6 +51,20 @@
       "setup": "e2e-crash-ud2",
       "spec": "e2e/os/specs/kernel.rs",
       "what": "A kernel fault stops on the panic screen in Noto, naming the exception, its RIP and the machine state, drawn exactly as the kernel logs it."
+    },
+    {
+      "id": "kernel.last_panic",
+      "task": "TASK-031",
+      "setup": "e2e-crash-ud2",
+      "spec": "e2e/os/specs/kernel.rs",
+      "what": "A kernel panic survives a warm reboot: the next boot finds the last-panic page, files it as a fault report from freally-core, and logs it once."
+    },
+    {
+      "id": "boot.conductor",
+      "task": "TASK-030",
+      "setup": "dev",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "Freally Core starts conductor from the image as PID 1, its ELF re-checked and loaded W^X; conductor says it started and C0 is stamped."
     }
   ]
 }

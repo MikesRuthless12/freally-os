@@ -275,6 +275,14 @@ pub mod layout {
     pub const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
     /// The kernel's boot stack (in the direct map), in bytes.
     pub const BOOT_STACK: u64 = 64 * 1024;
+    /// User programs are linked here (`--image-base`).
+    pub const USER_IMAGE_BASE: u64 = 0x40_0000;
+    /// The top of a program's first stack; the page under its bottom stays unmapped.
+    pub const USER_STACK_TOP: u64 = 0x7FFF_FFF0_0000;
+    /// The size of a program's first stack, in bytes.
+    pub const USER_STACK: u64 = 256 * 1024;
+    /// The last-panic page (physical): a kernel panic writes it, the next boot reads it.
+    pub const LAST_PANIC_PHYS: u64 = 0x0400_0000;
 }
 
 /// UEFI memory types the bootloader allocates with (the OS-loader range,
@@ -288,6 +296,16 @@ pub mod memtype {
     pub const IMAGE: u32 = 0x8000_0003;
 }
 
+/// Signal bits on objects; user space may set and clear only `USER_MASK`.
+pub mod signal {
+    pub const READABLE: u32 = 1 << 0;
+    pub const WRITABLE: u32 = 1 << 1;
+    pub const PEER_CLOSED: u32 = 1 << 2;
+    pub const TERMINATED: u32 = 1 << 3;
+    pub const SIGNALED: u32 = 1 << 4;
+    pub const USER_MASK: u32 = 0xFF00_0000;
+}
+
 /// Handles every process is started with.
 pub mod well_known {
     /// The channel the process was started with (to conductor, for services).
@@ -296,7 +314,19 @@ pub mod well_known {
     pub const SELF_PROCESS: u32 = 2;
     /// The process's own address space (MAP).
     pub const SELF_ASPACE: u32 = 3;
+    /// Conductor only: the root resource (every hardware resource derives from it).
+    pub const ROOT_RESOURCE: u32 = 4;
+    /// Conductor only: the verified system image, read-only.
+    pub const IMAGE_VMO: u32 = 5;
+    /// Conductor only: the BootInfo page, read-only.
+    pub const BOOTINFO_VMO: u32 = 6;
+    /// Conductor only: the event the kernel signals (bit 24) when it files a fault report.
+    pub const FAULTS_EVENT: u32 = 7;
 }
+
+/// A user panic ends in `ud2` with RAX = this, RDI = the message, RSI = its
+/// length: the kernel files a `Panic` fault report with that message.
+pub const USER_PANIC_MAGIC: u64 = u64::from_le_bytes(*b"FPANIC!!");
 
 /// `clock_get` clocks.
 pub mod clock {
@@ -331,6 +361,28 @@ pub mod grant {
 }
 
 impl FErr {
+    /// The error a negative system-call result stands for.
+    pub fn from_code(v: i64) -> FErr {
+        match v {
+            -1 => FErr::BadHandle,
+            -2 => FErr::WrongType,
+            -3 => FErr::AccessDenied,
+            -4 => FErr::InvalidArgs,
+            -5 => FErr::NoMemory,
+            -6 => FErr::TimedOut,
+            -7 => FErr::PeerClosed,
+            -8 => FErr::ShouldWait,
+            -9 => FErr::BufferTooSmall,
+            -10 => FErr::NotFound,
+            -11 => FErr::AlreadyExists,
+            -12 => FErr::NotSupported,
+            -13 => FErr::Busy,
+            -14 => FErr::BadState,
+            -15 => FErr::Integrity,
+            _ => FErr::Internal,
+        }
+    }
+
     /// A short, plain description.
     pub fn describe(self) -> &'static str {
         match self {

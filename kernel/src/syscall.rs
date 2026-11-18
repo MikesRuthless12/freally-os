@@ -534,16 +534,21 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
 }
 
 /// The kernel side of a user thread before its first entry to ring 3.
-extern "C" fn user_thread_entry(start: u64) {
+pub extern "C" fn user_thread_entry(start: u64) {
     // SAFETY: `start` is a Box<[u64; 3]> leaked by start_user_thread.
     let s = unsafe { alloc::boxed::Box::from_raw(start as *mut [u64; 3]) };
     let [rip, rsp, arg] = *s;
-    crate::timeline::first_user_entry();
+    let pid = crate::sched::current()
+        .and_then(|t| t.process.lock().as_ref().and_then(|p| proc::as_process(p).ok().map(|x| x.pid)))
+        .unwrap_or(0);
+    if crate::init::is_conductor(pid) {
+        crate::timeline::first_user_entry();
+    }
     // SAFETY: the thread's address space is active (the scheduler switched to it).
     unsafe { enter_user(rip, rsp, arg) }
 }
 
-fn start_user_thread(t: &crate::sched::ThreadRef, rip: u64, rsp: u64, arg: u64) -> Result<(), FErr> {
+pub fn start_user_thread(t: &crate::sched::ThreadRef, rip: u64, rsp: u64, arg: u64) -> Result<(), FErr> {
     if !canonical(rip) || rip >= crate::mm::aspace::USER_TOP || rsp >= crate::mm::aspace::USER_TOP {
         return Err(FErr::InvalidArgs);
     }

@@ -117,6 +117,22 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
             ));
         }
     }
+    if !fast {
+        g.push((
+            "clippy user",
+            Box::new(|| {
+                // User space on its own target: the runtime's `target_os = "none"`
+                // code (`_start`, the heap, the panic path) only exists here.
+                let mut c = cargo(&["clippy", "--release"]);
+                c.args(build::user_target_args());
+                for p in build::PROGRAMS.iter().chain(build::TEST_PROGRAMS) {
+                    c.args(["--package", p.package]);
+                }
+                c.args(["--", "-D", "warnings"]);
+                quiet(c).map(|_| "no warnings".into())
+            }),
+        ));
+    }
     g.push((
         "host tests",
         Box::new(move || {

@@ -1,11 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "ftest"
-description = "ftest: the in-OS test harness."
+description = "ftest: the in-OS test harness, and the user test program the kernel's harness runs."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "utest"
+path = "src/bin/utest.rs"
+
+[dependencies]
+fcore-abi.workspace = true
+fstd.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

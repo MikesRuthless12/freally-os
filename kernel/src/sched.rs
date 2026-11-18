@@ -370,16 +370,22 @@ pub fn schedule() {
     };
     cpu::interrupts_off();
     NEED_RESCHED.store(false, Ordering::Relaxed);
-    let (prev, next) = {
+    let (prev, next, reaped) = {
         let mut s = SCHED.lock();
         // Free the stacks of threads that died earlier (never the one running now).
+        // The threads themselves are dropped after the lock is released: the last
+        // reference to a process closes its handles, which can wake other threads.
         let cur_id = s.current.as_ref().map(|t| t.id);
         let zombies: Vec<ThreadRef> = core::mem::take(&mut s.zombies);
+        let mut reaped = Vec::new();
         for z in zombies {
             if Some(z.id) == cur_id {
                 s.zombies.push(z);
-            } else if let Some(slot) = z.stack_slot {
-                free_stack(&mut s, slot);
+            } else {
+                if let Some(slot) = z.stack_slot {
+                    free_stack(&mut s, slot);
+                }
+                reaped.push(z);
             }
         }
         let prev = s.current.clone().expect("a current thread");
@@ -396,8 +402,9 @@ pub fn schedule() {
         s.slice_end = now + crate::time::ns_to_ticks(next.class().slice_ns());
         let wake = s.sleepers.iter().map(|t| t.wake_at.load(Ordering::Relaxed)).min().unwrap_or(u64::MAX);
         arm(s.slice_end.min(wake), now);
-        (prev, next)
+        (prev, next, reaped)
     };
+    drop(reaped);
     if !Arc::ptr_eq(&prev, &next) {
         save_fpu(&prev);
         if next.kstack_top != 0 {

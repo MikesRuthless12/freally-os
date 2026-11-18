@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "frt"
-description = "frt: the user runtime (_start, allocator, syscalls, panic to fault report)."
+description = "frt: the Freally user runtime (_start, system calls, heap, panic to exit)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[dependencies]
+fcore-abi.workspace = true
 
 [lints]
 workspace = true

@@ -42,10 +42,77 @@ fn kernel_rustflags() -> String {
         reproducible_rustflags(),
         format!("-Clink-arg=-T{}", script.display()),
         "-Clink-arg=--build-id=none".into(),
+        // Every input section must be placed by the script: an orphan (a `.got`, once)
+        // lands between the script's symbols, and the kernel's own page tables miss it.
+        "-Clink-arg=--orphan-handling=error".into(),
         "-Crelocation-model=static".into(),
         "-Cforce-frame-pointers=yes".into(),
     ]
     .join("\x1f")
+}
+
+/// User space's flags: a static ELF at `USER_IMAGE_BASE`, each segment on its
+/// own pages (W^X per page), frame pointers kept (fault reports walk them).
+fn user_rustflags() -> String {
+    [
+        reproducible_rustflags(),
+        "-Crelocation-model=static".into(),
+        "-Cforce-frame-pointers=yes".into(),
+        format!("-Clink-arg=--image-base={:#x}", fcore_abi::layout::USER_IMAGE_BASE),
+        "-Clink-arg=--build-id=none".into(),
+        "-Clink-arg=-zseparate-loadable-segments".into(),
+        "-Clink-arg=-zmax-page-size=4096".into(),
+    ]
+    .join("")
+}
+
+/// The user-space target (a JSON spec; core and alloc are built for it with `-Z build-std`).
+pub fn user_target() -> PathBuf {
+    util::repo_root().join("targets/x86_64-freally.json")
+}
+
+/// The cargo arguments every user-space build or check needs.
+pub fn user_target_args() -> Vec<String> {
+    vec![
+        "--target".into(),
+        user_target().display().to_string(),
+        "-Zbuild-std=core,alloc,compiler_builtins".into(),
+        "-Zbuild-std-features=compiler-builtins-mem".into(),
+        "-Zjson-target-spec".into(),
+    ]
+}
+
+/// A user program: its package, its binary, and where it goes in the image.
+pub struct UserProgram {
+    pub package: &'static str,
+    pub bin: &'static str,
+    pub path: &'static str,
+    pub kind: fsi::Kind,
+}
+
+/// Every image has these.
+pub const PROGRAMS: &[UserProgram] = &[UserProgram {
+    package: "svc-conductor",
+    bin: "conductor",
+    path: "/system/conductor",
+    kind: fsi::Kind::Conductor,
+}];
+
+/// Test images (`cargo xtask test`) add these.
+pub const TEST_PROGRAMS: &[UserProgram] =
+    &[UserProgram { package: "ftest", bin: "utest", path: "/system/test/utest", kind: fsi::Kind::App }];
+
+/// Builds user programs; returns each one's image path, kind and built ELF.
+pub fn build_user(programs: &[&UserProgram]) -> Result<Vec<(String, fsi::Kind, PathBuf)>, String> {
+    let mut c = util::cargo();
+    c.env("CARGO_ENCODED_RUSTFLAGS", user_rustflags()).env_remove("RUSTFLAGS");
+    c.args(["build", "--quiet", "--release"]).args(user_target_args());
+    for p in programs {
+        c.args(["--package", p.package, "--bin", p.bin]);
+    }
+    util::run_ok(&mut c)?;
+    let dir = util::target_dir().join("x86_64-freally/release");
+    Ok(programs.iter().map(|p| (p.path.to_string(), p.kind, dir.join(p.bin))).collect())
 }
 
 /// Where the kernel ELF lands.
@@ -109,9 +176,16 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str]) -> R
     // 2. Freally Core.
     let kernel = build_kernel(flavour, kernel_features)?;
 
-    // 3. The image, packed and signed.
+    // 3. User space: conductor, and the test program in test images.
+    let mut programs: Vec<&UserProgram> = PROGRAMS.iter().collect();
+    if kernel_features.contains(&"ktest") {
+        programs.extend(TEST_PROGRAMS);
+    }
+    let user = build_user(&programs)?;
+
+    // 4. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");
-    pack::pack(flavour, &image, &kernel)?;
+    pack::pack(flavour, &image, &kernel, &user)?;
     if signed {
         pack::sign(&image, pack::signing_key(flavour))?;
     }

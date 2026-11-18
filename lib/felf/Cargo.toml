@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "felf"
+description = "felf: reads a static x86-64 ELF's loadable segments, W^X checked (no_std, no allocation)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
