@@ -29,7 +29,14 @@ pub fn reproducible_rustflags() -> String {
     .join("\x1f")
 }
 
+/// Builds and signs a flavour.
 pub fn build(flavour: Flavour) -> Result<Built, String> {
+    build_with(flavour, true)
+}
+
+/// `signed = false` leaves the signature empty: an image no bootloader accepts,
+/// made only where there are no keys (the ci-linux container) to compare hashes.
+pub fn build_with(flavour: Flavour, signed: bool) -> Result<Built, String> {
     let out = util::target_dir().join("freally").join(flavour.name());
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
 
@@ -54,7 +61,9 @@ pub fn build(flavour: Flavour) -> Result<Built, String> {
     // 2. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");
     pack::pack(flavour, &image)?;
-    pack::sign(&image, pack::signing_key(flavour))?;
+    if signed {
+        pack::sign(&image, pack::signing_key(flavour))?;
+    }
     Ok(Built { dir: out, efi, image })
 }
 
@@ -66,5 +75,26 @@ pub fn build_cmd(args: &[String]) -> Result<(), String> {
     println!("build: {} → {}", flavour.name(), b.dir.display());
     println!("  BOOTX64.EFI   {:>9} bytes  sha256 {}", efi.len(), util::hex(&fcrypto::sha2::sha256(&efi)));
     println!("  SYSTEM_A.FSI  {:>9} bytes  sha256 {}", img.len(), util::hex(&fcrypto::sha2::sha256(&img)));
+    Ok(())
+}
+
+/// The reproducibility hashes of a build: the bootloader's SHA-256, and the
+/// image's with its 64-byte signature zeroed (the only part made with a secret).
+pub fn hashes(b: &Built) -> Result<(String, String), String> {
+    let efi = std::fs::read(&b.efi).map_err(|e| e.to_string())?;
+    let mut img = std::fs::read(&b.image).map_err(|e| e.to_string())?;
+    if img.len() >= fsi::HEADER_LEN {
+        img[fsi::SIGNED_LEN..fsi::HEADER_LEN].fill(0);
+    }
+    Ok((util::hex(&fcrypto::sha2::sha256(&efi)), util::hex(&fcrypto::sha2::sha256(&img))))
+}
+
+/// `cargo xtask hashes [--unsigned]`: one `hash <flavour> <efi> <content>` line per flavour.
+pub fn hashes_cmd(args: &[String]) -> Result<(), String> {
+    let signed = !args.iter().any(|a| a == "--unsigned");
+    for f in [Flavour::Release, Flavour::Dev, Flavour::E2e] {
+        let (efi, content) = hashes(&build_with(f, signed)?)?;
+        println!("hash {} {efi} {content}", f.name());
+    }
     Ok(())
 }

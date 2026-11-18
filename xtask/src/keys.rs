@@ -166,3 +166,24 @@ pub const STAGING: [u8; 32] = {staging};
     }
     Ok(())
 }
+
+/// A public key as committed in `boot/src/keys.rs`: the one source of truth every
+/// machine shares (the ci-linux container has no secret keys at all).
+pub fn committed_public(name: KeyName) -> Result<[u8; 32], String> {
+    let text =
+        fs::read_to_string(util::repo_root().join("boot/src/keys.rs")).map_err(|e| format!("boot/src/keys.rs: {e}"))?;
+    let marker = match name {
+        KeyName::Dev => "pub const DEV: [u8; 32] = [",
+        KeyName::Staging => "pub const STAGING: [u8; 32] = [",
+    };
+    let start =
+        text.find(marker).ok_or_else(|| format!("boot/src/keys.rs has no {} key", name.as_str()))? + marker.len();
+    let end = start + text[start..].find(']').ok_or("boot/src/keys.rs: unterminated key")?;
+    let bytes: Result<Vec<u8>, String> = text[start..end]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| format!("boot/src/keys.rs: {e}")))
+        .collect();
+    bytes?.try_into().map_err(|_| "boot/src/keys.rs: a key isn't 32 bytes".to_string())
+}

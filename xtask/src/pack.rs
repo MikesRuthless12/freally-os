@@ -52,7 +52,7 @@ pub fn build_facts() -> Result<([u8; 20], u64), String> {
 /// Packs the flavour's image, unsigned, with `key_id` set for its signing key.
 pub fn pack(flavour: Flavour, out: &Path) -> Result<(), String> {
     let (build_id, created) = build_facts()?;
-    let public = keys::load_public(signing_key(flavour))?;
+    let public = keys::committed_public(signing_key(flavour))?;
     let root = util::repo_root();
     let notice = std::fs::read(root.join("NOTICE")).map_err(|e| format!("NOTICE: {e}"))?;
     let mut b = ImageBuilder::new(flavour as u16, fcore_abi::VERSION, build_id, created);

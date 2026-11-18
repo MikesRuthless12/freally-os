@@ -33,7 +33,7 @@ fn cargo(args: &[&str]) -> Command {
     c
 }
 
-pub fn gates(fast: bool, slow: bool) -> Vec<Gate> {
+pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
     let mut g: Vec<Gate> = Vec::new();
     g.push((
         "fmt",
@@ -97,11 +97,15 @@ pub fn gates(fast: bool, slow: bool) -> Vec<Gate> {
     ));
     g.push((
         "flavours",
-        Box::new(|| {
+        Box::new(move || {
             for f in [Flavour::Release, Flavour::Dev, Flavour::E2e] {
-                build::build(f)?;
+                build::build_with(f, !container)?;
             }
-            Ok("all three built, packed and signed".into())
+            Ok(if container {
+                "all three built and packed (no keys in the container)".into()
+            } else {
+                "all three built, packed and signed".into()
+            })
         }),
     ));
     g.push(("no-third-party", Box::new(gates::third_party::check)));
@@ -128,6 +132,7 @@ pub fn gates(fast: bool, slow: bool) -> Vec<Gate> {
 pub fn ci_cmd(args: &[String]) -> Result<(), String> {
     let fast = args.iter().any(|a| a == "--fast");
     let slow = args.iter().any(|a| a == "--slow");
+    let container = args.iter().any(|a| a == "--container");
     let only: Option<Vec<String>> = args
         .iter()
         .find_map(|a| a.strip_prefix("--only="))
@@ -136,7 +141,7 @@ pub fn ci_cmd(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(util::target_dir()).map_err(|e| e.to_string())?;
     std::fs::write(&lock, std::process::id().to_string()).map_err(|e| e.to_string())?;
     let start = Instant::now();
-    let all = gates(fast, slow);
+    let all = gates(fast, slow, container);
     let selected: Vec<&Gate> =
         all.iter().filter(|(n, _)| only.as_ref().is_none_or(|o| o.iter().any(|x| x == n))).collect();
     let (mut green, mut skipped, mut red) = (0, 0, Vec::new());
