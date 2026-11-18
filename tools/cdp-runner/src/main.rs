@@ -25,6 +25,8 @@ mod services;
 mod site_specs;
 #[path = "../../../e2e/os/specs/stage.rs"]
 mod stage;
+#[path = "../../../e2e/os/specs/terminal.rs"]
+mod terminal;
 
 use cdp_proto::Cdp;
 use fjson::Value;
@@ -62,6 +64,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("stage.doors", stage::doors),
     ("desktop.rack", desktop::rack),
     ("desktop.launcher", desktop::launcher),
+    ("terminal.vt", terminal::vt),
+    ("shell.builtins", terminal::builtins),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -394,6 +398,13 @@ fn main() {
         allowed_errors: Vec::new(),
         com3: arg("--com3"),
     };
+    // A cold host (WSL just restarted, its caches empty) can take far longer
+    // than a spec's 10 s to start the VM: wait up to 60 s for the
+    // bootloader's first line (every image prints it, refused or not).
+    let boot = Instant::now();
+    while !ctx.log().contains("freally-boot ") && boot.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
     let mut red = 0;
     let wanted: Vec<&str> = specs.split(',').filter(|s| !s.is_empty()).collect();
     for id in &wanted {

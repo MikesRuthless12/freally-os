@@ -331,18 +331,8 @@ impl Conductor {
             .find(|s| s.m.name == want.name)
             .ok_or((FErr::NotFound, alloc::format!("no service is called {}", want.name)))?;
         // A demand service not running yet starts now; the caller waits for it.
-        if target.endpoint.is_none()
-            && target.m.start == fsvc::Start::Demand
-            && target.child.is_none()
-            && target.start_at.is_none()
-            && matches!(target.state, ServiceState::Waiting | ServiceState::Stopped)
-        {
-            let name = want.name.clone();
-            if let Some(s) = self.services.iter_mut().find(|s| s.m.name == name) {
-                s.start_at = Some(Instant::now().as_ns());
-            }
-            self.start_due();
-            return Err((FErr::ShouldWait, alloc::format!("{name} is starting")));
+        if target.endpoint.is_none() && self.start_on_demand(&want.name) {
+            return Err((FErr::ShouldWait, alloc::format!("{} is starting", want.name)));
         }
         let target = self.services.iter().find(|s| s.m.name == want.name).ok_or((FErr::NotFound, String::new()))?;
         let endpoint =
@@ -405,6 +395,22 @@ impl Conductor {
             self.firmware = self.firmware_times();
             fstd::info!("conductor: boot: {}", boot_line(&self.stages()));
         }
+    }
+
+    /// Starts `name` if it's a `start = demand` service not running and not
+    /// already on its way; true if it was started now.
+    pub fn start_on_demand(&mut self, name: &str) -> bool {
+        let Some(s) = self.services.iter_mut().find(|s| s.m.name == name) else { return false };
+        if s.m.start != fsvc::Start::Demand
+            || s.child.is_some()
+            || s.start_at.is_some()
+            || !matches!(s.state, ServiceState::Waiting | ServiceState::Stopped)
+        {
+            return false;
+        }
+        s.start_at = Some(Instant::now().as_ns());
+        self.start_due();
+        true
     }
 
     /// `stamp`: S3 from stage (its first frame on screen), S4 from the

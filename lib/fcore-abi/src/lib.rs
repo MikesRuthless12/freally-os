@@ -360,6 +360,7 @@ pub mod clock {
 /// `system_info` topics.
 pub mod topic {
     pub const CPU: u64 = 0;
+    /// Free bytes (u64), then the bytes there were to give at boot (u64).
     pub const MEMORY: u64 = 1;
     pub const BOOT_TIMELINE: u64 = 2;
     pub const FIRMWARE_TIMES: u64 = 3;

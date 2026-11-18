@@ -645,8 +645,10 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
             out.extend_from_slice(&crate::time::tsc_hz().to_le_bytes());
         }
         topic::MEMORY => {
+            // Free bytes, then the bytes there were to give at boot.
             let free = crate::mm::frames::free_count() * 4096;
             out.extend_from_slice(&free.to_le_bytes());
+            out.extend_from_slice(&(crate::mm::frames::total_count() * 4096).to_le_bytes());
         }
         topic::BOOT_TIMELINE => {
             for (id, tsc) in crate::timeline::stamps() {

@@ -26,8 +26,12 @@ version = "0.1.0"
 name = "app-terminal"
 version = "0.1.0"
 dependencies = [
+ "app-shell",
+ "fcore-abi",
  "ffont",
+ "fstd",
  "fui",
+ "fwire",
 ]
 
 [[package]]
@@ -55,7 +59,9 @@ dependencies = [
 name = "cdp-runner"
 version = "0.1.0"
 dependencies = [
+ "app-terminal",
  "cdp-proto",
+ "ffont",
  "fimage",
  "fjson",
  "fscreen",

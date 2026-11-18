@@ -145,7 +145,21 @@
       "task": "TASK-059",
       "setup": "e2e",
       "spec": "e2e/os/specs/desktop.rs",
-      "what": "Super opens the launcher, 560 px wide, centred 30 % down, focused; typing shows in its well and 'No app called…' below; Backspace, Esc, Super toggling; Super+T asks for Terminal."
+      "what": "Super opens the launcher, 560 px wide, centred 30 % down, focused; typing filters it; Esc and Super close it; Super+T starts Terminal."
+    },
+    {
+      "id": "terminal.vt",
+      "task": "TASK-060",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/terminal.rs",
+      "what": "A recorded session (16/256/truecolor, the attributes, cursor placing, erasing, wrapping, a scroll region, the title, the alternate screen) leaves the screen it leaves on the host: the text read back, the pixels compared; the real keyboard reaches the shell."
+    },
+    {
+      "id": "shell.builtins",
+      "task": "TASK-061",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/terminal.rs",
+      "what": "Every built-in runs in the terminal and says what it should; each answers --help; mistakes say how; restart isn't in an e2e image; theme and scale reach stage; line editing and history."
     },
     {
       "id": "input.absent",

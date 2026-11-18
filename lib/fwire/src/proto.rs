@@ -518,3 +518,34 @@ pub mod stage {
         pub struct ScreenInfo { pub w: u32, pub h: u32, pub scale_pct: u16, pub theme: Theme }
     }
 }
+
+/// Freally Terminal's test door (TASK-060, e2e images only, conductor's door
+/// only): bytes straight to the screen, keys to the shell, the screen read
+/// back.
+pub mod terminal {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// The program's output, straight to the screen (a recorded sequence).
+    pub const FEED: u32 = 1;
+    /// Bytes as if typed (to the shell).
+    pub const TYPE: u32 = 2;
+    pub const SCREEN: u32 = 3;
+
+    wire_struct! {
+        pub struct Bytes { pub data: Vec<u8> }
+    }
+
+    wire_struct! {
+        /// Each row's text (trailing spaces dropped), the cursor, the
+        /// scrollback's length, and the window's frame on screen.
+        pub struct Screen {
+            pub rows: Vec<String>,
+            pub cursor: (u32, u32),
+            pub scrollback: u32,
+            pub cols: u32,
+            pub window: u32,
+        }
+    }
+}

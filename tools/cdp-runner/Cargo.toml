@@ -13,7 +13,9 @@ fimage.workspace = true
 fjson.workspace = true
 fscreen.workspace = true
 fsi.workspace = true
-fui.workspace = true
+fui = { workspace = true, features = ["ui"] }
+ffont = { workspace = true, features = ["raster"] }
+app-terminal = { path = "../../apps/terminal" }
 
 [lints]
 workspace = true

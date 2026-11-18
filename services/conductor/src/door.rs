@@ -11,6 +11,7 @@
 //! - `bootctl`: the A/B record (`slot A Good 0.4.0`, `active A`, `booted A`);
 //!   `bootctl trial b`: slot B on trial from the next boot (`@boot.fallback`).
 //! - `stage …`: windows through stage's own protocol (`door_stage.rs`).
+//! - `terminal …`: the terminal's screen, fed and read (`door_terminal.rs`).
 //! - `echo <n> [ms]`: `ok`, then the next `n` bytes that arrive go straight
 //!   back. With `ms`, the door first stops reading for that long, so the
 //!   driver's channel fills and it has to hold the line (`@serial.echo`).
@@ -44,6 +45,8 @@ pub struct Door {
     stall_until: u64,
     /// The door's windows (`stage …`).
     stage: crate::door_stage::StageDoor,
+    /// The terminal's test client (`terminal …`).
+    terminal: crate::door_terminal::TermDoor,
 }
 
 impl Door {
@@ -55,6 +58,7 @@ impl Door {
             echo: 0,
             stall_until: 0,
             stage: crate::door_stage::StageDoor::default(),
+            terminal: crate::door_terminal::TermDoor::default(),
         }
     }
 
@@ -283,6 +287,11 @@ impl Door {
             },
             "stage" => {
                 for line in self.stage.run(c, arg) {
+                    self.send(&line);
+                }
+            }
+            "terminal" => {
+                for line in self.terminal.run(c, arg) {
                     self.send(&line);
                 }
             }

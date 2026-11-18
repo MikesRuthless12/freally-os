@@ -17,6 +17,8 @@ struct Frames {
     bits: *mut u64,
     frames: u64,
     free: u64,
+    /// Every frame there was to give at boot: what `free` counts down from.
+    total: u64,
     next: u64,
 }
 
@@ -61,7 +63,7 @@ pub fn init(map: &[MemRegion]) -> Result<(), &'static str> {
     let bits = (home.base + DIRECT_MAP) as *mut u64;
     // SAFETY: `home` is usable RAM, mapped by the direct map, and holds `bytes`.
     unsafe { core::ptr::write_bytes(bits as *mut u8, 0xFF, bytes as usize) };
-    let mut f = Frames { bits, frames, free: 0, next: LOW_RESERVED / FRAME };
+    let mut f = Frames { bits, frames, free: 0, total: 0, next: LOW_RESERVED / FRAME };
     for r in map.iter().filter(|r| r.kind == MemKind::Usable) {
         let first = r.base.div_ceil(FRAME).max(LOW_RESERVED / FRAME);
         let last = (r.base + r.len) / FRAME;
@@ -77,6 +79,7 @@ pub fn init(map: &[MemRegion]) -> Result<(), &'static str> {
             f.free -= 1;
         }
     }
+    f.total = f.free;
     *FRAMES.lock() = Some(f);
     Ok(())
 }
@@ -171,6 +174,11 @@ pub fn reserve(phys: u64) -> bool {
 /// Free frames now.
 pub fn free_count() -> u64 {
     FRAMES.lock().as_ref().map_or(0, |f| f.free)
+}
+
+/// The frames there were to give at boot (the free count's ceiling).
+pub fn total_count() -> u64 {
+    FRAMES.lock().as_ref().map_or(0, |f| f.total)
 }
 
 ktest!(frames_a_million_allocations_lose_nothing, {

@@ -47,10 +47,9 @@ fn expect_more(ctx: &Ctx, text: &str, before: usize) -> Result<(), String> {
 }
 
 /// `@desktop.rack`: the Rack along the screen's foot, stamped S4. Three keys
-/// (the launcher, Terminal, Monitor) from the hardware set, the apps this
-/// image doesn't carry yet at 40 %, each LED unlit; the 12-hour clock in its
-/// well. A key's tooltip after 600 ms ("Not available yet." for an app the
-/// image lacks), gone when the pointer leaves; the launcher key opens the
+/// (the launcher, Terminal, Monitor) from the hardware set, Monitor (not in
+/// this image yet) at 40 %; the 12-hour clock in its well. A key's tooltip
+/// after 600 ms, gone when the pointer leaves; the launcher key opens the
 /// launcher (TASK-059, FR-030).
 pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("desktop: the Rack is up, 3 keys, ")?;
@@ -76,10 +75,12 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
     // Keys at x 8, 56, 104 (40 px): the launcher's face, and the absent apps'
     // faded toward the faceplate.
     let face = |x0: i32| (x0 + 6..x0 + 34).map(|x| luma(at(x, top + 3 + 34))).max().unwrap_or(0);
-    let (launcher, terminal) = (face(8), face(56));
+    let (launcher, terminal, monitor) = (face(8), face(56), face(104));
     let plate = luma(dark::COLOR_SURFACE.xrgb());
-    if launcher <= plate + 8 || terminal >= launcher {
-        return Err(format!("keys: launcher {launcher}, Terminal {terminal}, the faceplate {plate}"));
+    if launcher <= plate + 8 || terminal + 4 < launcher || monitor >= terminal {
+        return Err(format!(
+            "keys: launcher {launcher}, Terminal {terminal}, Monitor {monitor} (not in the image), the faceplate {plate}"
+        ));
     }
     // The clock: green digits in a well at the right.
     let digits = (sw - 200..sw - 24)
@@ -129,7 +130,7 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
 /// `@desktop.launcher`: Super opens the launcher, centred 30 % from the top
 /// and focused; typing fills its well ("No app called 'xyz'." when nothing
 /// matches); Backspace takes it back; Esc closes it, and Super toggles it.
-/// Super+T asks for Terminal, which this image doesn't carry yet (TASK-059).
+/// Super+T starts Terminal, its window opening (TASK-059, TASK-060).
 pub fn launcher(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("desktop: the Rack is up")?;
     let opened = ctx.log_count("desktop: the launcher is open");
@@ -192,13 +193,21 @@ pub fn launcher(ctx: &mut Ctx) -> Result<(), String> {
         key(ctx, "MetaLeft", false)?;
         expect_window(ctx, "Launcher", want)?;
     }
-    // Super+T: Terminal isn't in this image yet; the desktop says so.
-    let asked = ctx.log_count("desktop: terminal isn't in this image yet");
+    // Typing filters: "ter" finds Terminal; Esc closes.
+    key(ctx, "MetaLeft", true)?;
+    key(ctx, "MetaLeft", false)?;
+    expect_window(ctx, "Launcher", true)?;
+    // Super+T starts Terminal (its window opens).
+    key(ctx, "Escape", true)?;
+    key(ctx, "Escape", false)?;
+    expect_window(ctx, "Launcher", false)?;
+    let started = ctx.log_count("desktop: started terminal");
     key(ctx, "MetaLeft", true)?;
     key(ctx, "KeyT", true)?;
     key(ctx, "KeyT", false)?;
     key(ctx, "MetaLeft", false)?;
-    expect_more(ctx, "desktop: terminal isn't in this image yet", asked)?;
+    expect_more(ctx, "desktop: started terminal", started)?;
+    expect_window(ctx, "Terminal", true)?;
     if windows(ctx)?.iter().any(|l| l.ends_with("title=Launcher")) {
         return Err("Super+T opened the launcher".into());
     }

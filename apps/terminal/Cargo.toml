@@ -10,9 +10,22 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "terminal"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
 [dependencies]
+app-shell = { path = "../shell" }
+fcore-abi.workspace = true
 ffont = { workspace = true, features = ["raster"] }
+fstd.workspace = true
 fui = { workspace = true, features = ["ui"] }
+fwire.workspace = true
 
 [lints]
 workspace = true

@@ -277,7 +277,7 @@ impl Stage {
             }
             st::SET_SCALE => {
                 fwire::from_payload::<st::SetScale>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|sc| {
-                    if !matches!(name.as_str(), "settings" | "shell" | "cdpd" | "conductor") {
+                    if !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {
                         return Err((FErr::AccessDenied, "only settings, the shell and cdpd set the scale"));
                     }
                     if !(100..=300).contains(&sc.pct) || sc.pct % 25 != 0 {
@@ -347,7 +347,7 @@ impl Stage {
             }
             st::SET_THEME => {
                 fwire::from_payload::<st::SetTheme>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|t| {
-                    if !matches!(name.as_str(), "settings" | "shell" | "cdpd" | "conductor") {
+                    if !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {
                         return Err((FErr::AccessDenied, "only settings, the shell and cdpd set the theme"));
                     }
                     self.set_theme(t.theme);

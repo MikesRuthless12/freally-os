@@ -11,6 +11,8 @@ mod bootctl;
 mod door;
 #[cfg(feature = "flavour-e2e")]
 mod door_stage;
+#[cfg(feature = "flavour-e2e")]
+mod door_terminal;
 mod faults;
 mod image;
 mod loader;

@@ -108,9 +108,15 @@ ktest!(syscalls_each_succeeds_and_each_error_path_is_reported, {
         if e(call(nr::PROCESS_CREATE, BUF, 5, 0, 0, 0, 0)) != Some(FErr::AccessDenied) {
             return Err("process_create without the grant");
         }
-        let (len, _) = call(nr::SYSTEM_INFO, fcore_abi::topic::MEMORY, BUF, 8, 0, 0, 0)?;
-        if len != 8 {
-            return Err("system_info MEMORY");
+        let (len, _) = call(nr::SYSTEM_INFO, fcore_abi::topic::MEMORY, BUF, 16, 0, 0, 0)?;
+        let mut m = [0u8; 16];
+        crate::mm::user::copy_from_user(&mut m, BUF)?;
+        let (free, total) = (
+            u64::from_le_bytes(m[..8].try_into().unwrap_or_default()),
+            u64::from_le_bytes(m[8..].try_into().unwrap_or_default()),
+        );
+        if len != 16 || free == 0 || free > total {
+            return Err("system_info MEMORY: free, then the total");
         }
         if e(call(nr::SYSTEM_INFO, fcore_abi::topic::FAULTS, BUF, 8, 0, 0, 0)) != Some(FErr::AccessDenied) {
             return Err("system_info FAULTS without the grant");
