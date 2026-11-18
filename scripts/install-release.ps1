@@ -80,6 +80,8 @@ if (-not $Version) {
 if (-not $ReleaseDir) { $ReleaseDir = Join-Path $Repo "target\release\Freally-OS-v$Version" }
 if (-not (Test-Path (Join-Path $ReleaseDir "SHA256SUMS.txt"))) { Fail "no release at $ReleaseDir (run cargo xtask release-local)" }
 
+$Places = @{ "BOOTX64.EFI" = "EFI\BOOT\BOOTX64.EFI"; "SYSTEM_A.FSI" = "FREALLY\SYSTEM_A.FSI" }
+
 # The release's own checksums first: a damaged release is never installed.
 $sums = @{}
 foreach ($line in Get-Content (Join-Path $ReleaseDir "SHA256SUMS.txt")) {
@@ -93,8 +95,6 @@ foreach ($name in $sums.Keys) {
     if ($h -ne $sums[$name]) { Fail "$name in the release doesn't match SHA256SUMS.txt" }
 }
 Write-Host "install-release: release $ReleaseDir verified ($($sums.Count) files)."
-
-$Places = @{ "BOOTX64.EFI" = "EFI\BOOT\BOOTX64.EFI"; "SYSTEM_A.FSI" = "FREALLY\SYSTEM_A.FSI" }
 
 function Install-To([string]$Root, [string]$What) {
     foreach ($name in $sums.Keys) {
