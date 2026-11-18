@@ -17,6 +17,7 @@ mod release;
 mod run;
 mod screen;
 mod showcase;
+mod site;
 mod util;
 
 use std::process::ExitCode;
@@ -42,6 +43,7 @@ cargo xtask <command>
   showcase [tour]                film the real OS from showcase/tours/*.ron into an MP4
   test [--timeout=S]             the kernel's own tests (ktest), in QEMU, one line each
   bench ipc                      the channel round-trip benchmark (target: 5 us median)
+  site-build                     build the docs site (site/, the fleet site kit) and check it
   gate <name>                    one gate: third-party, no-ai, denylist, spdx, private-docs, ladder
 ";
 
@@ -82,6 +84,7 @@ fn main() -> ExitCode {
         Some("showcase") => showcase::showcase_cmd(rest),
         Some("test") => ktest::test_cmd(rest),
         Some("bench") => bench::bench_cmd(rest),
+        Some("site-build") => site::build_cmd(rest),
         Some("gate") => match rest.first().map(String::as_str) {
             Some("third-party") => gates::third_party::check().map(|s| println!("third-party: {s}")),
             Some("no-ai") => gates::content::no_ai().map(|s| println!("no-AI: {s}")),

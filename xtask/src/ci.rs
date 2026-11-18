@@ -203,6 +203,7 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
         }),
     ));
     g.push(("ladder", Box::new(gates::ladder::check)));
+    g.push(("site", Box::new(crate::site::check)));
     g
 }
 

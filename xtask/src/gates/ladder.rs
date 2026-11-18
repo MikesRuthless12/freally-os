@@ -24,12 +24,13 @@ pub fn roadmap_rungs(roadmap: &str) -> Vec<(String, String)> {
         }
         let cells: Vec<&str> = line.split('|').map(str::trim).collect();
         let (Some(v), Some(p)) = (cells.get(1), cells.get(2)) else { continue };
-        let v = v.trim_matches('*').trim_matches('`');
+        // Markdown's bold and code marks aren't part of the version ("`v1.1.0` … `v2.0.0`").
+        let v: String = v.chars().filter(|c| *c != '*' && *c != '`').collect();
         if !v.starts_with('v') {
             continue;
         }
         let phase = p.split(" — ").next().unwrap_or("").trim().to_string();
-        rows.push((v.to_string(), phase));
+        rows.push((v, phase));
     }
     rows
 }
@@ -83,7 +84,7 @@ mod tests {
             vec![
                 ("v0.1.0".to_string(), "0".to_string()),
                 ("v0.30.5".to_string(), "29A".to_string()),
-                ("v1.1.0` … `v2.0.0".to_string(), "Part III".to_string())
+                ("v1.1.0 … v2.0.0".to_string(), "Part III".to_string())
             ]
         );
     }

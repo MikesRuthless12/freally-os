@@ -7,6 +7,11 @@
 # ⛔ Globs, not filenames: a sibling doc whose name an exact path does not match
 # would sit untracked but NOT ignored, one `git add -A` from public.
 
+# ── The docs site: its own private repository (the fleet's way) ──────────
+# Built from the fleet site kit; published by the fleet's publish step from
+# what that repository has pushed. Never part of this repository.
+/site/
+
 # ── Build output ───────────────────────────────────────────────────────────
 /target/
 **/target/

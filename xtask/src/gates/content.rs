@@ -151,13 +151,24 @@ pub fn denylist() -> Result<String, String> {
         }
     }
     // Product names: in what the user reads (screens, string catalogs, the site).
-    let ui: Vec<&PathBuf> = files
+    // The site is its own repository (ignored here), so it's read from disk.
+    let mut ui: Vec<PathBuf> = files
         .iter()
         .filter(|f| {
             let s = f.to_string_lossy();
-            s.starts_with("lib/fscreen/") || s.starts_with("assets/strings/") || s.starts_with("site/")
+            s.starts_with("lib/fscreen/") || s.starts_with("assets/strings/")
         })
+        .cloned()
         .collect();
+    let mut site = Vec::new();
+    util::walk(&root.join("site"), &mut site);
+    for f in site.into_iter().filter(|f| is_text(f)) {
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        if scrubbed_in(&text) {
+            found.push(format!("a scrubbed name in {}", f.display()));
+        }
+        ui.push(f.strip_prefix(&root).map(PathBuf::from).unwrap_or(f));
+    }
     for f in &ui {
         let text = std::fs::read_to_string(root.join(f)).unwrap_or_default();
         for name in PRODUCT_NAMES {
