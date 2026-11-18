@@ -109,6 +109,7 @@ pub fn pack(
     }
     for scale in HARDWARE_SCALES {
         b.add(&format!("/system/assets/hardware-{scale}x.fbnd"), Kind::Asset, 0, hardware_bundle(scale)?);
+        b.add(&format!("/system/assets/os-{scale}x.fbnd"), Kind::Asset, 0, crate::sync_os::os_bundle(scale)?);
     }
     let elf = std::fs::read(kernel).map_err(|e| format!("{}: {e} (build it: cargo xtask build)", kernel.display()))?;
     b.add("/system/kernel", Kind::Kernel, 0, elf);

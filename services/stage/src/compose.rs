@@ -9,8 +9,10 @@
 //! the strip carries its title (cut with "…" when long) and the close
 //! button's "×". Focused, the strip is the raised surface with the title in
 //! the text colour; unfocused, the plain surface with the title muted. All of
-//! it in the theme's tokens: switching theme is composing again. The strip's
-//! rendered art replaces the flat strip when TASK-052's render lands.
+//! it in the theme's tokens: switching theme is composing again. With the OS's
+//! renders (TASK-052) the ground is the theme's wallpaper (scaled once to
+//! cover the screen) and each strip its rendered strip, 9-sliced to the
+//! window; without them (the host tests), the tokens' flat colours.
 
 use crate::windows::{Rect, Window, WindowId, Windows};
 use alloc::string::String;
@@ -141,6 +143,24 @@ fn rounded(px: u32, py: u32, w: u32, h: u32, r: f32) -> f32 {
 pub struct Look<'a, 'f> {
     pub theme: Theme,
     pub fonts: &'a mut Fonts<'f>,
+    /// The theme's renders, if the image carries them.
+    pub art: Option<&'a ThemeArt<'f>>,
+}
+
+/// One theme's renders, as stage draws them: the wallpaper already scaled
+/// to the screen, and the two title strips.
+pub struct ThemeArt<'r> {
+    pub ground: Vec<u32>,
+    pub strip: fimage::fimg::Fimg<'r>,
+    pub strip_focused: fimage::fimg::Fimg<'r>,
+}
+
+/// A window's strip, `w × h`, from its render (XRGB).
+fn strip_pixels(src: &fimage::fimg::Fimg, w: u32, h: u32, under: u32) -> Vec<u32> {
+    let mut px = alloc::vec![under; (w * h) as usize];
+    let mut s = fimage::blit::Surface { px: &mut px, width: w, height: h, stride: w };
+    s.nine(src, 0, 0, w, h);
+    px
 }
 
 impl Look<'_, '_> {
@@ -189,9 +209,14 @@ pub fn compose<'s>(
         return;
     }
     let ground = look.rgb(Tok::Bg);
+    let wall = look.art.map(|a| a.ground.as_slice()).filter(|g| g.len() == (back.w * back.h) as usize);
     for y in area.y..area.bottom() {
         let at = (y as u32 * back.w) as usize;
-        back.px[at + area.x as usize..at + area.right() as usize].fill(ground);
+        let (x0, x1) = (at + area.x as usize, at + area.right() as usize);
+        match wall {
+            Some(g) => back.px[x0..x1].iter_mut().zip(&g[x0..x1]).for_each(|(d, s)| *d = s & 0xFF_FFFF),
+            None => back.px[x0..x1].fill(ground),
+        }
     }
     let focused = windows.focused();
     let mut row = Vec::new();
@@ -205,6 +230,15 @@ pub fn compose<'s>(
         let deco = w.decorated();
         let is_focused = focused == Some(w.id);
         let strip_rgb = look.rgb(if is_focused { Tok::Surface2 } else { Tok::Surface });
+        // The strip's render, 9-sliced to the frame, when the area holds strip.
+        let strip_h = (s.y - w.frame.y).max(0) as u32;
+        let strip_art = match look.art {
+            Some(a) if deco && strip_h > 0 && f.y < s.y => {
+                let src = if is_focused { &a.strip_focused } else { &a.strip };
+                Some(strip_pixels(src, w.frame.w, strip_h, strip_rgb))
+            }
+            _ => None,
+        };
         let base = look.rgb(Tok::Surface);
         let border = look.rgb(Tok::Border);
         let r = look.radius();
@@ -222,7 +256,9 @@ pub fn compose<'s>(
             }
             for x in f.x..f.right() {
                 let content = if deco && y < s.y {
-                    strip_rgb
+                    strip_art.as_ref().map_or(strip_rgb, |a| {
+                        a[((y - w.frame.y) as u32 * w.frame.w + (x - w.frame.x) as u32) as usize] & 0xFF_FFFF
+                    })
                 } else if in_surface && x >= sx0 && x < sx1 {
                     let p = row[(x - sx0) as usize];
                     if deco { over(base, p) } else { over(back.px[out + x as usize], p) }

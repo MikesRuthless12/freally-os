@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 cdp-proto.workspace = true
-fimage.workspace = true
+fimage = { workspace = true, features = ["decode"] }
 fjson.workspace = true
 fscreen.workspace = true
 fsi.workspace = true

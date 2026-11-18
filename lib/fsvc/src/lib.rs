@@ -58,9 +58,10 @@ pub const GRANTS: &[&str] = &[
     "input",
     "serial",
     // Data: the image's fonts, each a read-only VMO; the hardware set's
-    // bundles (one per UI scale).
+    // bundles (one per UI scale); the OS's own renders (TASK-052).
     "fonts",
     "hardware",
+    "os",
 ];
 
 /// Services that may never be in a release image (FR-037).

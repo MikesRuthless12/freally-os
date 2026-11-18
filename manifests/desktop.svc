@@ -6,5 +6,5 @@ start       = boot
 after       = logger, stage
 restart     = always
 class       = interactive
-grants      = fonts, hardware
+grants      = fonts, hardware, os
 flavours    = release, dev, e2e

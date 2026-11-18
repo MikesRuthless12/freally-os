@@ -1,0 +1,82 @@
+{
+  "pieces": {
+    "display_well": {
+      "h": 40,
+      "scale": 4,
+      "slice": [
+        48,
+        48,
+        48,
+        48
+      ],
+      "w": 160
+    },
+    "icon_monitor": {
+      "h": 40,
+      "scale": 4,
+      "slice": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "w": 40
+    },
+    "icon_terminal": {
+      "h": 40,
+      "scale": 4,
+      "slice": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "w": 40
+    },
+    "rack_faceplate": {
+      "h": 56,
+      "scale": 4,
+      "slice": [
+        128,
+        32,
+        128,
+        32
+      ],
+      "w": 256
+    },
+    "title_strip": {
+      "h": 32,
+      "scale": 4,
+      "slice": [
+        64,
+        16,
+        64,
+        16
+      ],
+      "w": 128
+    },
+    "title_strip_focused": {
+      "h": 32,
+      "scale": 4,
+      "slice": [
+        64,
+        16,
+        64,
+        16
+      ],
+      "w": 128
+    },
+    "wallpaper": {
+      "h": 800,
+      "scale": 2,
+      "slice": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "w": 1280
+    }
+  },
+  "scale": 4
+}

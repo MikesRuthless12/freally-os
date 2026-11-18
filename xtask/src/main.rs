@@ -21,6 +21,7 @@ mod site;
 mod specimen;
 mod sync_hardware;
 mod sync_kit;
+mod sync_os;
 mod util;
 mod validate;
 
@@ -76,6 +77,7 @@ fn main() -> ExitCode {
         Some("validate") => validate::validate_cmd(rest),
         Some("sync-kit") => sync_kit::sync_kit_cmd(rest),
         Some("sync-hardware") => sync_hardware::sync_hardware_cmd(rest),
+        Some("sync-os") => sync_os::sync_os_cmd(rest),
         Some("assets") => sync_hardware::assets_cmd(rest),
         Some("specimen") => specimen::specimen_cmd(rest),
         Some("pack") => pack::pack_cmd(rest),

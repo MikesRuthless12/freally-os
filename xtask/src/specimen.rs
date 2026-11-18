@@ -263,7 +263,7 @@ fn stage(out: &std::path::Path, fonts_dir: &std::path::Path) -> Result<(), Strin
         ws.move_to(b, 420, 230);
         let (sa, sb) = ((420u32, 260u32, &back_px[..]), (380u32, 240u32, &front_px[..]));
         let mut back = Back::new(w, h);
-        let mut look = Look { theme: Theme::new(mode, 1.0), fonts: &mut fonts };
+        let mut look = Look { theme: Theme::new(mode, 1.0), fonts: &mut fonts, art: None };
         let area = back.rect();
         let find = |id| match id {
             _ if id == a => Some(&sa as &dyn Pixels),

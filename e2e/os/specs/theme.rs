@@ -5,6 +5,7 @@
 //! the bar's colour in both themes). Pictures of each are kept for a look.
 
 use crate::Ctx;
+use crate::art;
 use crate::stage::{key, move_to};
 use crate::sweep::{attr, q, until_attr, until_gone, until_q};
 use fjson::Value;
@@ -55,7 +56,6 @@ struct Look {
     name: &'static str,
     bg: u32,
     surface: u32,
-    surface2: u32,
     border: u32,
 }
 
@@ -63,14 +63,12 @@ const DARK: Look = Look {
     name: "dark",
     bg: dark::COLOR_BG.xrgb(),
     surface: dark::COLOR_SURFACE.xrgb(),
-    surface2: dark::COLOR_SURFACE_2.xrgb(),
     border: dark::COLOR_BORDER.xrgb(),
 };
 const LIGHT: Look = Look {
     name: "light",
     bg: light::COLOR_BG.xrgb(),
     surface: light::COLOR_SURFACE.xrgb(),
-    surface2: light::COLOR_SURFACE_2.xrgb(),
     border: light::COLOR_BORDER.xrgb(),
 };
 
@@ -81,10 +79,11 @@ fn surfaces(ctx: &mut Ctx, l: &Look) -> Result<(), String> {
     // The pointer out of the way of every sample.
     move_to(ctx, 1275, 5)?;
     let rack = rect(ctx, RACK)?;
+    let plate = |y: i32| art::rack(l.name, (rack.2 as u32, rack.3 as u32), rack.2 / 2, y);
     until_pixels(
         ctx,
         &format!("{}: the ground and the Rack", l.name),
-        &[(5, 5, l.bg), (rack.2 / 2, rack.1, l.border), (rack.2 / 2, rack.1 + 28, l.surface)],
+        &[(5, 5, art::ground(l.name, 5, 5)), (rack.2 / 2, rack.1, plate(0)), (rack.2 / 2, rack.1 + 28, plate(28))],
     )?;
     for (sel, inside) in [(MON, l.surface), (TERM, l.bg)] {
         let id = until_q(ctx, sel)?;
@@ -94,11 +93,14 @@ fn surfaces(ctx: &mut Ctx, l: &Look) -> Result<(), String> {
         let (x, y, w, h) = rect(ctx, sel)?;
         let other = if sel == MON { TERM } else { MON };
         let (ox, oy, ow, _) = rect(ctx, other)?;
-        let mut want = vec![(x + w * 3 / 4, y + 6, l.surface2), (x + w - 5, y + h - 5, inside)];
+        let lit = (x + w * 3 / 4, y + 6);
+        let mut want =
+            vec![(lit.0, lit.1, art::strip(l.name, true, (x, y, w), 32, lit.0, lit.1)), (x + w - 5, y + h - 5, inside)];
         // The other window's strip, dimmed, where this one doesn't cover it.
         let (sx, sy) = (ox + ow * 3 / 4, oy + 6);
         if !(sx >= x && sx < x + w && sy >= y && sy < y + h) {
-            want.push((sx, sy, l.surface));
+            let oy0 = oy;
+            want.push((sx, sy, art::strip(l.name, false, (ox, oy0, ow), 32, sx, sy)));
         }
         until_pixels(ctx, &format!("{}: {sel}", l.name), &want)?;
     }

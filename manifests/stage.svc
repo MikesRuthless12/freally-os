@@ -6,5 +6,5 @@ start       = boot
 after       = logger, devmgr, drv-gop-fb, drv-i8042
 restart     = always
 class       = interactive
-grants      = fonts
+grants      = fonts, os
 flavours    = release, dev, e2e

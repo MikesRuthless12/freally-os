@@ -316,7 +316,8 @@ impl Cdpd {
                 self.logger = fstd::service::connect("logger").ok().map(Client::new);
             }
             let Some(cl) = self.logger.as_mut() else { continue };
-            match cl.call::<_, l::Records>(l::READ, &read, Vec::new(), deadline()) {
+            // A logger busy mirroring a burst to COM1 may take a while: 5 s.
+            match cl.call::<_, l::Records>(l::READ, &read, Vec::new(), Instant::after(Duration::from_secs(5))) {
                 Ok((r, _)) => {
                     answer = Ok(r);
                     break;

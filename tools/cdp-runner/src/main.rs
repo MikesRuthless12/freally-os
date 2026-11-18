@@ -10,6 +10,7 @@
 //! - **The inventory** (every control and service ordinal touched) arrives with
 //!   `cdpd` in Phase 3; Phase 0 has no controls.
 
+mod art;
 mod guard;
 mod inventory;
 mod site;
@@ -111,11 +112,11 @@ pub enum Expect {
     },
     /// One colour everywhere, `0xRRGGBB`.
     Fill(u32),
-    /// The desktop: the ground everywhere but the fleet cursor's square at
-    /// the screen's centre, where the ring must show (TASK-058), and the
-    /// Rack's band along the foot, its faceplate under a border line
-    /// (TASK-059; its keys and clock are `@desktop.rack`'s).
-    Desktop(u32),
+    /// The desktop: the dark wallpaper everywhere but the fleet cursor's
+    /// square at the screen's centre, where the ring must show (TASK-058),
+    /// and the Rack's faceplate along the foot (TASK-059, TASK-052; its keys
+    /// and clock are `@desktop.rack`'s).
+    Desktop,
 }
 
 /// The Rack's height at 100 %.
@@ -312,13 +313,19 @@ impl Ctx {
                 Expect::Panic { ref lines } => {
                     fscreen::panic(&mut c, &[lines[0].as_str(), lines[1].as_str(), lines[2].as_str()])
                 }
-                Expect::Fill(rgb) | Expect::Desktop(rgb) => {
+                Expect::Fill(rgb) => {
                     c.px.fill(rgb);
+                    fscreen::Rect { x: 0, y: 0, w: w as i32, h: h as i32 }
+                }
+                Expect::Desktop => {
+                    for (i, p) in c.px.iter_mut().enumerate() {
+                        *p = art::ground("dark", (i % w) as i32, (i / w) as i32);
+                    }
                     fscreen::Rect { x: 0, y: 0, w: w as i32, h: h as i32 }
                 }
             };
             let (cx, cy) = (w / 2, h / 2);
-            let cursor = matches!(e, Expect::Desktop(_));
+            let cursor = matches!(e, Expect::Desktop);
             let mut diff = 0usize;
             for (i, p) in px.iter().enumerate() {
                 if cursor && (i % w).abs_diff(cx) < CURSOR_BOX && (i / w).abs_diff(cy) < CURSOR_BOX {
@@ -340,16 +347,14 @@ impl Ctx {
             if cursor && !(ring(cx + 16, cy) && ring(cx - 16, cy) && ring(cx, cy + 16) && ring(cx, cy - 16)) {
                 diff += 1;
             }
-            // The Rack: its border line, and its faceplate in the middle (clear
-            // of the keys at the left and the clock at the right).
+            // The Rack: its faceplate's top edge, and its middle (clear of the
+            // keys at the left and the clock at the right).
             let at = |x: usize, y: usize| {
                 let i = (y * w + x) * 3;
                 (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
             };
-            if cursor
-                && (at(cx, h - RACK_H) != fui::tokens_gen::dark::COLOR_BORDER.xrgb()
-                    || at(cx, h - RACK_H / 2) != fui::tokens_gen::dark::COLOR_SURFACE.xrgb())
-            {
+            let plate = |y: usize| art::rack("dark", (w as u32, RACK_H as u32), cx as i32, y as i32);
+            if cursor && (at(cx, h - RACK_H) != plate(0) || at(cx, h - RACK_H / 2) != plate(RACK_H / 2)) {
                 diff += 1;
             }
             if diff == 0 {

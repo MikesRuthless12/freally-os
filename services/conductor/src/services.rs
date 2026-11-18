@@ -132,6 +132,7 @@ impl Conductor {
         let (dir, suffix, prefix) = match grant {
             "fonts" => ("/system/fonts/", ".ttf", "font:"),
             "hardware" => ("/system/assets/hardware-", ".fbnd", "hardware:"),
+            "os" => ("/system/assets/os-", ".fbnd", "os:"),
             _ => return Vec::new(),
         };
         let mut out = Vec::new();
@@ -175,7 +176,7 @@ impl Conductor {
     /// The handles a manifest's grants carry, by name.
     fn granted_handles(&mut self, m: &Manifest) -> Vec<(String, Handle)> {
         let mut out = Vec::new();
-        for g in ["fonts", "hardware"] {
+        for g in ["fonts", "hardware", "os"] {
             if m.grants.iter().any(|x| x == g) {
                 out.extend(self.data_vmos(g));
             }

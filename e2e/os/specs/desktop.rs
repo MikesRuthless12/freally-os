@@ -73,7 +73,8 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
             (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
         };
         let top = h - RACK_H as usize;
-        if px(w / 2, top) == dark::COLOR_BORDER.xrgb() && px(w / 2, top + 28) == dark::COLOR_SURFACE.xrgb() {
+        let plate = |y: i32| crate::art::rack("dark", (w as u32, RACK_H as u32), (w / 2) as i32, y);
+        if px(w / 2, top) == plate(0) && px(w / 2, top + 28) == plate(28) {
             break shot;
         }
         if start.elapsed() > std::time::Duration::from_secs(5) {
@@ -91,7 +92,7 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
     // app missing from the image would fade toward the faceplate).
     let face = |x0: i32| (x0 + 6..x0 + 34).map(|x| luma(at(x, top + 3 + 34))).max().unwrap_or(0);
     let (launcher, terminal, monitor) = (face(8), face(56), face(104));
-    let plate = luma(dark::COLOR_SURFACE.xrgb());
+    let plate = luma(crate::art::rack("dark", (sw as u32, RACK_H as u32), 28, 50));
     if launcher <= plate + 8 || terminal + 4 < launcher || monitor + 4 < launcher {
         return Err(format!(
             "keys: launcher {launcher}, Terminal {terminal}, Monitor {monitor}, the faceplate {plate}"
@@ -126,7 +127,7 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
     let shot = ctx.screenshot()?;
     let i = ((top as usize) * shot.w as usize + shot.w as usize / 2) * 3;
     let edge = (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32;
-    if edge != dark::COLOR_BORDER.xrgb() {
+    if edge != crate::art::rack("dark", (shot.w, RACK_H as u32), (shot.w / 2) as i32, 0) {
         return Err(format!("a tall window covered the Rack: {edge:06x} along its top edge"));
     }
     move_to(ctx, 56 + 21, top + 3 + 20)?;

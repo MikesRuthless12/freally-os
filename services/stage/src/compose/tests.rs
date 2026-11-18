@@ -29,7 +29,7 @@ fn one(mode: Mode, rgb: u32) -> (Back, Windows, Theme) {
     let mut back = Back::new(400, 300);
     let theme = Theme::new(mode, 1.0);
     let mut f = fonts();
-    let mut look = Look { theme, fonts: &mut f };
+    let mut look = Look { theme, fonts: &mut f, art: None };
     let all = back.rect();
     compose(&mut back, all, &ws, &|_| Some(surface as &dyn Pixels), &mut look);
     (back, ws, theme)
@@ -78,7 +78,7 @@ fn an_unfocused_window_wears_the_plain_strip() {
     let theme = Theme::new(Mode::Dark, 1.0);
     let mut f = fonts();
     let all = back.rect();
-    compose(&mut back, all, &ws, &|_| None, &mut Look { theme, fonts: &mut f });
+    compose(&mut back, all, &ws, &|_| None, &mut Look { theme, fonts: &mut f, art: None });
     let _ = a;
     assert_eq!(at(&back, 250, 90), theme.colour(Tok::Surface).xrgb(), "a lost focus to b");
     assert_eq!(at(&back, 150, 150), theme.colour(Tok::Surface).xrgb(), "no pixels yet: the surface colour");
@@ -105,7 +105,7 @@ fn translucent_pixels_lie_over_the_window_s_surface_colour() {
     let theme = Theme::new(Mode::Dark, 1.0);
     let mut f = fonts();
     let all = back.rect();
-    compose(&mut back, all, &ws, &|_| Some(&s as &dyn Pixels), &mut Look { theme, fonts: &mut f });
+    compose(&mut back, all, &ws, &|_| Some(&s as &dyn Pixels), &mut Look { theme, fonts: &mut f, art: None });
     let base = theme.colour(Tok::Surface).xrgb();
     assert_eq!(at(&back, 50, 60), over(base, 0x8080_8080));
 }
@@ -117,7 +117,7 @@ fn only_the_damaged_area_is_composed() {
     back.px.fill(0xABCDEF);
     let theme = Theme::new(Mode::Dark, 1.0);
     let mut f = fonts();
-    compose(&mut back, Rect::new(10, 10, 5, 5), &ws, &|_| None, &mut Look { theme, fonts: &mut f });
+    compose(&mut back, Rect::new(10, 10, 5, 5), &ws, &|_| None, &mut Look { theme, fonts: &mut f, art: None });
     assert_eq!(at(&back, 12, 12), theme.colour(Tok::Bg).xrgb());
     assert_eq!(at(&back, 9, 12), 0xABCDEF, "left of it");
     assert_eq!(at(&back, 15, 12), 0xABCDEF, "right of it");
@@ -148,4 +148,43 @@ fn present_copies_only_the_area_and_swaps_for_rgbx() {
     // SAFETY: as above, stride 4.
     unsafe { present(&back, Rect::new(0, 0, 1, 1), fb.as_mut_ptr(), 4, 1) };
     assert_eq!(fb[0], 0x332211);
+}
+
+#[test]
+fn with_the_renders_the_ground_is_the_wallpaper_and_the_strip_its_art() {
+    // A wallpaper the screen's size, a gradient; a strip 8 x 4 with 2 px
+    // corners, its middle 0x445566 and its corners 0x112233.
+    let wall: Vec<u32> = (0..400 * 300).map(|i| 0xFF00_0000 | (i % 400) << 8 | (i / 400)).collect();
+    let mut sp = Vec::new();
+    for y in 0..4u32 {
+        for x in 0..8u32 {
+            let corner = !(2..6).contains(&x) && !(1..3).contains(&y);
+            let [r, g, b] = if corner { [0x11, 0x22, 0x33] } else { [0x44, 0x55, 0x66] };
+            sp.extend_from_slice(&[b, g, r, 255]);
+        }
+    }
+    let strip_bytes = fimage::fimg::encode(8, 4, 1, [2, 1, 2, 1], &sp);
+    let strip = fimage::fimg::parse(&strip_bytes).unwrap();
+    let art = ThemeArt { ground: wall.clone(), strip, strip_focused: strip };
+    let mut ws = Windows::new(400, 300, 32);
+    ws.create("Terminal", Kind::Normal, (200, 100), (0, 0), (0, 0), ME);
+    let mut back = Back::new(400, 300);
+    let mut f = fonts();
+    let mut look = Look { theme: Theme::new(Mode::Dark, 1.0), fonts: &mut f, art: Some(&art) };
+    let all = back.rect();
+    compose(&mut back, all, &ws, &|_| None, &mut look);
+    assert_eq!(at(&back, 5, 5), wall[5 * 400 + 5] & 0xFF_FFFF, "the wallpaper's pixel, not the token");
+    assert_eq!(at(&back, 390, 290), wall[290 * 400 + 390] & 0xFF_FFFF);
+    // The frame at (100, 84), 200 wide, its strip 32 tall: the strip's
+    // render 9-sliced to it, not the token.
+    let token = Theme::new(Mode::Dark, 1.0).colour(Tok::Surface2).xrgb();
+    let want = strip_pixels(&strip, 200, 32, token);
+    for (x, y) in [(250, 100), (230, 88), (240, 112)] {
+        let got = at(&back, x, y);
+        assert_eq!(got, want[((y - 84) * 200 + (x - 100)) as usize] & 0xFF_FFFF, "the strip at ({x}, {y})");
+        assert_ne!(got, token);
+    }
+    // A damaged corner of the ground alone: still the wallpaper there.
+    compose(&mut back, Rect::new(10, 10, 4, 4), &ws, &|_| None, &mut look);
+    assert_eq!(at(&back, 12, 12), wall[12 * 400 + 12] & 0xFF_FFFF);
 }

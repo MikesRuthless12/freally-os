@@ -130,3 +130,40 @@ fn screen_lightens_at_its_opacity() {
     s.screen(&img(1, 1, [0; 4], &white), 0, 0, 1, 1, 102);
     assert_eq!(dark[0], 0x666666, "40 %");
 }
+
+fn image(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 3]) -> alloc::vec::Vec<u8> {
+    let mut px = alloc::vec::Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let [r, g, b] = f(x, y);
+            px.extend_from_slice(&[b, g, r, 255]);
+        }
+    }
+    crate::fimg::encode(w, h, 1, [0; 4], &px)
+}
+
+#[test]
+fn cover_keeps_a_screen_sized_source_and_fills_any_other() {
+    let bytes = image(8, 5, |x, y| [(x * 30) as u8, (y * 50) as u8, 7]);
+    let src = crate::fimg::parse(&bytes).unwrap();
+    let same = cover(&src, 8, 5);
+    for y in 0..5 {
+        for x in 0..8 {
+            let want = 0xFF00_0000 | (x * 30) << 16 | (y * 50) << 8 | 7;
+            assert_eq!(same[(y * 8 + x) as usize], want, "({x}, {y}) as it was");
+        }
+    }
+    // Twice the size: every pixel filled, the corners the source's corners.
+    let big = cover(&src, 16, 10);
+    assert_eq!(big.len(), 160);
+    assert_eq!(big[0] & 0xFFFFFF, 7, "the top-left stays the source's");
+    assert_eq!(big[159] & 0xFFFFFF, (7 * 30) << 16 | (4 * 50) << 8 | 7, "the bottom-right too");
+    // A taller screen: the sides cropped, the middle column still the
+    // source's middle (columns 3 and 4 between them).
+    let tall = cover(&src, 4, 5);
+    let mid = tall[2] >> 16 & 0xFF;
+    assert!((90..=150).contains(&mid), "the middle of the source, not its edge: {mid}");
+    // A wider screen: the rows cropped, the left edge the source's left.
+    let wide = cover(&src, 16, 5);
+    assert_eq!(wide[0] >> 16 & 0xFF, 0);
+}

@@ -23,7 +23,7 @@ pub fn integrity(ctx: &mut Ctx) -> Result<(), String> {
 pub fn release(ctx: &mut Ctx) -> Result<(), String> {
     // A release image's logs stay off COM1: the screen is the proof it came
     // up, stage's first frame (the ground; the desktop's wallpaper, TASK-059).
-    ctx.expect_screen(Expect::Desktop(fui::tokens_gen::dark::COLOR_BG.xrgb()))?;
+    ctx.expect_screen(Expect::Desktop)?;
     ctx.expect_log("freally-boot 0.1.0 (release)")?;
     ctx.expect_log("signed by the staging key")
 }
@@ -66,7 +66,7 @@ pub fn conductor(ctx: &mut Ctx) -> Result<(), String> {
 fn desktop(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("stage: first frame")?;
     ctx.expect_log("desktop: the Rack is up")?;
-    ctx.expect_screen(Expect::Desktop(fui::tokens_gen::dark::COLOR_BG.xrgb()))
+    ctx.expect_screen(Expect::Desktop)
 }
 
 pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {

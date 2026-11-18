@@ -4,8 +4,9 @@
 //! from stage and from the screen's own pixels, in both themes.
 
 use crate::Ctx;
+use crate::art;
 use fjson::Value;
-use fui::tokens_gen::{dark, light};
+use fui::tokens_gen::dark;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,9 +207,19 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
         &[
             (wb.x + wb.w / 2, wb.y + 32 + wb.h / 2 - 16, 0xA02050, "Beta's surface"),
             (wa.x + 20, wa.y + 60, 0x2050A0, "Alpha's surface"),
-            (wb.x + wb.w - 60, wb.y + 16, dark::COLOR_SURFACE_2.xrgb(), "Beta's focused strip"),
-            (wa.x + 200, wa.y + 16, dark::COLOR_SURFACE.xrgb(), "Alpha's plain strip"),
-            (5, 5, dark::COLOR_BG.xrgb(), "the ground"),
+            (
+                wb.x + wb.w - 60,
+                wb.y + 16,
+                art::strip("dark", true, (wb.x, wb.y, wb.w), 32, wb.x + wb.w - 60, wb.y + 16),
+                "Beta's focused strip",
+            ),
+            (
+                wa.x + 200,
+                wa.y + 16,
+                art::strip("dark", false, (wa.x, wa.y, wa.w), 32, wa.x + 200, wa.y + 16),
+                "Alpha's plain strip",
+            ),
+            (5, 5, art::ground("dark", 5, 5), "the ground"),
         ],
     )?;
 
@@ -240,7 +251,7 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
         ctx,
         &[
             (moved.x + 20, moved.y + 60, 0x2050A0, "Alpha's surface where it went"),
-            (wa.x + 10, wa.y + 10, dark::COLOR_BG.xrgb(), "the ground where it was"),
+            (wa.x + 10, wa.y + 10, art::ground("dark", wa.x + 10, wa.y + 10), "the ground where it was"),
         ],
     )?;
 
@@ -269,7 +280,8 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
     button(ctx, true)?;
     button(ctx, false)?;
     until(ctx, "Alpha closed by its button", |ws| win(ws, a).is_err())?;
-    expect_pixels(ctx, &[(moved.x + 20, moved.y + 60, dark::COLOR_BG.xrgb(), "the ground where Alpha was")])?;
+    let (gx, gy) = (moved.x + 20, moved.y + 60);
+    expect_pixels(ctx, &[(gx, gy, art::ground("dark", gx, gy), "the ground where Alpha was")])?;
 
     // The light theme: the ground and the strip follow it.
     let c = open(ctx, 360, 240, 0x30A060, "Gamma")?;
@@ -278,8 +290,13 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
     expect_pixels(
         ctx,
         &[
-            (5, 5, light::COLOR_BG.xrgb(), "the light ground"),
-            (wc.x + wc.w - 60, wc.y + 16, light::COLOR_SURFACE_2.xrgb(), "Gamma's light strip"),
+            (5, 5, art::ground("light", 5, 5), "the light ground"),
+            (
+                wc.x + wc.w - 60,
+                wc.y + 16,
+                art::strip("light", true, (wc.x, wc.y, wc.w), 32, wc.x + wc.w - 60, wc.y + 16),
+                "Gamma's light strip",
+            ),
             (wc.x + 30, wc.y + 60, 0x30A060, "Gamma's surface"),
         ],
     )?;
@@ -289,7 +306,7 @@ pub fn windows(ctx: &mut Ctx) -> Result<(), String> {
     ok(ctx, "stage theme dark")?;
     ok(ctx, &format!("stage close {c}"))?;
     until(ctx, "Gamma closed", |ws| win(ws, c).is_err())?;
-    expect_pixels(ctx, &[(5, 5, dark::COLOR_BG.xrgb(), "the dark ground again")])
+    expect_pixels(ctx, &[(5, 5, art::ground("dark", 5, 5), "the dark ground again")])
 }
 
 /// The screen's pixel at (x, y), 0xRRGGBB.
@@ -337,7 +354,7 @@ pub fn cursor(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("stage: first frame")?;
     ok(ctx, "stage theme dark")?;
     ok(ctx, "stage scale 100")?;
-    let ground = dark::COLOR_BG.xrgb();
+    let ground = |x: i32, y: i32| art::ground("dark", x, y);
     // On the ground: the ring at 16, nothing inside it but the dot.
     move_to(ctx, 300, 300)?;
     expect_ring(ctx, (300, 300), &[(16, true), (8, false), (22, false)], "the ring at rest")?;
@@ -347,7 +364,10 @@ pub fn cursor(ctx: &mut Ctx) -> Result<(), String> {
     // It follows the mouse; where it was is the ground again.
     move_to(ctx, 420, 300)?;
     expect_ring(ctx, (420, 300), &[(16, true), (8, false)], "the ring where it went")?;
-    expect_pixels(ctx, &[(300 + 16, 300, ground, "where the ring was"), (300, 300, ground, "where the dot was")])?;
+    expect_pixels(
+        ctx,
+        &[(316, 300, ground(316, 300), "where the ring was"), (300, 300, ground(300, 300), "where the dot was")],
+    )?;
 
     // Over the close button: bigger, with a faint fill.
     let w = open(ctx, 360, 240, 0x2050A0, "Cursor")?;
@@ -355,7 +375,7 @@ pub fn cursor(ctx: &mut Ctx) -> Result<(), String> {
     let close = (f.x + f.w - 16, f.y + 16);
     move_to(ctx, close.0, close.1)?;
     expect_ring(ctx, close, &[(24, true), (16, false)], "the ring over the close button")?;
-    let strip = dark::COLOR_SURFACE_2.xrgb();
+    let strip = art::strip("dark", true, (f.x, f.y, f.w), 32, close.0 - 10, close.1);
     let filled = pixel(ctx, close.0 - 10, close.1)?;
     if filled == strip || green(filled) {
         return Err(format!("no faint fill over the close button: {filled:06x}"));
@@ -412,7 +432,8 @@ pub fn doors(ctx: &mut Ctx) -> Result<(), String> {
     if !events(ctx)?.contains(&format!("event {w} scale 150")) {
         return Err("the window wasn't told the scale".into());
     }
-    expect_pixels(ctx, &[(f.x + f.w - 80, f.y + 40, dark::COLOR_SURFACE_2.xrgb(), "the 48 px strip")])?;
+    let (sx, sy) = (f.x + f.w - 80, f.y + 40);
+    expect_pixels(ctx, &[(sx, sy, art::strip("dark", true, (f.x, f.y, f.w), 48, sx, sy), "the 48 px strip")])?;
     let bad = ctx.door("stage scale 110")?.join(" ");
     if !bad.contains("steps of 25") {
         return Err(format!("110 % wasn't refused: {bad}"));

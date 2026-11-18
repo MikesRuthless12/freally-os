@@ -103,6 +103,8 @@ struct Desktop {
     shortcuts: Option<Channel>,
     clock: String,
     stamped: bool,
+    /// The OS's renders, if the image carries them.
+    os: Option<Bundle<'static>>,
     /// The Rack's and the launcher's accessibility trees (TASK-063).
     rack_ax: fstd::ax::Publisher,
     launcher_ax: fstd::ax::Publisher,
@@ -125,6 +127,18 @@ fn fonts() -> Result<Fonts<'static>, String> {
 }
 
 /// The hardware set's bundles, by scale.
+/// The OS's own renders (TASK-052): the Rack's faceplate, the clock's well,
+/// the apps' icons, at 1x.
+fn os_art() -> Option<Bundle<'static>> {
+    fstd::service::data("os:1x").ok().and_then(|b| Bundle::parse(b).ok())
+}
+
+/// One render of the theme's (`dark/<piece>` or `light/<piece>`).
+fn art<'a>(os: Option<&Bundle<'a>>, t: Theme, piece: &str) -> Option<fimage::fimg::Fimg<'a>> {
+    let theme = if t.mode == Mode::Light { "light" } else { "dark" };
+    os?.get(&alloc::format!("{theme}/{piece}")).and_then(|b| fimage::fimg::parse(b).ok())
+}
+
 fn bundles() -> Vec<(u32, Bundle<'static>)> {
     let mut out = Vec::new();
     for n in 1..=3u32 {
@@ -305,6 +319,7 @@ impl Desktop {
             shortcuts,
             clock: String::new(),
             stamped: false,
+            os: os_art(),
             rack_ax: Default::default(),
             launcher_ax: Default::default(),
         };
@@ -336,9 +351,14 @@ impl Desktop {
         self.clock = clock::twelve_hour(fstd::time::utc_ns());
         let text = self.clock.clone();
         let (tw, line) = self.fonts.measure(t, TextStyle::Clock, &text);
+        let plate = art(self.os.as_ref(), t, "rack_faceplate");
+        let well_art = art(self.os.as_ref(), t, "display_well");
         let mut s = self.rack.surface();
         fill(&mut s, Rect::new(0, 0, w, h), face);
-        fill(&mut s, Rect::new(0, 0, w, t.px(1).max(1)), t.colour(Tok::Border).xrgb());
+        match &plate {
+            Some(p) => s.nine(p, 0, 0, w, h),
+            None => fill(&mut s, Rect::new(0, 0, w, t.px(1).max(1)), t.colour(Tok::Border).xrgb()),
+        }
         for (i, (k, p)) in keys.iter().zip(&places).enumerate() {
             let look = if pressed == Some(i) {
                 KeyLook::Press(5)
@@ -367,13 +387,18 @@ impl Desktop {
         let well_h = (line + t.px(4)).min(h - t.px(8));
         let well =
             Rect::new(w as i32 - pad - tw as i32 - 2 * inner, ((h - well_h) / 2) as i32, tw + 2 * inner as u32, well_h);
-        draw::round_rect(&mut s, well, 6.0 * t.scale, t.colour(Tok::Border));
-        draw::round_rect(
-            &mut s,
-            Rect::new(well.x + 1, well.y + 1, well.w - 2, well.h - 2),
-            5.0 * t.scale,
-            t.colour(Tok::Bg),
-        );
+        match &well_art {
+            Some(a) => s.nine(a, well.x, well.y, well.w, well.h),
+            None => {
+                draw::round_rect(&mut s, well, 6.0 * t.scale, t.colour(Tok::Border));
+                draw::round_rect(
+                    &mut s,
+                    Rect::new(well.x + 1, well.y + 1, well.w - 2, well.h - 2),
+                    5.0 * t.scale,
+                    t.colour(Tok::Bg),
+                );
+            }
+        }
         words(
             &mut s,
             &mut self.fonts,
@@ -564,13 +589,22 @@ impl Desktop {
                     t.colour(Tok::Surface2),
                 );
             }
-            words(&mut s, &mut self.fonts, t, TextStyle::Body, (pad, y + t.px(2) as i32), &apps[i].name, Tok::Text);
+            // Its icon, if it has one, and the words beside it.
+            let icon = art(self.os.as_ref(), t, &alloc::format!("icon_{}", apps[i].service));
+            let tx = match &icon {
+                Some(ic) => {
+                    s.draw(ic, pad, y + (row_h - ic.height as i32) / 2);
+                    pad + ic.width as i32 + t.px(12) as i32
+                }
+                None => pad,
+            };
+            words(&mut s, &mut self.fonts, t, TextStyle::Body, (tx, y + t.px(2) as i32), &apps[i].name, Tok::Text);
             words(
                 &mut s,
                 &mut self.fonts,
                 t,
                 TextStyle::Small,
-                (pad, y + t.px(21) as i32),
+                (tx, y + t.px(21) as i32),
                 &apps[i].description,
                 Tok::Text2,
             );

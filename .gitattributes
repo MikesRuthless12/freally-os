@@ -4,6 +4,7 @@
 # Synced kit copies are byte-for-byte; git must never touch their line endings.
 assets/kit/** -text
 assets/hardware/** -text
+assets/os/** -text
 
 # Binaries
 *.png -text

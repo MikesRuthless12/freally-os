@@ -87,6 +87,8 @@ struct Stage {
     /// The desktop's shortcuts channel, once it subscribes.
     shortcuts: Option<Channel>,
     stamped: bool,
+    /// The OS's renders (TASK-052), when the image carries them.
+    art: Option<Art>,
 }
 
 fn rdtsc() -> u64 {
@@ -105,6 +107,35 @@ fn screen() -> Result<Screen, String> {
         .map_err(|e| alloc::format!("mapping the framebuffer: {}", e.describe()))?;
     core::mem::forget(vmo);
     Ok(Screen { px: at as *mut u32, w: info.width, h: info.height, stride: info.stride, format: info.format })
+}
+
+/// The OS's renders (TASK-052) for both themes, from the `os` grant's 1x
+/// bundle; a theme's wallpaper is scaled to the screen the first time it's
+/// shown.
+struct Art {
+    bundle: fimage::bundle::Bundle<'static>,
+    dark: Option<compose::ThemeArt<'static>>,
+    light: Option<compose::ThemeArt<'static>>,
+}
+
+impl Art {
+    fn load() -> Option<Art> {
+        let bytes = fstd::service::data("os:1x").ok()?;
+        let bundle = fimage::bundle::Bundle::parse(bytes).ok()?;
+        Some(Art { bundle, dark: None, light: None })
+    }
+
+    fn for_theme(&mut self, mode: Mode, w: u32, h: u32) -> Option<&compose::ThemeArt<'static>> {
+        let (name, slot) = if mode == Mode::Light { ("light", &mut self.light) } else { ("dark", &mut self.dark) };
+        if slot.is_none() {
+            let get = |piece: &str| {
+                self.bundle.get(&alloc::format!("{name}/{piece}")).and_then(|b| fimage::fimg::parse(b).ok())
+            };
+            let (wall, strip, strip_focused) = (get("wallpaper")?, get("title_strip")?, get("title_strip_focused")?);
+            *slot = Some(compose::ThemeArt { ground: fimage::blit::cover(&wall, w, h), strip, strip_focused });
+        }
+        slot.as_ref()
+    }
 }
 
 fn fonts() -> Result<Fonts<'static>, String> {
@@ -155,6 +186,7 @@ fn run(_bootstrap: u32) -> i64 {
         cursor: Cursor::new(screen.w as i32 / 2, screen.h as i32 / 2, Instant::now().as_ns()),
         shortcuts: None,
         stamped: false,
+        art: Art::load(),
         screen,
     };
     let Ok((listen, give)) = Channel::pair() else { return 1 };
@@ -730,7 +762,9 @@ impl Stage {
         {
             let wins = &self.wins;
             let surface = |id: u32| wins.iter().find(|w| w.id == id).map(|w| &w.pixels as &dyn Pixels);
-            let mut look = Look { theme: self.theme, fonts: &mut self.fonts };
+            let mode = self.theme.mode;
+            let art = self.art.as_mut().and_then(|a| a.for_theme(mode, self.screen.w, self.screen.h));
+            let mut look = Look { theme: self.theme, fonts: &mut self.fonts, art };
             for r in &damage {
                 compose::compose(&mut self.back, *r, &self.desk.windows, &surface, &mut look);
             }

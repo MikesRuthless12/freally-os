@@ -156,5 +156,46 @@ fn fit(a: u32, b: u32, size: u32) -> (u32, u32) {
     (a2, size - a2)
 }
 
+/// `src` (opaque) scaled to cover a `w` × `h` screen, centred, what spills
+/// over cropped: XRGB pixels, row by row. Fixed-point bilinear, so every
+/// build of it (stage's, and the specs' that check it) gives each pixel the
+/// same; a source the screen's size comes through untouched.
+pub fn cover(src: &Fimg, w: u32, h: u32) -> alloc::vec::Vec<u32> {
+    let (iw, ih) = (src.width.max(1) as u64, src.height.max(1) as u64);
+    let (w64, h64) = (w as u64, h as u64);
+    // The scale, screen over source, as num/den: the larger of the two.
+    let (num, den) = if w64 * ih >= h64 * iw { (w64, iw) } else { (h64, ih) };
+    // Each screen pixel's centre in the source, in 16.16, then where the
+    // shown part of the source starts.
+    let axis = |i: u64, screen: u64, size: u64| -> u64 {
+        let shown = screen * den * 65536 / num;
+        let start = (size * 65536).saturating_sub(shown) / 2;
+        let at = start + (2 * i + 1) * den * 65536 / (2 * num);
+        at.saturating_sub(32768).min((size - 1) * 65536)
+    };
+    let xs: alloc::vec::Vec<u64> = (0..w64).map(|x| axis(x, w64, iw)).collect();
+    let mut out = alloc::vec::Vec::with_capacity((w * h) as usize);
+    for y in 0..h64 {
+        let sy = axis(y, h64, ih);
+        let (y0, fy) = (sy >> 16, sy & 0xFFFF);
+        let y1 = (y0 + 1).min(ih - 1);
+        for &sx in &xs {
+            let (x0, fx) = (sx >> 16, sx & 0xFFFF);
+            let x1 = (x0 + 1).min(iw - 1);
+            let p = |x: u64, y: u64| src.at(x as u32, y as u32);
+            let (a, b, c, d) = (p(x0, y0), p(x1, y0), p(x0, y1), p(x1, y1));
+            let mut rgb = 0u32;
+            for (k, shift) in [(0, 0), (1, 8), (2, 16)] {
+                let top = a[k] as u64 * (65536 - fx) + b[k] as u64 * fx;
+                let bottom = c[k] as u64 * (65536 - fx) + d[k] as u64 * fx;
+                let v = (top * (65536 - fy) + bottom * fy + (1 << 31)) >> 32;
+                rgb |= (v.min(255) as u32) << shift;
+            }
+            out.push(0xFF00_0000 | rgb);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;
