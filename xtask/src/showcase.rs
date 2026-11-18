@@ -194,8 +194,10 @@ pub fn film(tour: &Tour) -> Result<std::path::PathBuf, String> {
     // OS's own mode) and fit earlier frames inside it, aspect kept.
     let last = std::fs::read(frames.join(format!("{:05}.ppm", n.saturating_sub(1)))).map_err(|e| e.to_string())?;
     let (w, h, _) = fimage::ppm::parse(&last)?;
-    let fit =
-        format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0x0D0E10");
+    let fit = format!(
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0x{:06X}",
+        fscreen::colours::BACKGROUND
+    );
     util::run_ok(
         Command::new("ffmpeg")
             .args(["-loglevel", "error", "-y", "-framerate", &FPS.to_string(), "-i"])

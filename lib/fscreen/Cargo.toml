@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 ffont.workspace = true
+fui.workspace = true
 
 [lints]
 workspace = true

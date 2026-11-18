@@ -20,12 +20,16 @@ pub const TITLE_PX: f32 = 44.0;
 pub const TEXT_PX: f32 = 18.0;
 
 /// The dark theme's colours (product-vision § 5; the UI kit's tokens win from Phase 3).
+/// The boot screens wear the Freally UI kit's dark theme (they come before
+/// any setting could choose light): its ground, green, words and error red.
 pub mod colours {
-    pub const BACKGROUND: u32 = 0x0D0E10;
-    pub const PRIMARY: u32 = 0x79D920;
-    pub const TEXT: u32 = 0xE6E8EB;
-    pub const TEXT_MUTED: u32 = 0x9BA3AD;
-    pub const ERROR: u32 = 0xFF6B6B;
+    use fui::tokens_gen::dark as kit;
+
+    pub const BACKGROUND: u32 = kit::COLOR_BG.xrgb();
+    pub const PRIMARY: u32 = kit::COLOR_PRIMARY.xrgb();
+    pub const TEXT: u32 = kit::COLOR_TEXT.xrgb();
+    pub const TEXT_MUTED: u32 = kit::COLOR_TEXT_2.xrgb();
+    pub const ERROR: u32 = kit::COLOR_ERROR.xrgb();
 }
 
 /// Pixels the caller owns.

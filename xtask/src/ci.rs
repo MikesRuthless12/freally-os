@@ -225,6 +225,8 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
             }
         }),
     ));
+    g.push(("ui kit", Box::new(crate::sync_kit::gate)));
+    g.push(("contrast", Box::new(crate::sync_kit::contrast_gate)));
     g.push(("ladder", Box::new(gates::ladder::check)));
     g.push(("site", Box::new(crate::site::check)));
     g

@@ -26,6 +26,7 @@ fbootctl = { path = "lib/fbootctl" }
 fsi = { path = "lib/fsi" }
 ffont = { path = "lib/ffont" }
 fscreen = { path = "lib/fscreen" }
+fui = { path = "lib/fui" }
 fimage = { path = "lib/fimage" }
 fjson = { path = "lib/fjson" }
 facpi = { path = "lib/facpi" }
