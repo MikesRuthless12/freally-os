@@ -36,6 +36,29 @@ fn windows_free_gb() -> Option<f64> {
     String::from_utf8_lossy(&out.stdout).trim().replace(',', ".").parse().ok()
 }
 
+/// The Docker CLI: `docker` when this distribution has Docker's WSL integration,
+/// else Windows' `docker.exe` through WSL interop (paths then go as Windows paths).
+fn docker() -> Result<(String, bool), String> {
+    for (prog, windows) in [("docker", false), ("docker.exe", true)] {
+        if Command::new(prog)
+            .args(["version", "--format", "{{.Server.Version}}"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            return Ok((prog.to_string(), windows));
+        }
+    }
+    Err("Docker isn't reachable: start Docker Desktop".into())
+}
+
+/// `path` as the Docker daemon sees it.
+fn docker_path(path: &std::path::Path, windows: bool) -> Result<String, String> {
+    if !windows {
+        return Ok(path.display().to_string());
+    }
+    util::capture(Command::new("wslpath").arg("-w").arg(path)).map(|s| s.trim().to_string())
+}
+
 fn lock_held() -> bool {
     let lock = util::target_dir().join("ci.lock");
     let Ok(pid) = std::fs::read_to_string(&lock) else { return false };
@@ -72,8 +95,9 @@ pub fn ci_linux_cmd(args: &[String]) -> Result<(), String> {
 
     // 3. The container.
     let t = Instant::now();
+    let (docker, windows) = docker()?;
     let docker_ok = util::run(
-        Command::new("docker")
+        Command::new(&docker)
             .current_dir(&root)
             .args(["build", "-q", "-f", "docker/ci-linux.Dockerfile", "-t", IMAGE, "."])
             .stdout(Stdio::null()),
@@ -86,15 +110,15 @@ pub fn ci_linux_cmd(args: &[String]) -> Result<(), String> {
 
     let mem = std::env::var("FREALLYOS_CI_LINUX_MEM").unwrap_or_else(|_| "7424m".into());
     let script = format!(
-        "set -e; git clone -q /src.git /work/fos && cd /work/fos && git checkout -q {head} \
+        "set -e; git config --global --add safe.directory '*'; git clone -q /src.git /work/fos && cd /work/fos && git checkout -q {head} \
          && cargo xtask ci --container && cargo xtask hashes --unsigned"
     );
     let t = Instant::now();
-    let _ = Command::new("docker").args(["rm", "-f", CONTAINER]).stdout(Stdio::null()).stderr(Stdio::null()).status();
-    let out = Command::new("docker")
+    let _ = Command::new(&docker).args(["rm", "-f", CONTAINER]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let out = Command::new(&docker)
         .args(["run", "--rm", "--name", CONTAINER, "--memory", &mem, "--memory-swap", &mem])
         .arg("-v")
-        .arg(format!("{}:/src.git:ro", root.join(".git").display()))
+        .arg(format!("{}:/src.git:ro", docker_path(&root.join(".git"), windows)?))
         .args([IMAGE, "bash", "-lc", &script])
         .output()
         .map_err(|e| format!("can't run docker: {e}"))?;

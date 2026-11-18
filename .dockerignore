@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# The image needs only the pinned toolchain; nothing else (private docs least of all)
+# is ever sent to the Docker daemon. The repository reaches the container as a
+# read-only .git, cloned fresh inside.
+*
+!rust-toolchain.toml
