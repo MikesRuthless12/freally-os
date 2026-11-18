@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fjson"
+description = "Freally's own JSON (RFC 8259) and Base64 (RFC 4648): no_std with alloc, for CDP on the host and the Brain and cdpd in the OS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

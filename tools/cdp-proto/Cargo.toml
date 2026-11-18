@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "cdp-proto"
+description = "What cdp-host and cdp-runner share: HTTP/1.1 requests, WebSocket (RFC 6455) server and client framing, and a CDP connection."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcrypto.workspace = true
+fjson.workspace = true
+
+[lints]
+workspace = true

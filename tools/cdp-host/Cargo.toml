@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "cdp-host"
+description = "cdp-host: Freally OS's Chrome DevTools Protocol endpoint on the host, served from QEMU's QMP (and, from Phase 3, the in-OS test door)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cdp-proto.workspace = true
+fimage.workspace = true
+fjson.workspace = true
+
+[lints]
+workspace = true

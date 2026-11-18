@@ -26,6 +26,8 @@ fsi = { path = "lib/fsi" }
 ffont = { path = "lib/ffont" }
 fscreen = { path = "lib/fscreen" }
 fimage = { path = "lib/fimage" }
+fjson = { path = "lib/fjson" }
+cdp-proto = { path = "tools/cdp-proto" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "cdp-runner"
+description = "cdp-runner: drives Freally OS over CDP, runs the tagged specs in e2e/os, and reports them one by one. Never Playwright."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cdp-proto.workspace = true
+fimage.workspace = true
+fjson.workspace = true
+fscreen.workspace = true
+fsi.workspace = true
+
+[lints]
+workspace = true

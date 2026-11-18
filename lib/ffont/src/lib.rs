@@ -15,6 +15,7 @@
 extern crate alloc;
 
 pub mod atlas;
+#[cfg(feature = "raster")]
 mod fmath;
 #[cfg(feature = "raster")]
 pub mod raster;

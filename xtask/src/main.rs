@@ -4,6 +4,7 @@
 
 mod atlas;
 mod build;
+mod cdp;
 mod doctor;
 mod gates;
 mod keys;
@@ -21,6 +22,7 @@ cargo xtask <command>
   keygen --dev --staging         make the signing keys in ~/.freally-keys/ (never --release)
   build --flavour F              the bootloader and the signed image for release, dev or e2e
   run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket
+  cdp --os [--site] [--only=ids] the CDP legs: every coverage.json feature, spec by spec
   pack --flavour F [--out P]     pack an unsigned image
   sign <image> --key dev|staging sign an image in place
   verify <image>                 verify an image against the dev and staging keys
@@ -57,6 +59,7 @@ fn main() -> ExitCode {
         Some("atlas") => atlas::atlas_cmd(rest),
         Some("screen") => screen::screen_cmd(rest),
         Some("run") => run::run_cmd(rest),
+        Some("cdp") => cdp::cdp_cmd(rest),
         Some("gate") => match rest.first().map(String::as_str) {
             Some("third-party") => gates::third_party::check().map(|s| println!("third-party: {s}")),
             other => Err(format!("unknown gate {other:?}\n{HELP}")),

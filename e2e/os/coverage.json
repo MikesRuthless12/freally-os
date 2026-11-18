@@ -1,0 +1,40 @@
+{
+  "leg": "os",
+  "about": "Every feature of Freally OS, one tagged spec each, driven over CDP by tools/cdp-runner. A feature without a spec, or a spec without a feature, fails the run.",
+  "setups": {
+    "e2e": { "flavour": "e2e" },
+    "e2e-tampered": { "flavour": "e2e", "tamper": 9000 },
+    "release": { "flavour": "release" },
+    "release-with-dev-image": { "flavour": "release", "image_from": "dev" }
+  },
+  "features": [
+    {
+      "id": "boot.title",
+      "task": "TASK-008",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "The bootloader verifies the signed image and paints Freally OS vX.Y.Z in Noto Sans: the whole screen, pixel for pixel."
+    },
+    {
+      "id": "boot.integrity",
+      "task": "TASK-008",
+      "setup": "e2e-tampered",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "One flipped bit in the image gets the integrity screen, with the reason, and nothing from the image runs."
+    },
+    {
+      "id": "boot.release",
+      "task": "TASK-008",
+      "setup": "release",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "A release bootloader boots its staging-signed release image."
+    },
+    {
+      "id": "boot.seal",
+      "task": "TASK-008",
+      "setup": "release-with-dev-image",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "A release bootloader refuses a dev-signed image: a key this computer doesn't trust."
+    }
+  ]
+}

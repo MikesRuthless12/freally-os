@@ -31,6 +31,34 @@ name = "brain-bridge"
 version = "0.1.0"
 
 [[package]]
+name = "cdp-host"
+version = "0.1.0"
+dependencies = [
+ "cdp-proto",
+ "fimage",
+ "fjson",
+]
+
+[[package]]
+name = "cdp-proto"
+version = "0.1.0"
+dependencies = [
+ "fcrypto",
+ "fjson",
+]
+
+[[package]]
+name = "cdp-runner"
+version = "0.1.0"
+dependencies = [
+ "cdp-proto",
+ "fimage",
+ "fjson",
+ "fscreen",
+ "fsi",
+]
+
+[[package]]
 name = "drv-gop-fb"
 version = "0.1.0"
 
@@ -64,6 +92,10 @@ version = "0.1.0"
 
 [[package]]
 name = "fimage"
+version = "0.1.0"
+
+[[package]]
+name = "fjson"
 version = "0.1.0"
 
 [[package]]
@@ -170,6 +202,7 @@ dependencies = [
  "fcrypto",
  "ffont",
  "fimage",
+ "fjson",
  "fscreen",
  "fsi",
 ]
