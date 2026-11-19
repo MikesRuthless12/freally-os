@@ -187,6 +187,21 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
             }
         }),
     ));
+    if slow {
+        g.push((
+            "crash-test",
+            Box::new(move || {
+                // Its image is signed with the dev key, which never goes into the container.
+                if container && !crate::keys::KeyName::Dev.secret_path().exists() {
+                    return Ok(String::from("SKIP: no dev key in the container to sign its image; ci:local runs it"));
+                }
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_nanos() as u64);
+                crate::crash_test::run(1000, seed, false)
+            }),
+        ));
+    }
     g.push((
         "brain-test",
         Box::new(move || {

@@ -19,6 +19,10 @@ flavour-release = []
 flavour-dev = []
 # The test door may make a home and unlock it (conductor's `vfs session`).
 flavour-e2e = []
+# The crash test's image (TASK-099, e2e only): ffs runs the load after it mounts.
+crash-load = []
+# A planted ordering bug the crash test must catch: data after the superblock.
+plant-data-after-superblock = []
 
 [dependencies]
 fcore-abi.workspace = true

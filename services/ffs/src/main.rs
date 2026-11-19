@@ -246,7 +246,44 @@ fn handle(v: &mut Volume<BlockStore>, ordinal: u32, p: &[u8]) -> Result<Vec<u8>,
             let s: f::Subvol = arg(p)?;
             ok(v.lock(s.sv))
         }
+        f::UNMOUNT => {
+            v.commit_clean().map_err(ferr)?;
+            fstd::info!("ffs: unmounted cleanly at generation {}", v.generation());
+            Ok(fwire::to_payload(&()))
+        }
         _ => Err((FErr::NotSupported, String::from("ffs doesn't serve that"))),
+    }
+}
+
+/// The crash test's load (TASK-099): what the mount found, said; then a
+/// transaction after another until the machine is reset. It never returns.
+#[cfg(feature = "crash-load")]
+fn crash_load(v: &mut Volume<BlockStore>) {
+    let found = v.load_open();
+    let said = svc_ffs::load::said(&found);
+    let mut l = match found {
+        Ok(l) => {
+            fstd::info!("ffs: crash-load: {said}");
+            l
+        }
+        Err(_) => {
+            fstd::error!("ffs: crash-load: {said}");
+            loop {
+                fstd::time::sleep(Duration::from_secs(3600));
+            }
+        }
+    };
+    fstd::info!("ffs: crash-load: running");
+    loop {
+        if let Err(e) = v.load_step(&mut l) {
+            fstd::error!("ffs: crash-load: BROKEN: transaction {}: {e:?}", l.version + 1);
+            loop {
+                fstd::time::sleep(Duration::from_secs(3600));
+            }
+        }
+        if l.version % 100 == 0 {
+            fstd::info!("ffs: crash-load: at version {}", l.version);
+        }
     }
 }
 
@@ -266,6 +303,9 @@ fn run(_bootstrap: u32) -> i64 {
             return 1;
         }
     };
+    // The crash test's image (TASK-099): the load, and nothing else.
+    #[cfg(feature = "crash-load")]
+    crash_load(&mut v);
     let Ok((listen, give)) = Channel::pair() else { return 1 };
     if fstd::service::register(give).is_err() {
         return 1;
@@ -316,7 +356,8 @@ fn serve(v: &mut Volume<BlockStore>, who: &str, ch: &Channel) -> bool {
         }
         let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
         let (txid, ordinal) = (h.txid, h.ordinal);
-        let reply = if !trusted(who) {
+        // conductor's clean unmount before Shut down or Restart, in every image.
+        let reply = if !trusted(who) && !(who == "conductor" && ordinal == f::UNMOUNT) {
             Err((FErr::AccessDenied, String::from("files go through vfs")))
         } else {
             handle(v, ordinal, p)

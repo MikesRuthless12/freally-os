@@ -49,6 +49,9 @@ pub struct VmOptions {
     /// (`disk.img`: ESP, FREALLY_SYSTEM_A and _B, FREALLY_DATA) on NVMe,
     /// instead of the files layout's virtual FAT drive.
     pub gpt: bool,
+    /// The GPT disk kept as the last start left it (the crash test's cold
+    /// restarts), instead of made again from the ESP folder.
+    pub keep_disk: bool,
 }
 
 impl VmOptions {
@@ -69,6 +72,7 @@ impl VmOptions {
             edid: None,
             cmdline: None,
             gpt: false,
+            keep_disk: false,
         }
     }
 
@@ -138,11 +142,22 @@ pub fn lay_out(o: &VmOptions, built: &Built) -> Result<PathBuf, String> {
     }
     let vars = dir.join("OVMF_VARS_4M.fd");
     // A VM with a slot B starts from fresh firmware variables: its A/B record
-    // is rebuilt on the first boot, so no earlier run decides how this one starts.
-    if !vars.exists() || o.slot_b.is_some() {
+    // is rebuilt on the first boot, so no earlier run decides how this one
+    // starts. So does one whose store is filling (`vars_full`).
+    if !vars.exists() || o.slot_b.is_some() || std::fs::read(&vars).is_ok_and(|b| vars_full(&b)) {
         copy(Path::new(OVMF_VARS), &vars)?;
     }
     Ok(esp)
+}
+
+/// Whether OVMF's variable store (its first 256 KiB; unwritten flash is
+/// 0xFF) is more than half written. OVMF rewrites its console variables on
+/// every boot, and with the store near full (89 % once) a warm reset hung
+/// before its boot entry (TASK-099's crash test, after about 190 boots).
+fn vars_full(fd: &[u8]) -> bool {
+    const STORE: usize = 0x40000;
+    let store = &fd[..fd.len().min(STORE)];
+    store.iter().rposition(|&b| b != 0xFF).is_some_and(|end| end > STORE / 2)
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
@@ -230,11 +245,42 @@ pub fn start_built(o: &VmOptions, built: &Built) -> Result<Child, String> {
     if let Some(byte) = o.tamper_byte {
         tamper(&esp.join("FREALLY/SYSTEM_A.FSI"), byte)?;
     }
-    if o.gpt {
+    if o.gpt && !(o.keep_disk && o.dir().join("disk.img").exists()) {
         crate::image::disk_from_esp(&esp, &o.dir().join("disk.img"), crate::image::DATA_MIB)?;
     }
     let _ = std::fs::remove_file(o.qmp_socket());
     qemu(o, &esp).spawn().map_err(|e| format!("can't start QEMU: {e}"))
+}
+
+/// As [`start_built`], and for a GPT disk on NVMe waits for the bootloader's
+/// first line: OVMF (QEMU 10.2) misses an NVMe disk on some cold starts, more
+/// with fresh variables ("No bootable option", before any of our code runs;
+/// TASK-092A), so such a start is made again, up to three times, and said.
+pub fn start_booted(o: &VmOptions, built: &Built) -> Result<Child, String> {
+    if !o.gpt {
+        return start_built(o, built);
+    }
+    let mut o = o.clone();
+    for attempt in 1..=3 {
+        let mut child = start_built(&o, built)?;
+        let start = std::time::Instant::now();
+        loop {
+            let log = std::fs::read(o.com1_log()).unwrap_or_default();
+            let text = String::from_utf8_lossy(&log);
+            if text.contains("freally-boot ") {
+                return Ok(child);
+            }
+            if text.contains("BdsDxe: No bootable option") || start.elapsed() > std::time::Duration::from_secs(45) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        println!("run: the firmware didn't find the NVMe disk (OVMF; TASK-092A): QEMU again ({attempt} of 3)");
+        o.keep_disk = true;
+    }
+    Err(String::from("the firmware didn't find the NVMe disk on three cold starts"))
 }
 
 pub fn run_cmd(args: &[String]) -> Result<(), String> {
@@ -263,4 +309,24 @@ pub fn tamper(path: &Path, byte: usize) -> Result<(), String> {
     let b = data.get_mut(byte).ok_or_else(|| format!("the image is shorter than byte {byte}"))?;
     *b ^= 1;
     std::fs::write(path, data).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_firmware_store_past_half_written_is_full() {
+        let mut fd = vec![0xFFu8; 540_672];
+        fd[..100].fill(0x11);
+        assert!(!vars_full(&fd), "a fresh store");
+        fd[..0x40000 * 2 / 5].fill(0x22);
+        assert!(!vars_full(&fd), "40 %");
+        fd[..0x40000 * 3 / 5].fill(0x33);
+        assert!(vars_full(&fd), "60 %");
+        // What follows the store (the fault-tolerant write areas) isn't counted.
+        let mut fd = vec![0xFFu8; 540_672];
+        fd[0x41000..].fill(0);
+        assert!(!vars_full(&fd));
+    }
 }

@@ -36,7 +36,23 @@ fn monitor_says(ctx: &mut Ctx, want: impl Fn(&str) -> bool) -> Result<(), String
 const MON: &str = "WINDOW[data-owner=\"monitor\"]";
 
 fn focused(ctx: &mut Ctx, testid: &str) -> Result<(), String> {
-    until_attr(ctx, &format!("{MON} [data-testid=\"{testid}\"]"), "data-focused", "true")
+    until_attr(ctx, &format!("{MON} [data-testid=\"{testid}\"]"), "data-focused", "true").map_err(|e| {
+        // Which control has it instead.
+        let has = crate::sweep::q(ctx, &format!("{MON} [data-focused=\"true\"]"))
+            .ok()
+            .filter(|&id| id != 0)
+            .and_then(|id| crate::sweep::attr(ctx, id, "data-testid").ok().flatten());
+        // And how Monitor is: running, its CPU time, its memory.
+        let mon = ctx
+            .cdp
+            .call("Freally.getProcesses", fjson::Value::Obj(Vec::new()))
+            .ok()
+            .and_then(|r| r.get("processes").and_then(fjson::Value::as_array).map(<[fjson::Value]>::to_vec))
+            .and_then(|p| p.into_iter().find(|p| p.get("name").and_then(fjson::Value::as_str) == Some("monitor")))
+            .map(|p| p.to_json())
+            .unwrap_or_default();
+        format!("{e} (the focus is on {has:?}; Monitor: {mon})")
+    })
 }
 
 /// `@a11y.keyboard`: Super opens the launcher; typing and Enter start
@@ -57,10 +73,11 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log_count("desktop: started monitor", started + 1)?;
     until_q(ctx, &format!("{MON} TAB"))?;
     until_attr(ctx, MON, "data-focused", "true")?;
-    // Tab: the first control; six more: Sort by Memory; Enter sorts.
+    // Tab: the first control; seven more (the other four tabs, Service,
+    // State): Sort by Memory; Enter sorts.
     press(ctx, "Tab")?;
     focused(ctx, "tab-processes")?;
-    for _ in 0..6 {
+    for _ in 0..7 {
         press(ctx, "Tab")?;
     }
     focused(ctx, "sort-memory")?;
@@ -71,13 +88,17 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     focused(ctx, "sort-state")?;
     press(ctx, "Space")?;
     monitor_says(ctx, |l| l.starts_with("sort State"))?;
-    // Two back: the Log tab; Enter shows it; Tab to the chips, which move
-    // the filter on.
-    with(ctx, "ShiftLeft", "Tab")?;
-    with(ctx, "ShiftLeft", "Tab")?;
+    // Three back (Service, Devices): the Log tab; Enter shows it; Tab to
+    // the chips, which move the filter on.
+    for _ in 0..3 {
+        with(ctx, "ShiftLeft", "Tab")?;
+    }
     focused(ctx, "tab-log")?;
     press(ctx, "Enter")?;
     monitor_says(ctx, |l| l == "tab Log")?;
+    // Past the Devices tab to the chips.
+    press(ctx, "Tab")?;
+    focused(ctx, "tab-devices")?;
     press(ctx, "Tab")?;
     focused(ctx, "chip-service")?;
     press(ctx, "Enter")?;

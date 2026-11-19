@@ -11,6 +11,7 @@ mod build;
 mod cdp;
 mod ci;
 mod ci_linux;
+mod crash_test;
 mod doctor;
 mod fat;
 mod gates;
@@ -47,6 +48,7 @@ cargo xtask <command>
   brain-swap <service> [--crash] swap_service's arguments: the service built for dev, signed with the dev key
   brain-test                     the Brain, every tool, swap, rollback and reboot, against a dev VM (headless)
   cdp --os [--site] [--only=ids] the CDP legs: every coverage.json feature, spec by spec
+  crash-test [--resets=N]        FreallyFS under 1,000 random resets mid-write; each mount whole (--planted: must be red)
   image --gpt [--flavour F]      a whole GPT disk: ESP, FREALLY_SYSTEM_A/B, FREALLY_DATA (--out P, --data-mib N)
   pack --flavour F [--out P]     pack an unsigned image
   sign <image> --key dev|staging sign an image in place
@@ -106,6 +108,7 @@ fn main() -> ExitCode {
         Some("brain-test") => brain_test::brain_test_cmd(rest),
         Some("cdp") => cdp::cdp_cmd(rest),
         Some("boot-check") => boot_check::boot_check_cmd(rest),
+        Some("crash-test") => crash_test::crash_test_cmd(rest),
         Some("version") => version::version_cmd(rest),
         Some("ci") => ci::ci_cmd(rest),
         Some("ci-linux") => ci_linux::ci_linux_cmd(rest),

@@ -37,6 +37,10 @@ pub mod conductor {
     /// `os:150`, `os:wallpaper` (TASK-090A: the art at nine scales, made
     /// into a VMO only when a service first asks).
     pub const DATA: u32 = 15;
+    /// Shut down or Restart (`Power` → `()`; the login screen, the
+    /// desktop): ffs commits clean, then the machine powers off or resets
+    /// (TASK-102).
+    pub const POWER: u32 = 16;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
@@ -113,6 +117,10 @@ pub mod conductor {
     wire_struct! {
         /// `reboot`: into the same slot, or the other.
         pub struct Reboot { pub other_slot: bool }
+    }
+    wire_struct! {
+        /// `power`: off, or a restart.
+        pub struct Power { pub off: bool }
     }
 
     wire_struct! {
@@ -443,6 +451,10 @@ pub mod stage {
             /// screensaver (the desktop's). While one is up, any input ends it
             /// and does nothing else (TASK-077C, FR-091).
             Saver = 5,
+            /// The whole screen, undecorated, over the desktop's panels (the
+            /// Rack) and under popups: Welcome and Login (TASK-102), which
+            /// nothing of the desktop may show through or take a click from.
+            Lock = 6,
         }
     }
 
@@ -864,6 +876,9 @@ pub mod ffs {
     pub const UNLOCK: u32 = 14;
     /// `Subvol` → `()`: commit, then forget the key.
     pub const LOCK: u32 = 15;
+    /// `()` → `()`: a commit with the clean flag (conductor, just before
+    /// Shut down or Restart: the next mount needs no ffsck).
+    pub const UNMOUNT: u32 = 16;
 
     /// Inode kinds as the protocol carries them.
     pub const FILE: u8 = 1;
@@ -1030,6 +1045,20 @@ pub mod accounts {
     pub const CHANGE_PASSWORD: u32 = 5;
     /// `()` → `Who`: the session's account (empty: none).
     pub const SESSION: u32 = 6;
+    /// `Export` → `Exported`: the session's account and home, as a
+    /// `.facct` sealed with its password (re-typed), into
+    /// `/home/<user>/Exports/` (TASK-103; a removable disk first, once
+    /// there's a driver for one).
+    pub const EXPORT: u32 = 7;
+    /// `()` → `Bundles`: the `.facct` files that can be imported:
+    /// `system:<name>` in `/system/imports/`, and (logged in)
+    /// `home:<name>` in the session's `Exports`.
+    pub const BUNDLES: u32 = 8;
+    /// `Open` → `Preview`: what a bundle holds, the whole file checked.
+    pub const PREVIEW: u32 = 9;
+    /// `Import` → `User`: a bundle made into an account (the first is the
+    /// Owner; any other needs the Owner logged in and its password).
+    pub const IMPORT: u32 = 10;
 
     wire_struct! {
         /// One account as the login screen shows it.
@@ -1049,6 +1078,32 @@ pub mod accounts {
     }
     wire_struct! {
         pub struct Who { pub user: User }
+    }
+    wire_struct! {
+        pub struct Export { pub password: String }
+    }
+    wire_struct! {
+        /// Where it went (a path as vfs names it), and its size.
+        pub struct Exported { pub path: String, pub bytes: u64 }
+    }
+    wire_struct! {
+        pub struct Bundles { pub names: Vec<String> }
+    }
+    wire_struct! {
+        pub struct Open { pub name: String, pub password: String }
+    }
+    wire_struct! {
+        pub struct Preview {
+            pub username: String,
+            pub display_name: String,
+            pub files: u64,
+            pub bytes: u64,
+            pub exported_unix: u64,
+        }
+    }
+    wire_struct! {
+        /// `rename`: a username instead of the bundle's (empty: its own).
+        pub struct Import { pub name: String, pub password: String, pub rename: String, pub owner_password: String }
     }
 }
 
@@ -1085,6 +1140,7 @@ pub mod inventory {
                 (c::STAMP, "stamp"),
                 (c::MANIFEST, "manifest"),
                 (c::DATA, "data"),
+                (c::POWER, "power"),
             ],
         ),
         ("logger", &[(l::WRITE, "write"), (l::READ, "read")]),
@@ -1147,6 +1203,7 @@ pub mod inventory {
                 (fs::CREATE_HOME, "create_home"),
                 (fs::UNLOCK, "unlock"),
                 (fs::LOCK, "lock"),
+                (fs::UNMOUNT, "unmount"),
             ],
         ),
         (
@@ -1177,6 +1234,10 @@ pub mod inventory {
                 (acc::LOGOUT, "logout"),
                 (acc::CHANGE_PASSWORD, "change_password"),
                 (acc::SESSION, "session"),
+                (acc::EXPORT, "export"),
+                (acc::BUNDLES, "bundles"),
+                (acc::PREVIEW, "preview"),
+                (acc::IMPORT, "import"),
             ],
         ),
     ];

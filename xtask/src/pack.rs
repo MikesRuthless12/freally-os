@@ -122,8 +122,8 @@ pub fn pack(
         let bytes = std::fs::read(elf).map_err(|e| format!("{}: {e}", elf.display()))?;
         b.add(path, *kind, 0, bytes);
     }
-    let set = manifests(flavour)?.into_iter().filter(|(n, _)| !without.contains(&n.as_str()));
-    for (name, text) in set.chain(extra.iter().cloned()) {
+    let set = kept(flavour, without)?;
+    for (name, text) in set.into_iter().chain(extra.iter().cloned()) {
         let m = fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?;
         if !user.iter().any(|(p, ..)| *p == m.binary) {
             return Err(format!("manifests/{name}.svc names {}, which this image doesn't carry", m.binary));
@@ -139,10 +139,39 @@ pub fn pack(
 /// services `without` names (a test image's).
 pub fn programs_for(flavour: Flavour, without: &[&str]) -> Result<Vec<&'static crate::build::UserProgram>, String> {
     let mut binaries = Vec::new();
-    for (name, text) in manifests(flavour)?.into_iter().filter(|(n, _)| !without.contains(&n.as_str())) {
+    for (name, text) in kept(flavour, without)? {
         binaries.push(fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?.binary);
     }
     Ok(crate::build::PROGRAMS.iter().filter(|p| binaries.iter().any(|b| b == p.path)).collect())
+}
+
+/// A test image's manifests: the flavour's, less `without`, and less every
+/// service that waits (`after`) for one left out, so the set still starts
+/// (an image without stage has no Brain, Welcome or Login either).
+fn kept(flavour: Flavour, without: &[&str]) -> Result<Vec<(String, String)>, String> {
+    let all = manifests(flavour)?;
+    let mut parsed = Vec::new();
+    for (name, text) in &all {
+        let m = fsvc::parse(text).map_err(|e| format!("manifests/{name}.svc: {e}"))?;
+        parsed.push((name.clone(), m.after));
+    }
+    let keep = prune(&parsed, without);
+    Ok(all.into_iter().filter(|(n, _)| keep.contains(n)).collect())
+}
+
+/// The names kept from `(name, after)` once `without` is gone, and with it
+/// anything waiting on what's gone, until nothing more goes.
+fn prune(set: &[(String, Vec<String>)], without: &[&str]) -> Vec<String> {
+    let mut keep: Vec<String> = set.iter().map(|(n, _)| n.clone()).filter(|n| !without.contains(&n.as_str())).collect();
+    loop {
+        let before = keep.clone();
+        keep.retain(|n| {
+            set.iter().find(|(m, _)| m == n).is_none_or(|(_, after)| after.iter().all(|a| before.contains(a)))
+        });
+        if keep.len() == before.len() {
+            return keep;
+        }
+    }
 }
 
 /// The manifests (`manifests/*.svc`) whose `flavours` include `flavour`, checked
@@ -211,4 +240,24 @@ pub fn sign_cmd(args: &[String]) -> Result<(), String> {
     sign(Path::new(path), key)?;
     println!("sign: {path} signed with the {} key", key.as_str());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prune;
+
+    #[test]
+    fn what_waits_on_a_service_left_out_goes_too() {
+        let s = |n: &str, after: &[&str]| (n.to_string(), after.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        let set = [
+            s("logger", &[]),
+            s("stage", &["logger"]),
+            s("brain", &["logger", "stage"]),
+            s("login", &["stage", "accounts"]),
+            s("accounts", &["logger"]),
+            s("later", &["brain"]),
+        ];
+        assert_eq!(prune(&set, &["stage"]), ["logger", "accounts"], "brain, login, and what waits on brain");
+        assert_eq!(prune(&set, &[]).len(), 6);
+    }
 }

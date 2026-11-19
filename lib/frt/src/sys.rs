@@ -67,6 +67,12 @@ pub fn vm_map(aspace: u32, vmo: u32, off: u64, len: u64, hint: u64, perms: u64) 
     call1(nr::VM_MAP, [aspace as u64, vmo as u64, off, len, hint, perms])
 }
 
+/// Unmaps a whole mapping made by `vm_map` (its VMO goes with it when
+/// nothing else holds it).
+pub fn vm_unmap(aspace: u32, addr: u64, len: u64) -> Result<(), FErr> {
+    call1(nr::VM_UNMAP, [aspace as u64, addr, len, 0, 0, 0]).map(|_| ())
+}
+
 pub fn handle_close(h: u32) -> Result<(), FErr> {
     call1(nr::HANDLE_CLOSE, [h as u64, 0, 0, 0, 0, 0]).map(|_| ())
 }
@@ -235,6 +241,15 @@ pub fn process_usage(process: u32) -> Result<(u64, u64), FErr> {
 /// Resets the machine (the boot-control grant: conductor). Returns only if refused.
 pub fn system_reset() -> FErr {
     match call1(nr::SYSTEM_RESET, [0; 6]) {
+        Ok(_) => FErr::Internal,
+        Err(e) => e,
+    }
+}
+
+/// Powers the machine off through the firmware (the boot-control grant:
+/// conductor). Returns only if refused, or the firmware can't.
+pub fn system_power_off() -> FErr {
+    match call1(nr::SYSTEM_RESET, [1, 0, 0, 0, 0, 0]) {
         Ok(_) => FErr::Internal,
         Err(e) => e,
     }

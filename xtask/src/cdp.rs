@@ -255,7 +255,7 @@ fn run_setup(
     ids: &[&str],
     inventory_out: Option<&std::path::Path>,
 ) -> Result<(usize, usize), String> {
-    let mut vm = run::start_built(o, built)?;
+    let mut vm = run::start_booted(o, built)?;
     // An e2e image's test door (COM3): cdp-host reaches cdpd through it.
     let com3: Vec<String> = if o.flavour == Flavour::E2e {
         vec![String::from("--com3"), format!("127.0.0.1:{}", o.port(3))]

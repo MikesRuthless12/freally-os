@@ -364,3 +364,42 @@ pub fn fs_persists(ctx: &mut Ctx) -> Result<(), String> {
     expect(ctx, "cat /home/keeper/kept.txt", &["survives a reset"])?;
     Ok(())
 }
+
+/// A process's memory, as conductor counts it.
+fn mem_of(ctx: &mut Ctx, name: &str) -> Result<i64, String> {
+    let r = ctx.cdp.call("Freally.getProcesses", fjson::Value::Obj(Vec::new()))?;
+    r.get("processes")
+        .and_then(fjson::Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .find(|p| p.get("name").and_then(fjson::Value::as_str) == Some(name))
+        .and_then(|p| p.get("memBytes").and_then(fjson::Value::as_i64))
+        .ok_or_else(|| format!("no memory for {name}"))
+}
+
+/// `@memory.steady`: memory a program frees is given back. Forty `ps` in
+/// the Terminal, each a call to conductor whose reply (over 4 KiB) conductor
+/// builds and frees, leave conductor's memory where it was, within 64 KiB:
+/// until 2026-11-19 every block over 2 KiB a program freed stayed mapped, so
+/// every call leaked on both ends. (The Terminal's own memory grows by its
+/// scrollback, so it isn't the measure.)
+pub fn memory_steady(ctx: &mut Ctx) -> Result<(), String> {
+    open(ctx)?;
+    for _ in 0..5 {
+        expect(ctx, "ps", &["SERVICE"])?;
+    }
+    let before = mem_of(ctx, "conductor")?;
+    for _ in 0..40 {
+        feed(ctx, "type", b"ps\r")?;
+    }
+    expect(ctx, "ps", &["SERVICE"])?;
+    let after = mem_of(ctx, "conductor")?;
+    ctx.note(&format!("conductor's memory: {} KiB, then {} KiB after 41 calls", before / 1024, after / 1024));
+    if after - before > 64 * 1024 {
+        return Err(format!(
+            "41 calls left conductor {} KiB bigger: freed memory isn't given back",
+            (after - before) / 1024
+        ));
+    }
+    Ok(())
+}

@@ -3,7 +3,10 @@
 //! and login screens call them (TASK-102): `accounts list`, `accounts create
 //! <user> <password> [<owner's password>]`, `accounts login <user>
 //! <password>`, `accounts logout`, `accounts passwd <old> <new>`, `accounts
-//! who`. Each answers `ok` (or its lines), or `error: <code> <words>`.
+//! who`; `accounts export <password>`, `accounts bundles`, `accounts
+//! preview <name> <password>`, `accounts import <name> <password> [<rename>
+//! [<owner's password>]]` (TASK-103). Each answers `ok` (or its lines), or
+//! `error: <code> <words>`.
 
 use crate::services::Conductor;
 use alloc::string::String;
@@ -32,8 +35,9 @@ impl AccountsDoor {
         let Some(acc) = self.accounts.as_mut() else {
             return alloc::vec![String::from("error: accounts isn't up")];
         };
-        // Argon2id at 64 MiB takes a while in a VM.
-        let deadline = Instant::after(Duration::from_secs(30));
+        // Argon2id at 64 MiB takes a while in a VM, and an export or import
+        // reads or writes a whole home.
+        let deadline = Instant::after(Duration::from_secs(120));
         let s = String::from;
         let done =
             |r: Result<((), Vec<fstd::handle::Handle>), CallError>| alloc::vec![r.map_or_else(said, |_| s("ok"))];
@@ -66,6 +70,45 @@ impl AccountsDoor {
                 Vec::new(),
                 deadline,
             )),
+            ["export", password] => {
+                match acc.call::<_, a::Exported>(a::EXPORT, &a::Export { password: s(password) }, Vec::new(), deadline)
+                {
+                    Ok((e, _)) => alloc::vec![alloc::format!("{} {}", e.path, e.bytes)],
+                    Err(e) => alloc::vec![said(e)],
+                }
+            }
+            ["bundles"] => match acc.call::<_, a::Bundles>(a::BUNDLES, &(), Vec::new(), deadline) {
+                Ok((b, _)) if b.names.is_empty() => alloc::vec![s("(none)")],
+                Ok((b, _)) => b.names,
+                Err(e) => alloc::vec![said(e)],
+            },
+            ["preview", name, password] => {
+                let req = a::Open { name: s(name), password: s(password) };
+                match acc.call::<_, a::Preview>(a::PREVIEW, &req, Vec::new(), deadline) {
+                    Ok((p, _)) => alloc::vec![alloc::format!(
+                        "{} files={} bytes={} exported={}",
+                        p.username,
+                        p.files,
+                        p.bytes,
+                        p.exported_unix
+                    )],
+                    Err(e) => alloc::vec![said(e)],
+                }
+            }
+            ["import", name, password, rest @ ..] if rest.len() <= 2 => {
+                let req = a::Import {
+                    name: s(name),
+                    password: s(password),
+                    rename: rest.first().map(|r| s(r)).unwrap_or_default(),
+                    owner_password: rest.get(1).map(|r| s(r)).unwrap_or_default(),
+                };
+                match acc.call::<_, a::User>(a::IMPORT, &req, Vec::new(), deadline) {
+                    Ok((u, _)) => {
+                        alloc::vec![alloc::format!("{} {}", u.username, if u.owner { "owner" } else { "standard" })]
+                    }
+                    Err(e) => alloc::vec![said(e)],
+                }
+            }
             ["who"] => match acc.call::<_, a::Who>(a::SESSION, &(), Vec::new(), deadline) {
                 Ok((w, _)) if w.user.username.is_empty() => alloc::vec![s("(no one)")],
                 Ok((w, _)) => alloc::vec![w.user.username],

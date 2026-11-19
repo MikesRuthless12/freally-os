@@ -26,7 +26,7 @@ impl System for Pretend {
             },
             Service {
                 name: "monitor".into(),
-                description: "Shows it all.".into(),
+                description: "Shows every process, how the boot went, what crashed, the log, and every device.".into(),
                 state: "Waiting".into(),
                 pid: 0,
                 restarts: 1,
@@ -195,6 +195,11 @@ fn what_they_print() {
     let ps = run(&Command::Ps, &mut s).text;
     assert!(ps.starts_with("SERVICE") && ps.contains("logger") && ps.contains("Keeps the log."));
     assert!(ps.lines().nth(2).unwrap().contains("    - "), "no process: a dash");
+    // One line a service, in the Terminal's 96 columns: a long description is cut short.
+    for line in ps.lines() {
+        assert!(line.chars().count() <= 96, "{} columns: {line}", line.chars().count());
+    }
+    assert!(ps.lines().nth(2).unwrap().ends_with('…'), "cut short with an ellipsis");
     let boot = run(&Command::Boot, &mut s).text;
     assert!(boot.contains("S3      120.5 ms") && boot.contains("B0 to S3: 120.5 ms") && boot.contains("F0 900.0 ms"));
     assert_eq!(run(&Command::Mem, &mut s).text, "128.0 MiB used of 512.0 MiB (25%)\n");

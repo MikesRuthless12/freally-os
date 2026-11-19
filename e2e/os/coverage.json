@@ -14,6 +14,8 @@
     "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" },
     "e2e-panel-16": { "flavour": "e2e", "edid": "panel-16" },
     "e2e-gpt": { "flavour": "e2e", "gpt": true },
+    "e2e-gpt-session": { "flavour": "e2e", "gpt": true },
+    "e2e-gpt-power": { "flavour": "e2e", "gpt": true },
     "e2e-gpt-ab": { "flavour": "e2e", "gpt": true, "slot_b": "crash-test" },
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
@@ -364,6 +366,13 @@
       "what": "drv-nvme on the NVMe disk: Identify, the GPT read, a write to block 0 refused by the partition interlock (AccessDenied) before the controller sees it, a block of FREALLY_DATA written, flushed and read back."
     },
     {
+      "id": "memory.steady",
+      "task": "TASK-102",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/terminal.rs",
+      "what": "Memory a program frees is given back: forty calls to conductor from the Terminal leave its memory where it was, within 64 KiB."
+    },
+    {
       "id": "fs.files",
       "task": "TASK-100",
       "setup": "e2e-gpt",
@@ -383,6 +392,41 @@
       "setup": "e2e-gpt",
       "spec": "e2e/os/specs/terminal.rs",
       "what": "A file written and synced is there after the machine resets mid-session; the mount after it runs ffsck, clean."
+    },
+    {
+      "id": "welcome.form",
+      "task": "TASK-102",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/session.rs",
+      "what": "On a disk with no accounts, Welcome is up and the desktop locked: Enter walks the fields, every mistake said under its field, the name fills the username, a click focuses, both themes; Create account makes the Owner, logs it in, and the desktop is theirs."
+    },
+    {
+      "id": "login.form",
+      "task": "TASK-102",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/session.rs",
+      "what": "Logged out, Login over the dimmed wallpaper: a wrong password said and the well emptied; arrows and clicks choose an account; Tab reaches Shut down and Restart; both themes; Log in opens the desktop."
+    },
+    {
+      "id": "accounts.login",
+      "task": "TASK-102",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/session.rs",
+      "what": "PRD § 7: Login → desktop ≤ 1 s, Argon2id included, from Enter in the password well to the desktop saying whose it is."
+    },
+    {
+      "id": "login.restart",
+      "task": "TASK-102",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/session.rs",
+      "what": "Restart from Login: ffs unmounts cleanly, the machine restarts, mounts without ffsck, and Login is up again."
+    },
+    {
+      "id": "login.shutdown",
+      "task": "TASK-102",
+      "setup": "e2e-gpt-power",
+      "spec": "e2e/os/specs/session.rs",
+      "what": "Shut down from Login by the mouse: ffs unmounts cleanly and the machine powers off through the firmware (QEMU exits)."
     },
     {
       "id": "accounts.lifecycle",
@@ -411,6 +455,20 @@
       "setup": "e2e-gpt",
       "spec": "e2e/os/specs/accounts.rs",
       "what": "FR-046: a scan of all guest RAM (QMP pmemsave) finds the account's master key while it's logged in and nowhere after logout."
+    },
+    {
+      "id": "accounts.export",
+      "task": "TASK-103",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "US-016: the session's home sealed with its re-typed password into Exports/<user>.facct (Exports left out); a wrong password refused; the bundle listed; its preview opens only with the password."
+    },
+    {
+      "id": "accounts.import",
+      "task": "TASK-103",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "FR-047: a bundle made into an account: the same username refused and named, a wrong password refused, renamed by the Owner it is made, its files there under the bundle's password, without Exports."
     },
     {
       "id": "crisp.scales",

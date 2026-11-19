@@ -44,8 +44,15 @@ impl<S: Store> Volume<S> {
 
     /// Commits with the *clean* flag and gives the store back.
     pub fn unmount(mut self) -> Result<S, FsError> {
-        self.commit_with(CLEAN)?;
+        self.commit_clean()?;
         Ok(self.into_store())
+    }
+
+    /// Commits with the *clean* flag, keeping the volume (the service, just
+    /// before the machine powers off or restarts: the next mount needs no
+    /// ffsck unless something is written after it).
+    pub fn commit_clean(&mut self) -> Result<(), FsError> {
+        self.commit_with(CLEAN)
     }
 
     /// Whether the generation mounted was unmounted cleanly.

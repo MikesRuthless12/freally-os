@@ -70,6 +70,8 @@ pub struct Conductor {
     pub firmware: Option<(u64, u64)>,
     /// When the machine resets (the Brain's `reboot`, dev images).
     pub reboot_at: Option<u64>,
+    /// Shut down (`true`) or Restart, and when (TASK-102).
+    pub power_at: Option<(bool, u64)>,
 }
 
 fn rdtsc() -> u64 {
@@ -123,6 +125,7 @@ impl Conductor {
             boot,
             firmware: None,
             reboot_at: None,
+            power_at: None,
         }
     }
 
@@ -363,6 +366,7 @@ impl Conductor {
             c::STAMP => self.stamp(&caller, payload).map(|b| (b, Vec::new())),
             c::MANIFEST => self.manifest(payload).map(|b| (b, Vec::new())),
             c::DATA => self.data_file(&caller, payload),
+            c::POWER => self.power(&caller, payload),
             #[cfg(feature = "flavour-dev")]
             c::SWAP => self.swap(&caller, payload, &mut handles),
             #[cfg(feature = "flavour-dev")]
@@ -382,6 +386,34 @@ impl Conductor {
         }
     }
 
+    /// Shut down or Restart (the login screen, the desktop): in a third of a
+    /// second, so the answer leaves first.
+    fn power(&mut self, caller: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
+        if !matches!(caller, "login" | "desktop") {
+            return Err((FErr::AccessDenied, alloc::format!("{caller} may not shut the machine down")));
+        }
+        let p: c::Power = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        fstd::info!("conductor: {} ({caller} asked)", if p.off { "shutting down" } else { "restarting" });
+        self.power_at = Some((p.off, Instant::now().as_ns() + 300_000_000));
+        Ok((fwire::to_payload(&()), Vec::new()))
+    }
+
+    /// The time for Shut down or Restart has come: ffs commits clean, then
+    /// the machine powers off or resets. Returns only if it couldn't.
+    pub fn power_now(&mut self, off: bool) {
+        if let Some(ch) = self.open_connection("ffs", "conductor") {
+            let mut ffs = fstd::ipc::Client::new(ch);
+            let deadline = Instant::now().as_ns() + 5_000_000_000;
+            if let Err(e) = ffs.call::<_, ()>(fwire::proto::ffs::UNMOUNT, &(), Vec::new(), deadline) {
+                fstd::warn!("conductor: ffs didn't unmount cleanly ({e:?}): the next start checks the disk");
+            }
+        }
+        // The last lines reach the log (COM1) before the machine goes.
+        fstd::time::sleep(fstd::time::Duration::from_millis(200));
+        let e = if off { fstd::sys::system_power_off() } else { fstd::sys::system_reset() };
+        fstd::error!("conductor: the machine didn't {}: {}", if off { "power off" } else { "restart" }, e.describe());
+    }
+
     fn connect(&mut self, caller: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
         let want: c::ByName =
             fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
@@ -394,6 +426,8 @@ impl Conductor {
             || want.name == "stage"
             || want.name == "vfs"
             || (caller == "desktop" && demand)
+            // Whether anyone is logged in, so the desktop knows which screen to start (TASK-102).
+            || (caller == "desktop" && want.name == "accounts")
             || caller_m.is_some_and(|m| m.after.contains(&want.name))
             || (cfg!(feature = "flavour-e2e") && caller == "cdpd");
         if !allowed {

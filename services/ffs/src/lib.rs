@@ -14,12 +14,21 @@
 
 extern crate alloc;
 
+// The crash test's load and its planted bug are for test images and host
+// tests only: never a dev or release image.
+#[cfg(all(
+    any(feature = "crash-load", feature = "plant-data-after-superblock"),
+    any(feature = "flavour-release", feature = "flavour-dev")
+))]
+compile_error!("crash-load and planted bugs are for e2e images and host tests only");
+
 pub mod btree;
 pub mod crypt;
 pub mod dir;
 pub mod extent;
 pub mod fsck;
 pub mod inode;
+pub mod load;
 pub mod node;
 pub mod ptr;
 pub mod snapshot;

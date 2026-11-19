@@ -4,6 +4,30 @@
     {
       "control": "devmgr ordinal 2 tables",
       "why": "Its caller is Monitor's Devices tab (FR-034, from v0.5); nothing asks for the ACPI table list before then, and a spec standing in for that caller would prove nothing (a test is not a caller)."
+    },
+    {
+      "control": "conductor ordinal 16 power",
+      "why": "Worked by @login.restart and @login.shutdown (TASK-102), which restart or power off the machine: the inventory counts after them belong to the next boot, or to none."
+    },
+    {
+      "control": "ffs ordinal 16 unmount",
+      "why": "Asked by conductor just before Shut down or Restart (@login.restart, @login.shutdown): the machine goes before the inventory reads the count. @login.restart proves it: the next mount needs no ffsck."
+    },
+    {
+      "control": "ffs ordinal 11 snapshot",
+      "why": "Its caller is vfs's snapshot, whose caller is Files (TASK-105); a spec standing in for that caller would prove nothing (a test is not a caller)."
+    },
+    {
+      "control": "vfs ordinal 12 snapshot",
+      "why": "Its caller is Files (TASK-105): fstd::fs::snapshot has no other."
+    },
+    {
+      "control": "vfs ordinal 4 seek",
+      "why": "Its caller is Files and its copy engine (TASK-105, TASK-105A): fstd::fs::File::seek has no other yet."
+    },
+    {
+      "control": "vfs ordinal 6 stat",
+      "why": "Its caller is Files (TASK-105): fstd::fs::metadata has no other yet."
     }
   ]
 }

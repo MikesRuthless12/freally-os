@@ -80,6 +80,10 @@ pub fn lifecycle(ctx: &mut Ctx) -> Result<(), String> {
     who(ctx, "(no one)")?;
     ok(ctx, &format!("login {OWNER} {OWNER_PASSWORD}"))?;
     who(ctx, OWNER)?;
+    // A password changed and back (the reset in @accounts.password ends
+    // that spec's count of what accounts was asked).
+    ok(ctx, &format!("passwd {OWNER_PASSWORD} interim-pass-9"))?;
+    ok(ctx, &format!("passwd interim-pass-9 {OWNER_PASSWORD}"))?;
     open(ctx)?;
     expect(ctx, "whoami", &[OWNER])?;
     expect(ctx, &format!("write /home/{OWNER}/notes.txt sealed under the master key"), &[])?;
@@ -200,6 +204,78 @@ pub fn key_gone(ctx: &mut Ctx) -> Result<(), String> {
     let (left, at) = scan(ctx, &key)?;
     if left != 0 {
         return Err(format!("after logout the master key is still in RAM in {left} place(s): {at}"));
+    }
+    Ok(())
+}
+
+/// `@accounts.export` (TASK-103, US-016): the session's home, with the
+/// password typed again, sealed into `Exports/<user>.facct` (the Exports
+/// folder itself left out); a wrong password refused; the bundle listed,
+/// and its preview opens only with the password.
+pub fn export(ctx: &mut Ctx) -> Result<(), String> {
+    owner(ctx)?;
+    ok(ctx, &format!("login {OWNER} {OWNER_PASSWORD}"))?;
+    open(ctx)?;
+    expect(ctx, &format!("mkdir /home/{OWNER}/Documents"), &[])?;
+    expect(ctx, &format!("write /home/{OWNER}/Documents/plan.txt the plan, carried"), &[])?;
+    refused(ctx, "export not-the-password", "That password didn't match.")?;
+    let said = door(ctx, &format!("export {OWNER_PASSWORD}"))?;
+    let want = format!("/home/{OWNER}/Exports/{OWNER}.facct ");
+    if said.len() != 1 || !said[0].starts_with(&want) {
+        return Err(format!("accounts export: {said:?}"));
+    }
+    ctx.expect_log(&format!("accounts: exported {OWNER} to /home/{OWNER}/Exports/{OWNER}.facct"))?;
+    expect(ctx, &format!("ls /home/{OWNER}/Exports"), &[&format!("{OWNER}.facct")])?;
+    if !door(ctx, "bundles")?.contains(&format!("home:{OWNER}.facct")) {
+        return Err(format!("accounts bundles: {:?}", door(ctx, "bundles")?));
+    }
+    refused(ctx, &format!("preview home:{OWNER}.facct wrong-password"), "That password doesn't open this file.")?;
+    let p = door(ctx, &format!("preview home:{OWNER}.facct {OWNER_PASSWORD}"))?;
+    if p.len() != 1 || !p[0].starts_with(&format!("{OWNER} files=")) {
+        return Err(format!("accounts preview: {p:?}"));
+    }
+    ok(ctx, "logout")
+}
+
+/// `@accounts.import` (TASK-103, US-016, FR-047): a bundle made into an
+/// account: the same username refused (and named), a wrong password
+/// refused, renamed by the Owner it's made; its files are there under the
+/// bundle's password, without the Exports folder.
+pub fn import(ctx: &mut Ctx) -> Result<(), String> {
+    owner(ctx)?;
+    ok(ctx, &format!("login {OWNER} {OWNER_PASSWORD}"))?;
+    if !door(ctx, "bundles")?.contains(&format!("home:{OWNER}.facct")) {
+        door(ctx, &format!("export {OWNER_PASSWORD}"))?;
+    }
+    let name = format!("home:{OWNER}.facct");
+    refused(ctx, &format!("import {name} {OWNER_PASSWORD}"), &format!("There's already an account called {OWNER}."))?;
+    refused(
+        ctx,
+        &format!("import {name} wrong-password carried {OWNER_PASSWORD}"),
+        "That password doesn't open this file.",
+    )?;
+    let made = door(ctx, &format!("import {name} {OWNER_PASSWORD} carried {OWNER_PASSWORD}"))?;
+    if made != ["carried standard"] {
+        return Err(format!("accounts import: {made:?}"));
+    }
+    ctx.expect_log(&format!("accounts: imported carried (Standard) from {name}"))?;
+    ok(ctx, "logout")?;
+    ok(ctx, &format!("login carried {OWNER_PASSWORD}"))?;
+    open(ctx)?;
+    expect(ctx, "whoami", &["carried"])?;
+    expect(ctx, "cat /home/carried/Documents/plan.txt", &["the plan, carried"])?;
+    let listed = expect(ctx, "ls /home/carried", &["Documents/"])?;
+    if listed.contains("Exports/") {
+        return Err(format!("the Exports folder was carried too:\n{listed}"));
+    }
+    ok(ctx, "logout")?;
+    // Login, with every account this disk now has: each row chosen by a click.
+    const ROW: &str = "WINDOW[data-owner=\"login\"] OPTION";
+    crate::sweep::until_q(ctx, ROW)?;
+    for id in crate::sweep::q_all(ctx, ROW)? {
+        let testid = crate::sweep::attr(ctx, id, "data-testid")?.ok_or("a login row without a test id")?;
+        crate::sweep::click(ctx, id)?;
+        crate::sweep::until_attr(ctx, &format!("[data-testid=\"{testid}\"]"), "aria-selected", "true")?;
     }
     Ok(())
 }

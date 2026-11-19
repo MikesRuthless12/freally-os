@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "app-session"
+description = "Welcome and Login: the first account made, and an account opened."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "welcome"
+path = "src/bin/welcome.rs"
+
+[[bin]]
+name = "login"
+path = "src/bin/login.rs"
+
+[features]
+flavour-release = []
+flavour-dev = ["fimage/guard"]
+flavour-e2e = ["fimage/guard"]
+
+[dependencies]
+fcore-abi.workspace = true
+ffont = { workspace = true, features = ["raster"] }
+fimage.workspace = true
+fstd.workspace = true
+fui = { workspace = true, features = ["ui"] }
+fwire.workspace = true
+svc-accounts = { path = "../../services/accounts" }
+
+[lints]
+workspace = true

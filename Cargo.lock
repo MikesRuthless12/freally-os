@@ -36,6 +36,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-session"
+version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "ffont",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+ "svc-accounts",
+]
+
+[[package]]
 name = "app-settings"
 version = "0.4.0"
 

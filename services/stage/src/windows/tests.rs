@@ -185,3 +185,18 @@ fn a_tooltip_sits_on_top_never_focused_and_the_pointer_passes_through() {
     assert_eq!(ws.hit(360, 310), Some((a, Part::Surface { x: 60, y: 44 })), "the pointer passes through");
     assert!(!ws.cycle_order().contains(&tip));
 }
+
+#[test]
+fn a_lock_screen_covers_the_rack_and_takes_its_clicks() {
+    let mut ws = screen();
+    let wall = ws.create("wall", Kind::Panel, (1000, 800), (0, 0), (0, 0), ME);
+    let rack = ws.create("rack", Kind::Panel, (1000, 56), (0, 0), (0, 744), ME);
+    let lock = ws.create("login", Kind::Lock, (1, 1), (0, 0), (0, 0), ME);
+    assert_eq!(ws.focused(), Some(lock), "it takes the focus");
+    let pop = ws.create("pop", Kind::Popup, (100, 50), (0, 0), (10, 20), ME);
+    assert_eq!(ws.get(lock).unwrap().frame, Rect::new(0, 0, 1000, 800), "the whole screen");
+    let ids: Vec<WindowId> = ws.stack().iter().map(|w| w.id).collect();
+    assert_eq!(ids, vec![wall, rack, lock, pop], "over the Rack, under a popup");
+    assert_eq!(ws.hit(980, 780).map(|(id, _)| id), Some(lock), "a click where the Rack is goes to the lock screen");
+    assert!(!ws.get(lock).unwrap().decorated());
+}

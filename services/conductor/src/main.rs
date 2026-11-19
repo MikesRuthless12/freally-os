@@ -79,7 +79,7 @@ fn run(_bootstrap: u32) -> i64 {
         #[cfg(feature = "flavour-e2e")]
         items.extend(door.wait_item());
         let mut deadline = c.next_start().unwrap_or(u64::MAX).min(c.boot.deadline().unwrap_or(u64::MAX));
-        deadline = deadline.min(c.reboot_at.unwrap_or(u64::MAX));
+        deadline = deadline.min(c.reboot_at.unwrap_or(u64::MAX)).min(c.power_at.map_or(u64::MAX, |(_, t)| t));
         if cfg!(feature = "flavour-e2e") {
             deadline = deadline.min(Instant::after(Duration::from_millis(20)));
         }
@@ -101,6 +101,13 @@ fn run(_bootstrap: u32) -> i64 {
             }
         }
         c.boot.tick();
+        // Shut down or Restart (TASK-102): its answer has had time to leave.
+        if let Some((off, at)) = c.power_at
+            && Instant::now().as_ns() >= at
+        {
+            c.power_at = None;
+            c.power_now(off);
+        }
         // The Brain's `reboot` (dev images): its answer has had time to leave.
         #[cfg(feature = "flavour-dev")]
         if c.reboot_at.is_some_and(|t| Instant::now().as_ns() >= t) {

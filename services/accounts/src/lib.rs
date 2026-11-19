@@ -13,6 +13,8 @@
 
 extern crate alloc;
 
+pub mod facct;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use fcore_abi::accounts as abi;
@@ -168,6 +170,11 @@ impl AccountRecord {
 
 /// The key-encryption key for `password` with `salt` under `kdf`.
 pub fn kek(password: &str, salt: &[u8; 16], kdf: Params) -> Result<[u8; 32], Refused> {
+    derive(password, salt, kdf, KEK_INFO)
+}
+
+/// `HKDF-SHA256(Argon2id(password, salt), info)`: the KEK, or a `.facct`'s key.
+pub fn derive(password: &str, salt: &[u8; 16], kdf: Params, info: &[u8]) -> Result<[u8; 32], Refused> {
     let mut memory: Vec<Block> = Vec::new();
     memory.try_reserve_exact(kdf.blocks()).map_err(|_| Refused::Kdf)?;
     memory.resize(kdf.blocks(), [0u64; 128]);
@@ -182,7 +189,7 @@ pub fn kek(password: &str, salt: &[u8; 16], kdf: Params) -> Result<[u8; 32], Ref
     }
     made.map_err(|_| Refused::Kdf)?;
     let mut out = [0u8; 32];
-    let expanded = fcrypto::hkdf::hkdf(&[], &stretched, KEK_INFO, &mut out);
+    let expanded = fcrypto::hkdf::hkdf(&[], &stretched, info, &mut out);
     wipe(&mut stretched);
     expanded.map_err(|_| Refused::Kdf)?;
     Ok(out)

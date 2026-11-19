@@ -272,12 +272,17 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
             Ok(list) => {
                 let mut s =
                     format!("{:<16} {:<10} {:>5} {:>8}  {}\n", "SERVICE", "STATE", "PID", "RESTARTS", "WHAT IT DOES");
+                // One line a service in the Terminal's 96 columns: 44 for the
+                // rest, so a description longer than 52 is cut short.
+                const ROOM: usize = 52;
                 for v in list {
                     let pid = if v.pid == 0 { String::from("-") } else { v.pid.to_string() };
-                    s.push_str(&format!(
-                        "{:<16} {:<10} {:>5} {:>8}  {}\n",
-                        v.name, v.state, pid, v.restarts, v.description
-                    ));
+                    let what: String = if v.description.chars().count() > ROOM {
+                        v.description.chars().take(ROOM - 1).chain(core::iter::once('…')).collect()
+                    } else {
+                        v.description
+                    };
+                    s.push_str(&format!("{:<16} {:<10} {:>5} {:>8}  {what}\n", v.name, v.state, pid, v.restarts));
                 }
                 text(s)
             }

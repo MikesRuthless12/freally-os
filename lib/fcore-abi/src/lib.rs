@@ -276,8 +276,9 @@ pub mod syscall {
     /// `()` → never returns: the kernel panics on purpose (e2e kernels only,
     /// conductor only: the test door's `kernel panic`, TASK-074).
     pub const TEST_PANIC: u64 = 38;
-    /// `()` → never returns: the machine resets (the boot-control grant:
-    /// conductor; the Brain's `reboot`, TASK-084).
+    /// `(off)` → never returns: the machine resets, or with `off` = 1 powers
+    /// off (the boot-control grant: conductor; the Brain's `reboot`,
+    /// TASK-084; Shut down and Restart, TASK-102).
     pub const SYSTEM_RESET: u64 = 39;
     /// One past the highest number.
     pub const COUNT: u64 = 40;

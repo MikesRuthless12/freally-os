@@ -33,6 +33,7 @@ use fui::hardware::{Hardware, KeyLook, Lamp};
 use fui::layout::Rect;
 use fui::text::{FontData, Fonts, words};
 use fui::theme::{Mode, TextStyle, Theme, Tok};
+use fwire::proto::accounts as a;
 use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::stage as st;
@@ -88,6 +89,19 @@ impl Win {
     }
 }
 
+/// Who the desktop is for (TASK-102).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Session {
+    /// No accounts here (an image without them, or no disk to keep them):
+    /// the desktop is everyone's, as before v0.7.
+    Guest,
+    /// Accounts are here and no one is logged in: Welcome or Login is up,
+    /// and the Rack, the launcher and the shortcuts do nothing.
+    Locked,
+    /// This account is logged in.
+    User(String),
+}
+
 /// The Rack's keys: the launcher, then the owner's apps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
@@ -135,6 +149,12 @@ struct Desktop {
     saver: Option<SaverRun>,
     /// The savers' F (the 300 % OS art's `saver_f`), loaded the first time.
     saver_f: Option<svc_desktop::saver::Sprite>,
+    session: Session,
+    accounts: Option<Client>,
+    /// When to ask accounts again, and the screen last started for a locked
+    /// desktop (and when).
+    next_session_look: u64,
+    screen_started: Option<(&'static str, u64)>,
     #[cfg(feature = "flavour-dev")]
     door: Option<Door>,
     /// When this build started (the crash-test build ends a second later).
@@ -355,12 +375,18 @@ impl Desktop {
             launcher_ax: Default::default(),
             saver: None,
             saver_f: None,
+            // Locked until accounts says otherwise: never open before it has.
+            session: Session::Locked,
+            accounts: None,
+            next_session_look: 0,
+            screen_started: None,
             #[cfg(feature = "flavour-dev")]
             door: None,
             #[cfg(feature = "swap-crash-test")]
             born: Instant::now().as_ns(),
         };
         d.services();
+        d.look_session();
         d.draw_rack();
         Ok(d)
     }
@@ -539,7 +565,90 @@ impl Desktop {
         self.known.iter().zip(&self.available).filter(|(_, a)| **a).map(|(k, _)| k.app.clone()).collect()
     }
 
+    /// Asks accounts who's logged in (TASK-102): no accounts here, the
+    /// desktop is a guest's; no one, it locks and starts Welcome (no account
+    /// yet) or Login; someone, it's theirs.
+    fn look_session(&mut self) {
+        let now = Instant::now().as_ns();
+        self.next_session_look = now + 500_000_000;
+        if self.session == Session::Guest {
+            return;
+        }
+        if self.accounts.is_none() {
+            match fstd::service::connect("accounts") {
+                Ok(ch) => self.accounts = Some(Client::new(ch)),
+                // Not in this image (NotFound), or ended for want of a disk.
+                Err(fstd::ipc::CallError::Remote(code, _))
+                    if code == FErr::NotFound as i32 || code == FErr::BadState as i32 =>
+                {
+                    fstd::info!("desktop: no accounts here: a guest session");
+                    self.session = Session::Guest;
+                    self.draw_rack();
+                    return;
+                }
+                // Still starting: stay locked.
+                Err(_) => return,
+            }
+        }
+        let Some(acc) = self.accounts.as_mut() else { return };
+        let who = match acc.call::<_, a::Who>(a::SESSION, &(), Vec::new(), deadline()) {
+            Ok((w, _)) => w.user.username,
+            Err(_) => {
+                // accounts restarted: connect again next time.
+                self.accounts = None;
+                return;
+            }
+        };
+        let now_is = if who.is_empty() { Session::Locked } else { Session::User(who) };
+        if now_is != self.session {
+            match (&self.session, &now_is) {
+                (_, Session::User(u)) => fstd::info!("desktop: {u}'s session"),
+                (Session::User(u), _) => fstd::info!("desktop: {u} logged out: locked"),
+                _ => {}
+            }
+            if now_is == Session::Locked {
+                self.close_launcher();
+                self.screen_started = None;
+            }
+            self.session = now_is;
+            self.draw_rack();
+        }
+        if self.session == Session::Locked {
+            self.start_screen(now);
+        }
+    }
+
+    /// While locked: Welcome if there's no account yet, else Login, started
+    /// (each ends itself once a session starts; started again if it ended).
+    fn start_screen(&mut self, now: u64) {
+        let Some(acc) = self.accounts.as_mut() else { return };
+        let none = acc.call::<_, a::Users>(a::LIST, &(), Vec::new(), deadline()).is_ok_and(|(u, _)| u.users.is_empty());
+        let want = if none { "welcome" } else { "login" };
+        if self.screen_started.is_some_and(|(s, at)| s == want && now < at + 5_000_000_000) {
+            return;
+        }
+        // One ask, never a wait: conductor starts it if it isn't running.
+        match fstd::service::connect(want) {
+            Ok(_) => {
+                if self.screen_started.is_none_or(|(s, _)| s != want) {
+                    fstd::info!("desktop: locked: {want} is up");
+                }
+                self.screen_started = Some((want, now));
+            }
+            Err(fstd::ipc::CallError::Remote(code, _)) if code == FErr::ShouldWait as i32 => {}
+            Err(e) => fstd::warn!("desktop: couldn't start {want}: {e:?}"),
+        }
+    }
+
+    /// Whether the Rack, the launcher and the shortcuts may act.
+    fn unlocked(&self) -> bool {
+        self.session != Session::Locked
+    }
+
     fn open_launcher(&mut self) {
+        if !self.unlocked() {
+            return;
+        }
         if self.launcher.is_some() {
             return;
         }
@@ -706,6 +815,9 @@ impl Desktop {
     }
 
     fn activate(&mut self, i: usize) {
+        if !self.unlocked() {
+            return;
+        }
         match self.keys[i] {
             Key::Launcher => {
                 if self.launcher.is_some() {
@@ -850,6 +962,9 @@ impl Desktop {
 
     fn shortcut(&mut self, p: &[u8]) {
         let Ok(e) = fwire::from_payload::<st::ShortcutEvent>(p) else { return };
+        if !self.unlocked() {
+            return;
+        }
         match e.shortcut {
             st::Shortcut::Launcher => {
                 if self.launcher.is_some() {
@@ -1070,6 +1185,9 @@ impl Desktop {
             if let Some(r) = self.saver.as_ref().filter(|r| !r.still) {
                 until = until.min(r.last_ns + SAVER_FRAME_NS);
             }
+            if self.session != Session::Guest {
+                until = until.min(self.next_session_look);
+            }
             // The build made to crash wakes for its second.
             #[cfg(feature = "swap-crash-test")]
             {
@@ -1104,6 +1222,9 @@ impl Desktop {
             #[cfg(feature = "flavour-dev")]
             self.serve_door();
             self.saver_frame();
+            if self.session != Session::Guest && Instant::now().as_ns() >= self.next_session_look {
+                self.look_session();
+            }
             #[cfg(feature = "swap-crash-test")]
             if Instant::now().as_ns() > self.born + 1_000_000_000 {
                 panic!("a build made to crash (cargo xtask brain-swap --crash)");

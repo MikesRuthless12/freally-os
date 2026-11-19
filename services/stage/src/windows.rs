@@ -193,12 +193,12 @@ impl Windows {
     ) -> WindowId {
         let (sw, sh) = self.screen;
         let (w, h) = match kind {
-            Kind::Fullscreen | Kind::Saver => (sw, sh),
+            Kind::Fullscreen | Kind::Saver | Kind::Lock => (sw, sh),
             _ => (w.max(min_w).max(1).min(sw), h.max(min_h).max(1).min(sh)),
         };
         let frame_h = if kind == Kind::Normal { h + self.strip } else { h };
         let frame = match kind {
-            Kind::Fullscreen | Kind::Saver => Rect::new(0, 0, sw, sh),
+            Kind::Fullscreen | Kind::Saver | Kind::Lock => Rect::new(0, 0, sw, sh),
             Kind::Panel | Kind::Popup | Kind::Tooltip => Rect::new(at.0, at.1, w, frame_h),
             Kind::Normal => {
                 // Centred in the work area, each next one 32 px further down
@@ -219,8 +219,9 @@ impl Windows {
             Kind::Panel if wall => 0,
             Kind::Normal | Kind::Fullscreen => 1,
             Kind::Panel => 2,
-            Kind::Popup | Kind::Tooltip => 3,
-            Kind::Saver => 4,
+            Kind::Lock => 3,
+            Kind::Popup | Kind::Tooltip => 4,
+            Kind::Saver => 5,
         };
         let win = Window {
             id,
@@ -337,11 +338,11 @@ impl Windows {
             .mru
             .iter()
             .copied()
-            .filter(|&id| self.get(id).is_some_and(|w| matches!(w.kind, Kind::Normal | Kind::Fullscreen)))
+            .filter(|&id| self.get(id).is_some_and(|w| matches!(w.kind, Kind::Normal | Kind::Fullscreen | Kind::Lock)))
             .collect();
         // Any never focused, top first.
         for w in self.list.iter().rev() {
-            if matches!(w.kind, Kind::Normal | Kind::Fullscreen) && !out.contains(&w.id) {
+            if matches!(w.kind, Kind::Normal | Kind::Fullscreen | Kind::Lock) && !out.contains(&w.id) {
                 out.push(w.id);
             }
         }

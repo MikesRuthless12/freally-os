@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! UEFI runtime services (TASK-045): `SetVariable`, for `FreallyBootCtl` and
-//! nothing else (syscall 35, conductor only).
+//! nothing else (syscall 35, conductor only); `ResetSystem`, to power off
+//! (TASK-102: the login screen's Shut down, through conductor).
 //!
 //! The bootloader moved the runtime services into the direct map
 //! (`SetVirtualAddressMap`) and handed them over only when the firmware has
@@ -13,7 +14,7 @@ use crate::sync::SpinLock;
 use alloc::vec::Vec;
 use fcore_abi::{FErr, FREALLY_VENDOR_GUID, Guid};
 
-/// The runtime services table, as far as `SetVariable`.
+/// The runtime services table, as far as `ResetSystem`.
 #[repr(C)]
 struct RuntimeServices {
     _header: [u8; 24],
@@ -23,6 +24,26 @@ struct RuntimeServices {
     _get_variable: usize,
     _get_next_variable_name: usize,
     set_variable: extern "efiapi" fn(*const u16, *const Guid, u32, usize, *const u8) -> usize,
+    _get_next_high_monotonic_count: usize,
+    reset_system: extern "efiapi" fn(u32, usize, usize, *const u8),
+}
+
+/// `EfiResetShutdown`.
+const RESET_SHUTDOWN: u32 = 2;
+
+/// Powers the machine off through the firmware. Returns only if it can't.
+pub fn power_off() -> FErr {
+    let rt = crate::boot_info().map_or(0, |b| b.uefi_runtime);
+    if rt == 0 {
+        return FErr::NotSupported;
+    }
+    let _one = CALL.lock();
+    crate::arch::cpu::interrupts_off();
+    crate::sched::with_fpu_saved(|| {
+        // SAFETY: as `set_boot_ctl`'s call; ResetSystem takes no memory of ours.
+        unsafe { ((*(rt as *const RuntimeServices)).reset_system)(RESET_SHUTDOWN, 0, 0, core::ptr::null()) }
+    });
+    FErr::Internal
 }
 
 /// One runtime call at a time: firmware isn't reentrant.

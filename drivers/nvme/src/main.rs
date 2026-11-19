@@ -59,6 +59,8 @@ struct Queue {
 
 struct Nvme {
     regs: u64,
+    /// The function's PCI configuration page.
+    config: u64,
     cap: u64,
     admin: Queue,
     io: Option<Queue>,
@@ -88,6 +90,12 @@ fn map_mmio(resource: &Handle, phys: u64, len: u64) -> Result<u64, String> {
 }
 
 impl Nvme {
+    /// The PCI command register (memory space bit 1, bus mastering bit 2).
+    fn pci_command(&self) -> u16 {
+        // SAFETY: the function's configuration page, mapped.
+        unsafe { core::ptr::read_volatile((self.config + 4) as *const u16) }
+    }
+
     fn r32(&self, off: usize) -> u32 {
         // SAFETY: inside the mapped registers.
         unsafe { core::ptr::read_volatile((self.regs + off as u64) as *const u32) }
@@ -124,7 +132,7 @@ impl Nvme {
     /// Submits `cmd` on the admin queue (or the I/O queue) and polls for its
     /// completion, up to 5 s.
     fn run(&mut self, io: bool, mut cmd: Command) -> Result<Completion, String> {
-        let (regs, cap) = (self.regs, self.cap);
+        let (regs, cap, config) = (self.regs, self.cap, self.config);
         let q = if io { self.io.as_mut().ok_or("no I/O queue")? } else { &mut self.admin };
         let (slot, cid) = q.ring.submit();
         cmd.cid = cid;
@@ -162,7 +170,17 @@ impl Nvme {
                 };
             }
             if Instant::now().as_ns() > until {
-                return Err(alloc::format!("command {:#x} never completed", cmd.opcode));
+                // SAFETY: inside the mapped registers and configuration page.
+                let (csts, pci) = unsafe {
+                    (
+                        core::ptr::read_volatile((regs + reg::CSTS as u64) as *const u32),
+                        core::ptr::read_volatile((config + 4) as *const u16),
+                    )
+                };
+                return Err(alloc::format!(
+                    "command {:#x} never completed (CSTS {csts:#x}, PCI command {pci:#x})",
+                    cmd.opcode
+                ));
             }
             spins += 1;
             if spins.is_multiple_of(256) {
@@ -245,6 +263,7 @@ fn open() -> Result<Nvme, String> {
     };
     let mut n = Nvme {
         regs,
+        config,
         cap,
         admin: queue(0)?,
         io: None,
@@ -256,6 +275,12 @@ fn open() -> Result<Nvme, String> {
         parts: Vec::new(),
         model: String::new(),
     };
+    fstd::info!(
+        "drv-nvme: as the firmware left it: CC {:#x}, CSTS {:#x}, PCI command {:#x}",
+        n.r32(reg::CC),
+        n.r32(reg::CSTS),
+        n.pci_command()
+    );
     // Reset, the admin queues, enable (§ 7.6.1).
     if n.r32(reg::CC) & 1 != 0 {
         n.w32(reg::CC, 0);

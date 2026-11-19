@@ -546,10 +546,13 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
         }
         // The boot-control grant (conductor): the machine resets, through the
         // chipset's reset register, else the keyboard controller, else a
-        // triple fault.
+        // triple fault; or, with a0 = 1, powers off through the firmware.
         nr::SYSTEM_RESET => {
             if grants() & grant::BOOT_CONTROL == 0 {
                 return Err(FErr::AccessDenied);
+            }
+            if a0 == 1 {
+                return Err(crate::uefi::power_off());
             }
             crate::arch::cpu::reset()
         }

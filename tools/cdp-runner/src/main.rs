@@ -39,6 +39,8 @@ mod monitor;
 mod saver;
 #[path = "../../../e2e/os/specs/services.rs"]
 mod services;
+#[path = "../../../e2e/os/specs/session.rs"]
+mod session;
 #[path = "../../../e2e/site/specs/site.rs"]
 mod site_specs;
 #[path = "../../../e2e/os/specs/stage.rs"]
@@ -87,10 +89,18 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("fs.files", terminal::fs_files),
     ("fs.permissions", terminal::fs_permissions),
     ("fs.persists", terminal::fs_persists),
+    ("memory.steady", terminal::memory_steady),
     ("accounts.lifecycle", accounts::lifecycle),
     ("accounts.throttle", accounts::throttle),
     ("accounts.password", accounts::password),
     ("accounts.key_gone", accounts::key_gone),
+    ("accounts.export", accounts::export),
+    ("accounts.import", accounts::import),
+    ("welcome.form", session::welcome_form),
+    ("login.form", session::login_form),
+    ("accounts.login", session::login_time),
+    ("login.restart", session::login_restart),
+    ("login.shutdown", session::login_shutdown),
     ("stage.windows", stage::windows),
     ("ui.cursor", stage::cursor),
     ("stage.doors", stage::doors),
@@ -452,7 +462,7 @@ impl Ctx {
         save("diff", &diff)
     }
 
-    fn log(&self) -> String {
+    pub fn log(&self) -> String {
         std::fs::read_to_string(&self.com1).unwrap_or_default().replace('\r', "")
     }
 
@@ -541,6 +551,17 @@ impl Ctx {
             return Err(format!("the echo ended with {:?}, not end", line.trim()));
         }
         Ok(back)
+    }
+
+    /// A line printed under the spec's result (a measurement, say).
+    pub fn note(&mut self, line: &str) {
+        self.notes.push(String::from(line));
+    }
+
+    /// The VM restarted or powered off by itself (Restart, Shut down;
+    /// TASK-102): the guard's counts begin again, as after `reset`.
+    pub fn rebooted_by_guest(&mut self) {
+        self.rebooted = true;
     }
 
     /// A warm reboot (RAM kept), as a restart button does.

@@ -110,6 +110,8 @@ pub const PROGRAMS: &[UserProgram] = &[
     },
     UserProgram { package: "app-terminal", bin: "terminal", path: "/system/apps/terminal", kind: fsi::Kind::App },
     UserProgram { package: "app-monitor", bin: "monitor", path: "/system/apps/monitor", kind: fsi::Kind::App },
+    UserProgram { package: "app-session", bin: "welcome", path: "/system/apps/welcome", kind: fsi::Kind::App },
+    UserProgram { package: "app-session", bin: "login", path: "/system/apps/login", kind: fsi::Kind::App },
     UserProgram { package: "svc-cdpd", bin: "cdpd", path: "/system/services/cdpd", kind: fsi::Kind::Service },
     UserProgram { package: "svc-brain", bin: "brain", path: "/system/services/brain", kind: fsi::Kind::Service },
     UserProgram {
@@ -201,23 +203,38 @@ pub fn build_with(flavour: Flavour, signed: bool) -> Result<Built, String> {
 /// `without` names services a test image leaves out (`@boot.title`'s image
 /// has no stage, so the title stays on the screen).
 pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str], without: &[&str]) -> Result<Built, String> {
-    build_image(flavour, signed, kernel_features, without, None, flavour.name())
+    build_image(flavour, signed, kernel_features, without, None, &[], flavour.name())
+}
+
+/// The crash test's image (TASK-099): e2e, ffs with its load (and, with
+/// `planted`, the ordering bug the test must catch), and nothing that
+/// doesn't serve the disk. → `target/freally/crash-load[-planted]/`.
+pub fn build_crash_load(planted: bool) -> Result<Built, String> {
+    const WITHOUT: &[&str] = &["stage", "desktop", "monitor", "terminal", "cdpd", "vfs", "accounts"];
+    let mut features = vec!["svc-ffs/crash-load"];
+    if planted {
+        features.push("svc-ffs/plant-data-after-superblock");
+    }
+    let dir = if planted { "crash-load-planted" } else { "crash-load" };
+    build_image(Flavour::E2e, true, &[], WITHOUT, None, &features, dir)
 }
 
 /// The probe image (TASK-069): the dev flavour with the probe started at
 /// boot, and no stage, desktop or apps. → `target/freally/probe/`.
 pub fn build_probe() -> Result<Built, String> {
-    build_image(Flavour::Dev, true, &[], PROBE_WITHOUT, Some((&PROBE, "apps/probe/probe.svc")), "probe")
+    build_image(Flavour::Dev, true, &[], PROBE_WITHOUT, Some((&PROBE, "apps/probe/probe.svc")), &[], "probe")
 }
 
 /// Every image: the flavour's programs less `without`, plus `extra` (a
-/// program and its manifest), into `target/freally/<dir>/`.
+/// program and its manifest), with `user_features` added to the programs'
+/// build, into `target/freally/<dir>/`.
 fn build_image(
     flavour: Flavour,
     signed: bool,
     kernel_features: &[&str],
     without: &[&str],
     extra: Option<(&'static UserProgram, &str)>,
+    user_features: &[&str],
     dir: &str,
 ) -> Result<Built, String> {
     let out = util::target_dir().join("freally").join(dir);
@@ -255,7 +272,7 @@ fn build_image(
         let name = fsvc::parse(&text).map_err(|e| format!("{svc}: {e}"))?.name;
         manifests.push((name, text));
     }
-    let user = build_user(&programs, flavour)?;
+    let user = build_user_with(&programs, flavour, user_features)?;
 
     // 4. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");

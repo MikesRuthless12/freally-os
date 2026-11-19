@@ -21,6 +21,8 @@ use fwire::proto::ffs as f;
 use fwire::proto::vfs as v;
 use svc_accounts::{AccountRecord, Refused, Role, Throttle, file_name, kek, unwrap, wipe, wrap};
 
+mod bundle;
+
 fstd::program!(run);
 
 const DIR: &str = "/system/accounts";
@@ -131,62 +133,164 @@ impl Accounts {
         fstd::fs::write(&alloc::format!("{DIR}/{}", file_name(&r.id)), &r.encode()).map_err(|e| (e.code, e.text))
     }
 
-    fn create(&mut self, cr: &a::Create) -> Reply {
-        if !svc_accounts::valid_username(&cr.username) {
+    /// A new account's name and password, before anything else is asked.
+    fn check_new(&self, username: &str, display_name: &str, password: &str) -> Result<(), (FErr, String)> {
+        if !svc_accounts::valid_username(username) {
             return Err(refused(Refused::BadUsername));
         }
-        if cr.display_name.chars().count() > 64 {
+        if display_name.chars().count() > 64 {
             return Err(refused(Refused::BadDisplayName));
         }
-        svc_accounts::check_password(&cr.password).map_err(refused)?;
-        if self.records.iter().any(|r| r.username == cr.username) {
-            return Err((FErr::AlreadyExists, alloc::format!("There's already an account called {}.", cr.username)));
+        svc_accounts::check_password(password).map_err(refused)?;
+        if self.records.iter().any(|r| r.username == username) {
+            return Err((FErr::AlreadyExists, alloc::format!("There's already an account called {username}.")));
         }
-        // The first account is the Owner; any other needs the Owner, logged in, to say so.
-        let role = if self.records.is_empty() {
-            Role::Owner
-        } else {
-            let owner = self.session.as_ref().and_then(|s| self.records.iter().find(|r| r.username == s.username));
-            let Some(owner) = owner.filter(|r| r.role == Role::Owner) else {
-                return Err((FErr::AccessDenied, String::from("Only the Owner adds accounts.")));
-            };
-            let k = kek(&cr.owner_password, &owner.salt, owner.kdf).map_err(refused)?;
-            let mut check = unwrap(&k, &owner.wrap_nonce, &owner.id, &owner.wrapped_master_key).map_err(refused)?;
-            wipe(&mut check);
-            Role::Standard
+        Ok(())
+    }
+
+    /// The role of a new account: the first is the Owner; any other needs
+    /// the Owner, logged in, to give its password.
+    fn role_for_new(&self, owner_password: &str) -> Result<Role, (FErr, String)> {
+        if self.records.is_empty() {
+            return Ok(Role::Owner);
+        }
+        let owner = self.session.as_ref().and_then(|s| self.records.iter().find(|r| r.username == s.username));
+        let Some(owner) = owner.filter(|r| r.role == Role::Owner) else {
+            return Err((FErr::AccessDenied, String::from("Only the Owner adds accounts.")));
         };
+        let k = kek(owner_password, &owner.salt, owner.kdf).map_err(refused)?;
+        let mut check = unwrap(&k, &owner.wrap_nonce, &owner.id, &owner.wrapped_master_key).map_err(refused)?;
+        wipe(&mut check);
+        Ok(Role::Standard)
+    }
+
+    /// A new account with its sealed home, which is left unlocked for the
+    /// caller to fill, lock and save; `like` gives an imported account its
+    /// settings and when it was made.
+    fn make(
+        &mut self,
+        username: &str,
+        display_name: &str,
+        password: &str,
+        role: Role,
+        like: Option<&AccountRecord>,
+    ) -> Result<AccountRecord, (FErr, String)> {
+        self.check_new(username, display_name, password)?;
         let (id, salt, nonce) = (random::<16>()?, random::<16>()?, random::<24>()?);
-        let mut master = master_key(&cr.username)?;
+        let mut master = master_key(username)?;
         let params = kdf();
-        let mut k = kek(&cr.password, &salt, params).map_err(refused)?;
+        let mut k = kek(password, &salt, params).map_err(refused)?;
         let wrapped = wrap(&k, &nonce, &id, &master);
         wipe(&mut k);
-        let mut home = f::Home { name: alloc::format!("home:{}", cr.username), owner: id, key: master };
+        let mut home = f::Home { name: alloc::format!("home:{username}"), owner: id, key: master };
         let made: Result<f::Subvol, _> = Self::call(&mut self.ffs, f::CREATE_HOME, &home);
         wipe(&mut home.key);
         wipe(&mut master);
         let sv = made?.sv;
-        // Made unlocked: locked until its owner logs in.
-        Self::call::<_, ()>(&mut self.ffs, f::LOCK, &f::Subvol { sv })?;
-        let r = AccountRecord {
+        Ok(AccountRecord {
             id,
-            username: cr.username.clone(),
-            display_name: cr.display_name.clone(),
+            username: String::from(username),
+            display_name: String::from(display_name),
             role,
-            created_unix: fstd::time::utc_ns() / 1_000_000_000,
+            created_unix: like.map_or(fstd::time::utc_ns() / 1_000_000_000, |l| l.created_unix),
             kdf: params,
             salt,
             wrapped_master_key: wrapped,
             wrap_nonce: nonce,
             home_subvolume: sv,
-            dark: true,
-            ui_scale_pct: 100,
-            locale: *b"en-US\0\0\0",
-        };
+            dark: like.is_none_or(|l| l.dark),
+            ui_scale_pct: like.map_or(100, |l| l.ui_scale_pct),
+            locale: like.map_or(*b"en-US\0\0\0", |l| l.locale),
+        })
+    }
+
+    /// The home locked (until its owner logs in) and the record kept.
+    fn keep(&mut self, r: AccountRecord) -> Result<(), (FErr, String)> {
+        Self::call::<_, ()>(&mut self.ffs, f::LOCK, &f::Subvol { sv: r.home_subvolume })?;
         self.save(&r)?;
-        fstd::info!("accounts: made {} ({:?}), home subvolume {sv}", cr.username, role);
         self.records.push(r);
+        Ok(())
+    }
+
+    fn create(&mut self, cr: &a::Create) -> Reply {
+        self.check_new(&cr.username, &cr.display_name, &cr.password)?;
+        let role = self.role_for_new(&cr.owner_password)?;
+        let r = self.make(&cr.username, &cr.display_name, &cr.password, role, None)?;
+        let sv = r.home_subvolume;
+        self.keep(r)?;
+        fstd::info!("accounts: made {} ({:?}), home subvolume {sv}", cr.username, role);
         Ok(fwire::to_payload(&()))
+    }
+
+    /// The session's home, if someone is logged in.
+    fn home(&self) -> Option<u64> {
+        self.session.as_ref().map(|s| s.home)
+    }
+
+    /// TASK-103: the session's account and home, sealed with its password.
+    fn export(&mut self, e: &a::Export) -> Reply {
+        let s = self.session.as_ref().ok_or((FErr::AccessDenied, String::from("Log in first.")))?;
+        let (user, sv) = (s.username.clone(), s.home);
+        let r = self
+            .records
+            .iter()
+            .find(|r| r.username == user)
+            .cloned()
+            .ok_or((FErr::NotFound, String::from("no record")))?;
+        // The password typed again: the bundle opens with it.
+        let mut k = kek(&e.password, &r.salt, r.kdf).map_err(refused)?;
+        let opened = unwrap(&k, &r.wrap_nonce, &r.id, &r.wrapped_master_key);
+        wipe(&mut k);
+        let mut check = opened.map_err(refused)?;
+        wipe(&mut check);
+        let (salt, prefix) = (random::<16>()?, random::<16>()?);
+        let now = fstd::time::utc_ns() / 1_000_000_000;
+        let bytes = bundle::export(&mut self.ffs, sv, &r, &e.password, kdf(), salt, prefix, now)?;
+        let path = alloc::format!("/home/{user}/{}/{user}.facct", bundle::EXPORTS);
+        fstd::info!("accounts: exported {user} to {path} ({bytes} bytes)");
+        Ok(fwire::to_payload(&a::Exported { path, bytes }))
+    }
+
+    fn preview(&mut self, o: &a::Open) -> Reply {
+        let home = self.home();
+        let found = bundle::preview(&mut self.ffs, &o.name, home, &o.password)?;
+        Ok(fwire::to_payload(&a::Preview {
+            username: found.record.username,
+            display_name: found.record.display_name,
+            files: found.files,
+            bytes: found.bytes,
+            exported_unix: found.exported_unix,
+        }))
+    }
+
+    /// TASK-103: a bundle, checked whole first, made into an account with
+    /// the bundle's password.
+    fn import(&mut self, im: &a::Import) -> Reply {
+        let home = self.home();
+        let found = bundle::preview(&mut self.ffs, &im.name, home, &im.password)?;
+        let username = if im.rename.is_empty() { found.record.username.clone() } else { im.rename.clone() };
+        self.check_new(&username, &found.record.display_name, &im.password)?;
+        let role = self.role_for_new(&im.owner_password)?;
+        let r = self.make(&username, &found.record.display_name, &im.password, role, Some(&found.record))?;
+        let sv = r.home_subvolume;
+        if let Err(e) = bundle::unpack(&mut self.ffs, &im.name, home, &im.password, sv) {
+            // Checked whole a moment ago: only a disk failing gets here.
+            let _ = Self::call::<_, ()>(&mut self.ffs, f::LOCK, &f::Subvol { sv });
+            return Err(e);
+        }
+        self.keep(r)?;
+        fstd::info!(
+            "accounts: imported {username} ({:?}) from {}: {} files, {} bytes",
+            role,
+            im.name,
+            found.files,
+            found.bytes
+        );
+        Ok(fwire::to_payload(&a::User {
+            username,
+            display_name: found.record.display_name,
+            owner: role == Role::Owner,
+        }))
     }
 
     fn login(&mut self, l: &a::Login) -> Reply {
@@ -303,6 +407,29 @@ impl Accounts {
                 let r = self.change_password(&cp);
                 fstd::secret::wipe_str(&mut cp.old);
                 fstd::secret::wipe_str(&mut cp.new);
+                r
+            }
+            a::EXPORT => {
+                let mut e: a::Export = arg(p)?;
+                let r = self.export(&e);
+                fstd::secret::wipe_str(&mut e.password);
+                r
+            }
+            a::BUNDLES => {
+                let home = self.home();
+                Ok(fwire::to_payload(&a::Bundles { names: bundle::bundles(&mut self.ffs, home)? }))
+            }
+            a::PREVIEW => {
+                let mut o: a::Open = arg(p)?;
+                let r = self.preview(&o);
+                fstd::secret::wipe_str(&mut o.password);
+                r
+            }
+            a::IMPORT => {
+                let mut im: a::Import = arg(p)?;
+                let r = self.import(&im);
+                fstd::secret::wipe_str(&mut im.password);
+                fstd::secret::wipe_str(&mut im.owner_password);
                 r
             }
             a::SESSION => {

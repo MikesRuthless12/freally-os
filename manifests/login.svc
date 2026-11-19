@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = login
+binary      = /system/apps/login
+description = Opens an account with its password; shuts down or restarts the computer.
+start       = demand
+after       = logger, stage, accounts
+restart     = on-failure
+class       = interactive
+grants      = fonts, os
+# Accounts need storage: QEMU-only in Phase 6, dev and e2e images.
+flavours    = dev, e2e

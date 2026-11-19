@@ -255,6 +255,8 @@ impl<S: Store> Volume<S> {
     /// The commit, with the superblock's `flags` (`CLEAN` at unmount).
     pub(crate) fn commit_with(&mut self, flags: u16) -> Result<(), FsError> {
         // 1. Data first.
+        #[cfg(feature = "plant-data-after-superblock")]
+        let mut late = alloc::vec::Vec::new();
         for (b, mut d) in core::mem::take(&mut self.data) {
             // An encrypted subvolume's data, sealed as its extent's tag says.
             if let Some(sv) = self.data_sv.remove(&b)
@@ -262,6 +264,10 @@ impl<S: Store> Volume<S> {
             {
                 s.seal(b, self.generation, &mut d);
             }
+            // The planted bug (TASK-099): the data held back until after the superblock.
+            #[cfg(feature = "plant-data-after-superblock")]
+            late.push((b, d));
+            #[cfg(not(feature = "plant-data-after-superblock"))]
             self.store.write(b, &d)?;
         }
         self.data_sv.clear();
@@ -286,6 +292,10 @@ impl<S: Store> Volume<S> {
             ..self.sb
         };
         self.store.write(Superblock::slot(self.generation), &sb.encode())?;
+        #[cfg(feature = "plant-data-after-superblock")]
+        for (b, d) in late {
+            self.store.write(b, &d)?;
+        }
         self.store.flush()?;
         self.sb = sb;
         self.generation += 1;

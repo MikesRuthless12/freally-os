@@ -253,9 +253,10 @@ impl Monitor {
                     self.cpu_history.push((total / cpus).clamp(0.0, 100.0));
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 self.missed += 1;
                 self.unreachable = self.missed >= 3;
+                fstd::warn!("monitor: conductor didn't list the services ({e:?}), {} in a row", self.missed);
             }
         }
         let vendor = self.read_devices();
@@ -375,11 +376,14 @@ impl Monitor {
         }
         let Some(l) = self.logger.as_mut() else { return };
         let req = lg::Read { cursor: self.log_cursor, limit: 500, filter: lg::Filter { svc: None, min_level: None } };
-        if let Ok((r, _)) = l.call::<_, lg::Records>(lg::READ, &req, Vec::new(), deadline()) {
-            for x in r.records {
-                self.log.push(Line { ms: x.ts_ns as f64 / 1e6, service: x.svc, level: x.level, msg: x.msg });
+        match l.call::<_, lg::Records>(lg::READ, &req, Vec::new(), deadline()) {
+            Ok((r, _)) => {
+                for x in r.records {
+                    self.log.push(Line { ms: x.ts_ns as f64 / 1e6, service: x.svc, level: x.level, msg: x.msg });
+                }
+                self.log_cursor = r.next_cursor;
             }
-            self.log_cursor = r.next_cursor;
+            Err(e) => fstd::warn!("monitor: the log couldn't be read: {e:?}"),
         }
     }
 
