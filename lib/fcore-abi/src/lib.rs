@@ -404,6 +404,10 @@ pub mod topic {
     /// The GOP's modes (BootInfo's `gop_modes`, u32 each, 0 after the last)
     /// and, last, the one in use (`width << 16 | height`).
     pub const GOP_MODES: u64 = 8;
+    /// The running image (TASK-081): its slot (u8, 0 A, 1 B), flavour (u8: 0
+    /// release, 1 dev, 2 e2e), 0 u16, then the verified header's version (32
+    /// bytes, NUL-padded) and build id (20 bytes, the git commit).
+    pub const IMAGE: u64 = 9;
 }
 
 /// Where the kernel found the TSC's frequency (TASK-073): `system_info(CPUS)`'s

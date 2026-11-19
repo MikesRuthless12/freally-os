@@ -83,14 +83,14 @@ pub fn probe_cmd(_args: &[String]) -> Result<(), String> {
             let data = std::fs::read(&ppm).map_err(|e| format!("screendump: {e}"))?;
             let _ = std::fs::remove_file(&ppm);
             let (w, h, rgb) = fimage::ppm::parse(&data)?;
-            let mut colours: Vec<[u8; 3]> = rgb.chunks_exact(3).step_by(97).map(|p| [p[0], p[1], p[2]]).collect();
+            let mut colours: Vec<[u8; 3]> = rgb.as_chunks::<3>().0.iter().step_by(97).copied().collect();
             colours.sort_unstable();
             colours.dedup();
             if colours.len() < 3 {
                 return Err(format!("page {n} is blank ({} colours)", colours.len()));
             }
             let png = out.join(format!("page-{n}.png"));
-            std::fs::write(&png, fimage::png::encode(w, h, 3, &rgb)).map_err(|e| e.to_string())?;
+            std::fs::write(&png, fimage::png::encode(w, h, 3, rgb)).map_err(|e| e.to_string())?;
             println!("probe: page {n} of {pages}: {}", png.display());
         }
         Ok(())

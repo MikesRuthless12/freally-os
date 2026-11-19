@@ -195,7 +195,7 @@ fn cpu_name() -> (String, String) {
 fn read_u64s(t: u64) -> Vec<u64> {
     let mut buf = [0u8; 64];
     let n = fstd::sys::system_info(t, &mut buf).unwrap_or(0).min(buf.len());
-    buf[..n].chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap_or([0; 8]))).collect()
+    buf[..n].as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect()
 }
 
 /// Everything the probe shows, gathered now.

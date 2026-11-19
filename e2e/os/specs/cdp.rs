@@ -102,6 +102,16 @@ pub fn freally(ctx: &mut Ctx) -> Result<(), String> {
     if !arr(&later, "faults")?.is_empty() {
         return Err(format!("faults after the last one: {}", later.to_json()));
     }
+    // A manifest as the image carries it (the Brain's manifest resource reads
+    // the same), and none for a service that isn't there.
+    let m = call(ctx, "Freally.getManifest", Value::obj([("name", "desktop".into())]))?;
+    let text = s(&m, "text");
+    if !text.lines().any(|l| l.split_once('=').is_some_and(|(k, v)| k.trim() == "name" && v.trim() == "desktop")) {
+        return Err(format!("desktop's manifest: {text}"));
+    }
+    if call(ctx, "Freally.getManifest", Value::obj([("name", "nothing".into())])).is_ok() {
+        return Err("a manifest for a service that isn't there".into());
+    }
     // readBack: the theme stage holds, before and after the door changes it.
     let theme = |ctx: &mut Ctx| {
         call(ctx, "Freally.readBack", Value::obj([("service", "stage".into()), ("query", "theme".into())]))

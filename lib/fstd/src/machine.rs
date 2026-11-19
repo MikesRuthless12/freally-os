@@ -117,15 +117,20 @@ pub fn parse_cpus(b: &[u8]) -> Option<Cpus> {
         hybrid: b[2] != 0,
         tsc_from: b[3],
         cpus: recs
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|r| Cpu { apic_id: u32::from_le_bytes([r[0], r[1], r[2], r[3]]), core_type: r[4], online: r[5] != 0 })
             .collect(),
     })
 }
 
+/// A mode's width and height.
+pub type Mode = (u32, u32);
+
 /// Reads `system_info(GOP_MODES)`'s bytes: every mode, and the one in use.
-pub fn parse_gop_modes(b: &[u8]) -> (Vec<(u32, u32)>, Option<(u32, u32)>) {
-    let words: Vec<u32> = b.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+pub fn parse_gop_modes(b: &[u8]) -> (Vec<Mode>, Option<Mode>) {
+    let words: Vec<u32> = b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
     let split = |v: u32| (v >> 16, v & 0xFFFF);
     let end = words.iter().position(|&w| w == 0).unwrap_or(words.len());
     let modes = words[..end].iter().map(|&w| split(w)).collect();
@@ -155,13 +160,70 @@ pub fn edid() -> Vec<u8> {
     read(topic::EDID).unwrap_or_default()
 }
 
-pub fn gop_modes() -> (Vec<(u32, u32)>, Option<(u32, u32)>) {
+pub fn gop_modes() -> (Vec<Mode>, Option<Mode>) {
     read(topic::GOP_MODES).map_or((Vec::new(), None), |b| parse_gop_modes(&b))
+}
+
+/// The running image (`system_info(IMAGE)`, TASK-081).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    /// 0 A, 1 B.
+    pub slot: u8,
+    /// 0 release, 1 dev, 2 e2e.
+    pub flavour: u8,
+    pub version: alloc::string::String,
+    /// The git commit it was built from.
+    pub build_id: [u8; 20],
+}
+
+impl Image {
+    /// "A" or "B".
+    pub fn slot_name(&self) -> &'static str {
+        if self.slot == 0 { "A" } else { "B" }
+    }
+
+    /// The build id in hex, as `git log` shows a commit.
+    pub fn build_hex(&self) -> alloc::string::String {
+        self.build_id.iter().map(|b| alloc::format!("{b:02x}")).collect()
+    }
+}
+
+/// Reads the IMAGE topic's bytes.
+pub fn parse_image(b: &[u8]) -> Option<Image> {
+    if b.len() < 56 {
+        return None;
+    }
+    let v = &b[4..36];
+    let len = v.iter().position(|&c| c == 0).unwrap_or(v.len());
+    Some(Image {
+        slot: b[0],
+        flavour: b[1],
+        version: alloc::string::String::from_utf8_lossy(&v[..len]).into_owned(),
+        build_id: b[36..56].try_into().ok()?,
+    })
+}
+
+/// The running image.
+pub fn image() -> Option<Image> {
+    parse_image(&read(topic::IMAGE)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_image_topic_reads_back() {
+        let mut b = alloc::vec![1u8, 1, 0, 0];
+        let mut v = [0u8; 32];
+        v[..5].copy_from_slice(b"0.6.0");
+        b.extend_from_slice(&v);
+        b.extend_from_slice(&[0xAB; 20]);
+        let i = parse_image(&b).unwrap();
+        assert_eq!((i.slot_name(), i.flavour, i.version.as_str()), ("B", 1, "0.6.0"));
+        assert_eq!(&i.build_hex()[..6], "ababab");
+        assert_eq!(parse_image(&b[..40]), None);
+    }
     use fcore_abi::core_type::{EFFICIENCY as E, PERFORMANCE as P};
 
     fn bytes(x2apic: u8, hybrid: u8, cpus: &[(u32, u8, u8)]) -> Vec<u8> {

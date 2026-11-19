@@ -704,6 +704,18 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
                 out.extend_from_slice(unsafe { core::slice::from_raw_parts(bi.edid.ptr, bi.edid.len as usize) });
             }
         }
+        topic::IMAGE => {
+            if let (Some(bi), Some(img)) = (crate::boot_info(), crate::init::image())
+                && img.len() >= 64
+            {
+                // The header the bootloader verified: flavour at 10, version at
+                // 12..44, build id at 44..64 (PRD § 3, `FsiHeader`).
+                out.push(bi.image.slot as u8);
+                out.push(img[10]);
+                out.extend_from_slice(&[0, 0]);
+                out.extend_from_slice(&img[12..64]);
+            }
+        }
         topic::GOP_MODES => {
             if let Some(bi) = crate::boot_info() {
                 // BootInfo v2 had no list.

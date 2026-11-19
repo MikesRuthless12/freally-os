@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = brain
+binary      = /system/services/brain
+description = Lets the developer's coding agent see and change the running system over the serial line, in developer images only.
+start       = boot
+after       = logger, stage, drv-uart16550
+restart     = always
+class       = background
+flavours    = dev

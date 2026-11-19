@@ -101,7 +101,7 @@ pub fn parse(b: &[u8]) -> Result<Edid, Refused> {
         name_len: 0,
     };
     let mut dtd_size = None;
-    for (i, d) in b[54..126].chunks_exact(18).enumerate() {
+    for (i, d) in b[54..126].as_chunks::<18>().0.iter().enumerate() {
         let clock = u16::from_le_bytes([d[0], d[1]]) as u32;
         if clock == 0 {
             if d[3] == 0xFC {
@@ -123,7 +123,7 @@ pub fn parse(b: &[u8]) -> Result<Edid, Refused> {
         let hmm = d[13] as u32 | ((d[14] as u32 & 0xF) << 8);
         if i == 0 && first_is_native && w > 0 && h > 0 {
             let total = (w + hblank) as u64 * (h + vblank) as u64;
-            let refresh_mhz = if total == 0 { 0 } else { (clock as u64 * 10_000 * 1000 / total) as u32 };
+            let refresh_mhz = (clock as u64 * 10_000 * 1000).checked_div(total).unwrap_or(0) as u32;
             e.preferred = Some(Mode { w, h, refresh_mhz });
             if wmm > 0 && hmm > 0 {
                 dtd_size = Some((wmm, hmm));

@@ -60,3 +60,20 @@ fn our_own_encoder_decodes_too() {
     let file = png::encode(4, 3, 4, &px);
     assert_eq!(png::decode(&file).unwrap().pixels, px);
 }
+
+/// The Brain's deflated screenshots read back exactly, and are small.
+#[test]
+fn a_deflated_png_reads_back() {
+    let (w, h) = (320u32, 200u32);
+    let mut px = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            px.extend_from_slice(&[(x * 255 / w) as u8, (y & 0xF0) as u8, if x % 50 < 25 { 0x30 } else { 0x90 }]);
+        }
+    }
+    let png_bytes = png::encode_deflated(w, h, 3, &px);
+    let d = png::decode(&png_bytes).unwrap();
+    assert_eq!((d.w, d.h, d.channels), (w, h, 3));
+    assert_eq!(d.pixels, px);
+    assert!(png_bytes.len() * 4 < px.len(), "{} bytes", png_bytes.len());
+}

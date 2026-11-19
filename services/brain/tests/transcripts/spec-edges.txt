@@ -1,0 +1,51 @@
+# The edges, from the 2026-07-28 specification's own rules: JSON-RPC errors, the version
+# refusal, unknown tools and resources, tool input refused by its schema (a tool execution
+# error, isError), and the live log followed with subscriptions/listen.
+# Not JSON, and a batch (MCP dropped batches in 2025-06-18):
+> {"jsonrpc":"2.0","id":1,"method":
+< {"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}
+> [{"jsonrpc":"2.0","id":1,"method":"ping"}]
+< {"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}
+# A blank line (the bridge sends one on connecting) is nothing:
+>
+# ping, before any handshake or version:
+> {"jsonrpc":"2.0","id":2,"method":"ping"}
+< {"jsonrpc":"2.0","id":2,"result":{}}
+# Any other method with no version and no handshake, or an unknown version:
+> {"jsonrpc":"2.0","id":3,"method":"tools/list"}
+< {"jsonrpc":"2.0","id":3,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"]}}}
+> {"jsonrpc":"2.0","id":4,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01"}}}
+< {"jsonrpc":"2.0","id":4,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"],"requested":"1900-01-01"}}}
+# A null id, and a method the Brain doesn't have:
+> {"jsonrpc":"2.0","id":null,"method":"ping"}
+< {"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request: the id must be a string or a number"}}
+> {"jsonrpc":"2.0","id":5,"method":"prompts/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"Method not found: prompts/list"}}
+# An unknown tool is a protocol error; arguments its schema refuses are a tool execution error:
+> {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"format_disk","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":6,"error":{"code":-32602,"message":"Unknown tool: format_disk"}}
+> {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_log","arguments":{"limit":5000},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":7,"result":{"resultType":"complete","content":[{"type":"text","text":"Invalid arguments: arguments.limit must be at most 1000"}],"isError":true}}
+> {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"set_theme","arguments":{"theme":"blue"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":8,"result":{"resultType":"complete","content":[{"type":"text","text":"Invalid arguments: arguments.theme must be one of \"dark\", \"light\""}],"isError":true}}
+> {"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"restart_service","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":9,"result":{"resultType":"complete","content":[{"type":"text","text":"Invalid arguments: arguments.name is required"}],"isError":true}}
+# Resources: the list (a manifest per service), the template, a read, and one that isn't there:
+> {"jsonrpc":"2.0","id":10,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":10,"result":{"resultType":"complete","resources":[{"uri":"freally://log/live","name":"The log, live","description":"The newest log records; subscribe to be told when more arrive.","mimeType":"text/plain"},{"uri":"freally://boot/timeline","name":"The boot timeline","description":"Each boot stage and when it was reached.","mimeType":"application/json"},{"uri":"freally://services/desktop/manifest","name":"desktop's manifest","mimeType":"text/plain"}]}}
+> {"jsonrpc":"2.0","id":11,"method":"resources/templates/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":11,"result":{"resultType":"complete","resourceTemplates":[{"uriTemplate":"freally://services/{name}/manifest","name":"A service's manifest","mimeType":"text/plain"}]}}
+> {"jsonrpc":"2.0","id":12,"method":"resources/read","params":{"uri":"freally://boot/timeline","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":12,"result":{"resultType":"complete","contents":[{"uri":"freally://boot/timeline","mimeType":"application/json","text":"[{\"stage\":\"B0\",\"ms_from_b0\":0}]"}]}}
+> {"jsonrpc":"2.0","id":13,"method":"resources/read","params":{"uri":"freally://nothing","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+< {"jsonrpc":"2.0","id":13,"error":{"code":-32602,"message":"Resource not found","data":{"uri":"freally://nothing"}}}
+# The live log: listen (asking for more than the Brain has; the acknowledgment says what it
+# agreed to), the log grows, the stream is cancelled, the log grows again (nothing is sent):
+> {"jsonrpc":"2.0","id":"live","method":"subscriptions/listen","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"notifications":{"toolsListChanged":true,"resourceSubscriptions":["freally://log/live","freally://boot/timeline"]}}}
+< {"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":"live"},"notifications":{"resourceSubscriptions":["freally://log/live"]}}}
+! log
+< {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":"live"},"uri":"freally://log/live"}}
+> {"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"live"}}
+! log
+# A response from the client (the Brain asks nothing, so it's dropped):
+> {"jsonrpc":"2.0","id":99,"result":{}}

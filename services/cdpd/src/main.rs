@@ -8,7 +8,7 @@
 //!   `getBoxModel`, `getAttributes`; `Accessibility.getFullAXTree`;
 //! - `Log.read` (cdp-host turns it into `Log.entryAdded`);
 //! - `Performance.getMetrics`;
-//! - `Freally.getBootTimeline`, `getProcesses`, `getFaults`, `readBack`,
+//! - `Freally.getBootTimeline`, `getProcesses`, `getFaults`, `getManifest`, `readBack`,
 //!   `inventory`.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
@@ -186,6 +186,12 @@ impl Cdpd {
                     })
                     .collect();
                 Ok(Value::obj([("processes", Value::Arr(list))]))
+            }
+            "Freally.getManifest" => {
+                let name = params.get("name").and_then(Value::as_str).ok_or("params: name")?;
+                fstd::service::ask::<_, c::Text>(c::MANIFEST, &c::ByName { name: String::from(name) })
+                    .map(|t| Value::obj([("text", t.text.into())]))
+                    .map_err(|e| format!("conductor: {e:?}"))
             }
             "Freally.getBootTimeline" => {
                 let stages = timeline()?

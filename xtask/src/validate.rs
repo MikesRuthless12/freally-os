@@ -177,6 +177,15 @@ pub fn no_writes(manifests: &[fsvc::Manifest], paths: &[String], allowed: &[Stri
     })
 }
 
+/// Freally Core's ELF, as the image carries it.
+fn kernel(image: &[u8]) -> Result<&[u8], String> {
+    fsi::recheck_file(image, "/system/kernel").map(|(_, k)| k).map_err(|e| e.describe().to_string())
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::no_writes;
@@ -215,13 +224,4 @@ mod tests {
         let ms = [m("drv-x", "/system/drivers/x", "dma")];
         assert!(no_writes(&ms, &[], &[]).unwrap_err().contains("drv-x holds the DMA grant"));
     }
-}
-
-/// Freally Core's ELF, as the image carries it.
-fn kernel(image: &[u8]) -> Result<&[u8], String> {
-    fsi::recheck_file(image, "/system/kernel").map(|(_, k)| k).map_err(|e| e.describe().to_string())
-}
-
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
 }

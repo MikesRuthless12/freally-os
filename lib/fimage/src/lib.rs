@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Freally's own image code.
 //!
-//! - [`png`]: a PNG encoder that writes stored (uncompressed) deflate blocks,
-//!   exact and simple, and a decoder for exactly what it writes.
+//! - [`png`]: a PNG encoder, in stored (uncompressed) deflate blocks, exact
+//!   and simple, or [`deflate`]d for the Brain's screenshots; and a decoder
+//!   for exactly what the stored one writes.
 //! - [`ppm`]: reading the binary PPM (P6) QEMU's `screendump` writes.
 //! - [`fimg`]: FIMG, Freally's own pixel format (premultiplied BGRA, no
 //!   decoding), and the 2x and 1x made from a 3x render.
@@ -16,6 +17,7 @@ extern crate alloc;
 
 pub mod blit;
 pub mod bundle;
+pub mod deflate;
 pub mod fimg;
 #[cfg(feature = "decode")]
 pub mod inflate;

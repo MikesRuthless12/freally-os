@@ -56,16 +56,18 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 
 /// Encodes `w × h` pixels of `channels` bytes each (3 RGB, 4 RGBA), row by row.
 pub fn encode(w: u32, h: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
-    assert!(channels == 3 || channels == 4, "RGB or RGBA");
-    let row = w as usize * channels as usize;
-    assert_eq!(pixels.len(), row * h as usize, "pixel count");
-    let mut raw = Vec::with_capacity((row + 1) * h as usize);
-    for r in pixels.chunks(row) {
-        raw.push(0); // filter: none
-        raw.extend_from_slice(r);
-    }
-    let mut z = Vec::with_capacity(raw.len() + raw.len() / 65535 * 5 + 16);
-    z.extend_from_slice(&[0x78, 0x01]); // deflate, 32 KiB window, no dictionary
+    encode_with(w, h, channels, pixels, false)
+}
+
+/// As [`encode`], compressed ([`crate::deflate`]): for a picture that has to
+/// cross a slow line (the Brain's screenshots).
+pub fn encode_deflated(w: u32, h: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
+    encode_with(w, h, channels, pixels, true)
+}
+
+/// `raw` in stored deflate blocks.
+fn stored(z: &mut Vec<u8>, raw: &[u8]) {
+    z.reserve(raw.len() + raw.len() / 65535 * 5 + 16);
     let mut blocks = raw.chunks(65535).peekable();
     if blocks.peek().is_none() {
         z.extend_from_slice(&[1, 0, 0, 0xFF, 0xFF]);
@@ -76,6 +78,23 @@ pub fn encode(w: u32, h: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
         z.extend_from_slice(&len.to_le_bytes());
         z.extend_from_slice(&(!len).to_le_bytes());
         z.extend_from_slice(b);
+    }
+}
+
+fn encode_with(w: u32, h: u32, channels: u8, pixels: &[u8], deflated: bool) -> Vec<u8> {
+    assert!(channels == 3 || channels == 4, "RGB or RGBA");
+    let row = w as usize * channels as usize;
+    assert_eq!(pixels.len(), row * h as usize, "pixel count");
+    let mut raw = Vec::with_capacity((row + 1) * h as usize);
+    for r in pixels.chunks(row) {
+        raw.push(0); // filter: none
+        raw.extend_from_slice(r);
+    }
+    let mut z = alloc::vec![0x78, 0x01]; // deflate, 32 KiB window, no dictionary
+    if deflated {
+        z.extend_from_slice(&crate::deflate::compress(&raw));
+    } else {
+        stored(&mut z, &raw);
     }
     z.extend_from_slice(&adler32(&raw).to_be_bytes());
 

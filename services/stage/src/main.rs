@@ -91,6 +91,14 @@ struct Stage {
     art: Option<Art>,
 }
 
+/// Who may read back the windows and the pointer: the test door (conductor
+/// and cdpd, e2e images) and the Brain (dev images).
+#[cfg(any(feature = "flavour-e2e", feature = "flavour-dev"))]
+fn reads_back(name: &str) -> bool {
+    (cfg!(feature = "flavour-e2e") && matches!(name, "conductor" | "cdpd"))
+        || (cfg!(feature = "flavour-dev") && name == "brain")
+}
+
 fn rdtsc() -> u64 {
     // SAFETY: RDTSC is allowed in user mode (CR4.TSD is clear).
     unsafe { core::arch::x86_64::_rdtsc() }
@@ -408,23 +416,22 @@ impl Stage {
             }
             st::SET_THEME => {
                 fwire::from_payload::<st::SetTheme>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|t| {
-                    if !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {
-                        return Err((FErr::AccessDenied, "only settings, the shell and cdpd set the theme"));
+                    let brain = cfg!(feature = "flavour-dev") && name == "brain";
+                    if !brain && !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {
+                        return Err((FErr::AccessDenied, "only settings, the shell, the Brain and cdpd set the theme"));
                     }
                     self.set_theme(t.theme);
                     Ok((Vec::new(), Vec::new()))
                 })
             }
-            #[cfg(feature = "flavour-e2e")]
-            st::LIST_WINDOWS if matches!(name.as_str(), "conductor" | "cdpd") => {
-                Ok((fwire::to_payload(&self.list()), Vec::new()))
-            }
+            #[cfg(any(feature = "flavour-e2e", feature = "flavour-dev"))]
+            st::LIST_WINDOWS if reads_back(&name) => Ok((fwire::to_payload(&self.list()), Vec::new())),
             #[cfg(feature = "flavour-e2e")]
             st::AX_TREE if matches!(name.as_str(), "conductor" | "cdpd") => fwire::from_payload::<st::ById>(p)
                 .map_err(|_| (FErr::InvalidArgs, "unreadable"))
                 .map(|b| (fwire::to_payload(&self.ax_bytes(b.window_id)), Vec::new())),
-            #[cfg(feature = "flavour-e2e")]
-            st::POINTER if matches!(name.as_str(), "conductor" | "cdpd") => Ok((
+            #[cfg(any(feature = "flavour-e2e", feature = "flavour-dev"))]
+            st::POINTER if reads_back(&name) => Ok((
                 fwire::to_payload(&st::PointerAt { x: self.desk.x, y: self.desk.y, buttons: self.desk.buttons }),
                 Vec::new(),
             )),
@@ -580,7 +587,7 @@ impl Stage {
         st::AxBytes { window_id, bytes }
     }
 
-    #[cfg(feature = "flavour-e2e")]
+    #[cfg(any(feature = "flavour-e2e", feature = "flavour-dev"))]
     fn list(&self) -> st::Windows {
         let focused = self.desk.windows.focused();
         let windows = self

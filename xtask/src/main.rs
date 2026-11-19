@@ -39,6 +39,7 @@ cargo xtask <command>
   build --probe                  the probe image (dev, no desktop): what a new machine has, on screen
   run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe)
   probe                          boot the probe headless, check what it found, keep each page as a PNG
+  brain-bridge [--port N]        the Brain's MCP server for Claude Code: stdio to the dev VM's COM2 (127.0.0.1:4552)
   cdp --os [--site] [--only=ids] the CDP legs: every coverage.json feature, spec by spec
   pack --flavour F [--out P]     pack an unsigned image
   sign <image> --key dev|staging sign an image in place
@@ -92,6 +93,7 @@ fn main() -> ExitCode {
         Some("screen") => screen::screen_cmd(rest),
         Some("run") => run::run_cmd(rest),
         Some("probe") => probe::probe_cmd(rest),
+        Some("brain-bridge") => brain_bridge_cmd(rest),
         Some("cdp") => cdp::cdp_cmd(rest),
         Some("boot-check") => boot_check::boot_check_cmd(rest),
         Some("version") => version::version_cmd(rest),
@@ -131,4 +133,12 @@ fn main() -> ExitCode {
 /// The headless browser the docs-site leg drives: `$FREALLY_CHROME`, else `google-chrome`.
 pub fn cdp_chrome() -> String {
     std::env::var("FREALLY_CHROME").unwrap_or_else(|_| "google-chrome".into())
+}
+
+/// `cargo xtask brain-bridge` (TASK-082): Claude Code's MCP server for the
+/// Brain, run in-process so stdout carries only MCP.
+fn brain_bridge_cmd(args: &[String]) -> Result<(), String> {
+    let port = brain_bridge::port_arg(args)?;
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    brain_bridge::run(addr, std::io::stdin(), std::io::stdout(), &mut std::io::stderr(), Default::default())
 }

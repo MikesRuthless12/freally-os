@@ -266,6 +266,14 @@ version = "0.4.0"
 [[package]]
 name = "svc-brain"
 version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "fimage",
+ "finput",
+ "fjson",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "svc-cdpd"
@@ -352,6 +360,7 @@ version = "0.4.0"
 name = "xtask"
 version = "0.4.0"
 dependencies = [
+ "brain-bridge",
  "cdp-proto",
  "fcore-abi",
  "fcrypto",

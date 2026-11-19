@@ -23,6 +23,9 @@ pub mod conductor {
     pub const INCOMING: u32 = 10;
     /// A boot stage the caller marks (PRD § 3): S3 from stage, S4 from desktop.
     pub const STAMP: u32 = 11;
+    /// A service's manifest as the image carries it (`ByName` → `Text`;
+    /// TASK-081: the Brain's `freally://services/{name}/manifest`).
+    pub const MANIFEST: u32 = 12;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
@@ -38,6 +41,10 @@ pub mod conductor {
     wire_struct! {
         /// `connect` and `restart` and `rollback`: a service by name.
         pub struct ByName { pub name: String }
+    }
+    wire_struct! {
+        /// `manifest`'s answer.
+        pub struct Text { pub text: String }
     }
 
     wire_struct! {
@@ -752,6 +759,7 @@ pub mod inventory {
                 (c::FAULTS, "faults"),
                 (c::BOOT_TIMELINE, "boot_timeline"),
                 (c::STAMP, "stamp"),
+                (c::MANIFEST, "manifest"),
             ],
         ),
         ("logger", &[(l::WRITE, "write"), (l::READ, "read")]),

@@ -102,6 +102,7 @@ pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "app-terminal", bin: "terminal", path: "/system/apps/terminal", kind: fsi::Kind::App },
     UserProgram { package: "app-monitor", bin: "monitor", path: "/system/apps/monitor", kind: fsi::Kind::App },
     UserProgram { package: "svc-cdpd", bin: "cdpd", path: "/system/services/cdpd", kind: fsi::Kind::Service },
+    UserProgram { package: "svc-brain", bin: "brain", path: "/system/services/brain", kind: fsi::Kind::Service },
     UserProgram {
         package: "drv-uart16550",
         bin: "drv-uart16550",

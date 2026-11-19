@@ -328,6 +328,7 @@ impl Conductor {
             c::BOOT_TIMELINE => self.timeline(h.txid).map(|b| (b, Vec::new())),
             c::FAULTS => self.faults_page(payload).map(|b| (b, Vec::new())),
             c::STAMP => self.stamp(&caller, payload).map(|b| (b, Vec::new())),
+            c::MANIFEST => self.manifest(payload).map(|b| (b, Vec::new())),
             _ => Err((FErr::NotSupported, String::from("conductor doesn't serve that"))),
         };
         let msg = match reply {
@@ -603,6 +604,21 @@ impl Conductor {
 
     fn timeline(&self, _txid: u32) -> Result<Vec<u8>, (FErr, String)> {
         Ok(fwire::to_payload(&c::BootTimeline { stages: self.stages() }))
+    }
+
+    /// A service's manifest, as the image carries it (not secret: the
+    /// manifests are in the public repo).
+    fn manifest(&self, payload: &[u8]) -> Result<Vec<u8>, (FErr, String)> {
+        let b: c::ByName = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        let m = self
+            .services
+            .iter()
+            .find(|s| s.m.name == b.name)
+            .ok_or((FErr::NotFound, alloc::format!("no service is called {}", b.name)))?;
+        let path = alloc::format!("/system/manifests/{}.svc", m.m.name);
+        let bytes = self.image.file(&path).map_err(|e| (FErr::NotFound, e))?;
+        let text = core::str::from_utf8(bytes).map_err(|_| (FErr::Integrity, alloc::format!("{path} isn't UTF-8")))?;
+        Ok(fwire::to_payload(&c::Text { text: String::from(text) }))
     }
 
     fn faults_page(&self, payload: &[u8]) -> Result<Vec<u8>, (FErr, String)> {

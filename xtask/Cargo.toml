@@ -20,6 +20,7 @@ fui = { workspace = true, features = ["ui"] }
 svc-stage = { path = "../services/stage" }
 fjson.workspace = true
 fwire.workspace = true
+brain-bridge = { path = "../tools/brain-bridge" }
 cdp-proto.workspace = true
 
 [lints]
