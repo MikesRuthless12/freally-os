@@ -5,12 +5,16 @@
 //! dirty node written after its children, a flush, the superblock into its
 //! slot, a flush.
 
+use crate::extent::Extent;
+use crate::inode::{FileKind, Inode, ROOT_INO};
 use crate::node::{Body, Node};
 use crate::ptr::BlockPtr;
 use crate::space::Space;
 use crate::store::Store;
+use crate::subvol::{Open, SYSTEM, SubvolRecord};
 use crate::superblock::Superblock;
 use crate::{BLOCK, FIRST_FREE, FsError, Key, kind, tree};
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
@@ -32,10 +36,20 @@ pub struct Volume<S: Store> {
     pub(crate) ref_root: BlockPtr,
     /// What the free-space tree holds now.
     written_free: FreeItems,
+    /// This generation's data blocks, by block, not yet written.
+    pub(crate) data: BTreeMap<u64, Box<[u8; BLOCK]>>,
+    /// The subvolumes opened or changed since the last commit.
+    pub(crate) subvols: BTreeMap<u64, Open>,
+    /// The time the caller says it is (Unix ns): inodes' times.
+    pub(crate) now: u64,
+    /// When this generation's first change was made (the 5 s commit timer).
+    pub(crate) first_change: Option<u64>,
 }
 
 impl<S: Store> Volume<S> {
-    /// Formats `store` (a whole, empty partition) as generation 1.
+    /// Formats `store` (a whole, empty partition) as generation 1: the
+    /// three trees, and the system subvolume (256) with its root directory
+    /// (inode 256) and `accounts` (§ 15).
     pub fn format(mut store: S, uuid: [u8; 16]) -> Result<Volume<S>, FsError> {
         let blocks = store.blocks();
         if blocks < FIRST_FREE + 64 {
@@ -55,10 +69,20 @@ impl<S: Store> Volume<S> {
             free_root: BlockPtr::default(),
             ref_root: BlockPtr::default(),
             written_free: FreeItems::new(),
+            data: BTreeMap::new(),
+            subvols: BTreeMap::new(),
+            now: 0,
+            first_change: None,
         };
         v.root = v.cow(None, Node::leaf(tree::ROOT))?;
         v.free_root = v.cow(None, Node::leaf(tree::FREE))?;
         v.ref_root = v.cow(None, Node::leaf(tree::REF))?;
+        v.make_subvol(SYSTEM, "system")?;
+        let ino = v.take_ino(SYSTEM)?;
+        let mut root_dir = Inode::new(FileKind::Dir, ino, 0);
+        root_dir.nlink = 2;
+        v.put_inode(SYSTEM, ino, &root_dir)?;
+        v.create(SYSTEM, ROOT_INO, "accounts", FileKind::Dir)?;
         v.commit()?;
         Ok(v)
     }
@@ -83,6 +107,10 @@ impl<S: Store> Volume<S> {
             free_root: sb.free_tree,
             ref_root: sb.ref_tree,
             written_free: FreeItems::new(),
+            data: BTreeMap::new(),
+            subvols: BTreeMap::new(),
+            now: 0,
+            first_change: None,
         };
         let mut items = FreeItems::new();
         let mut bad = false;
@@ -188,7 +216,7 @@ impl<S: Store> Volume<S> {
 
     /// Writes the dirty nodes under `p`, children first, each pointer
     /// carrying its child's checksum; returns `p` as written.
-    fn write_tree(&mut self, p: BlockPtr) -> Result<BlockPtr, FsError> {
+    pub(crate) fn write_tree(&mut self, p: BlockPtr) -> Result<BlockPtr, FsError> {
         if p.generation != self.generation {
             return Ok(p);
         }
@@ -205,6 +233,18 @@ impl<S: Store> Volume<S> {
 
     /// Commits this generation (§ 13).
     pub fn commit(&mut self) -> Result<(), FsError> {
+        self.commit_with(0)
+    }
+
+    /// The commit, with the superblock's `flags` (`CLEAN` at unmount).
+    pub(crate) fn commit_with(&mut self, flags: u16) -> Result<(), FsError> {
+        // 1. Data first.
+        for (b, d) in core::mem::take(&mut self.data) {
+            self.store.write(b, &d)?;
+        }
+        // 2. Each changed subvolume's tree, then its record in the root tree.
+        self.write_subvols()?;
+        // 3, 4. The free-space tree brought level, then the plain trees.
         self.sync_free_tree()?;
         self.root = self.write_tree(self.root)?;
         self.ref_root = self.write_tree(self.ref_root)?;
@@ -219,7 +259,7 @@ impl<S: Store> Volume<S> {
             free_tree: self.free_root,
             ref_tree: self.ref_root,
             used_blocks: self.sb.block_count - FIRST_FREE - self.space.free_blocks(),
-            flags: 0,
+            flags,
             ..self.sb
         };
         self.store.write(Superblock::slot(self.generation), &sb.encode())?;
@@ -227,6 +267,7 @@ impl<S: Store> Volume<S> {
         self.sb = sb;
         self.generation += 1;
         self.space.settle(self.generation);
+        self.first_change = None;
         Ok(())
     }
 
@@ -236,7 +277,7 @@ impl<S: Store> Volume<S> {
     /// within nodes and across them; no block reached twice; every block
     /// either reached, free, or one of the first 16, never two of these.
     pub fn check(&mut self) -> Result<CheckReport, FsError> {
-        if !self.dirty.is_empty() {
+        if !self.dirty.is_empty() || !self.data.is_empty() {
             return Err(FsError::Corrupt("check a committed volume"));
         }
         let mut reached = BTreeSet::new();
@@ -245,6 +286,47 @@ impl<S: Store> Volume<S> {
         {
             let mut last: Option<Key> = None;
             self.walk(&p, t, None, &mut reached, &mut last, &mut items)?;
+        }
+        // Each subvolume's tree, and every data block its extents name.
+        let mut subvols = Vec::new();
+        let root = self.sb.root_tree;
+        let mut bad = false;
+        self.tree_scan(&root, tree::ROOT, &Key::default(), &mut |k, v| {
+            if k.kind == kind::SUBVOL {
+                match SubvolRecord::decode(v) {
+                    Ok(r) => subvols.push((k.object, r.root)),
+                    Err(_) => bad = true,
+                }
+            }
+            true
+        })?;
+        if bad {
+            return Err(FsError::Corrupt("a subvolume record"));
+        }
+        for (id, p) in subvols {
+            let mut last: Option<Key> = None;
+            self.walk(&p, id, None, &mut reached, &mut last, &mut items)?;
+            let mut extents = Vec::new();
+            self.tree_scan(&p, id, &Key::default(), &mut |k, v| {
+                if k.kind == kind::EXTENT {
+                    extents.push(v.to_vec());
+                }
+                true
+            })?;
+            for raw in extents {
+                let e = Extent::decode(&raw)?;
+                for (i, c) in e.checks.iter().enumerate() {
+                    let b = e.block + i as u64;
+                    if !reached.insert(b) {
+                        return Err(FsError::Corrupt("a data block named twice"));
+                    }
+                    let mut buf = [0u8; BLOCK];
+                    self.store.read(b, &mut buf)?;
+                    if BlockPtr::plain_check(&buf) != *c {
+                        return Err(FsError::Integrity(b));
+                    }
+                }
+            }
         }
         for &b in &reached {
             if b < FIRST_FREE || self.space.is_free(b) {

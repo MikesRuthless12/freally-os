@@ -71,7 +71,9 @@ fn value(r: &mut Rng) -> Vec<u8> {
 }
 
 fn same<S: Store>(v: &mut Volume<S>, model: &BTreeMap<Key, Vec<u8>>, when: &str) {
-    let items = v.items().unwrap();
+    // The test's own items (kind 1): the root tree also holds the system
+    // subvolume's record.
+    let items: Vec<_> = v.items().unwrap().into_iter().filter(|(k, _)| k.kind == 1).collect();
     assert_eq!(items.len(), model.len(), "{when}: the item count");
     for ((k, val), (mk, mv)) in items.iter().zip(model) {
         assert_eq!((k, val), (mk, mv), "{when}");

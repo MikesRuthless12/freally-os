@@ -6,18 +6,24 @@
 //!
 //! Part 1 (TASK-094): the superblocks, checksummed block pointers, the 4 KiB
 //! nodes, the copy-on-write B+tree, and the free-space tree with its
-//! allocator (a freed block waits two generations).
+//! allocator (a freed block waits two generations). Part 2 (TASK-095):
+//! inodes, directories, extents and file data, and the transaction policy.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod btree;
 pub mod crc32c;
+pub mod dir;
+pub mod extent;
+pub mod inode;
 pub mod node;
 pub mod ptr;
 pub mod space;
 pub mod store;
+pub mod subvol;
 pub mod superblock;
+pub mod txn;
 pub mod volume;
 
 /// Every block is 4 KiB.
@@ -41,6 +47,18 @@ pub enum FsError {
     TooLarge,
     /// A structure that breaks the format (a bad node, a key out of order).
     Corrupt(&'static str),
+    /// No such file, directory or item.
+    NotFound,
+    /// A name already in the directory.
+    Exists,
+    /// A name FreallyFS doesn't take (empty, over 255 bytes, `/`, NUL, `.`, `..`).
+    BadName,
+    /// A directory that still holds entries.
+    NotEmpty,
+    /// A file where a directory must be.
+    NotADirectory,
+    /// A directory where a file must be.
+    IsADirectory,
 }
 
 /// A key: `(object, kind, offset)`, compared in that order (§ 5).
