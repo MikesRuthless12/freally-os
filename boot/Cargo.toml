@@ -16,9 +16,7 @@ flavour-e2e = []
 [dependencies]
 fbootctl.workspace = true
 fcore-abi.workspace = true
-# SHA-NI waits for an inline-assembly version: the UEFI target is soft-float,
-# and refuses a function that turns SSE on (TASK-076).
-fcrypto.workspace = true
+fcrypto = { workspace = true, features = ["shani"] }
 fedid.workspace = true
 fsi.workspace = true
 fscreen.workspace = true

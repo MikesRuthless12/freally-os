@@ -3,14 +3,21 @@
 //! `sha256msg1`, `sha256msg2`), used when the CPU has them (TASK-076: the
 //! bootloader hashes the whole image twice before anything runs; this is
 //! about ten times the software path's speed). Only built with the
-//! `shani` feature, which the kernel's soft-float build never turns on.
+//! `shani` feature (the bootloader and the host tools).
+//!
+//! **Assembly, not intrinsics:** the bootloader's UEFI target is soft-float,
+//! and refuses any Rust function that turns SSE on; the same rounds as one
+//! assembly function (generated, its sixteen groups uniform) assemble on any
+//! x86-64 target. It keeps the XMM registers the firmware's ABI expects kept
+//! (xmm6 to xmm10, the ones it uses), so a bootloader that hands control back
+//! to the firmware leaves them as they were.
 //!
 //! The same FIPS 180-4 rounds as the software path, four at a time: the
 //! state is held as (A, B, E, F) and (C, D, G, H), as `sha256rnds2` wants it,
 //! and the message schedule's W[16..64] is made four words at a time,
 //! W[t..t+4] = msg2(msg1(W[t-16..], W[t-12..]) + W[t-7..t-3], W[t-4..]).
 
-use core::arch::x86_64::*;
+use core::arch::x86_64::{__cpuid, __cpuid_count};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 /// 0 not asked yet, 1 no, 2 yes.
@@ -31,53 +38,240 @@ pub fn available() -> bool {
     }
 }
 
+/// The byte swap that makes each 32-bit lane big-endian (`pshufb`'s mask).
+static SWAP: [u8; 16] = [3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12];
+
+unsafe extern "sysv64" {
+    /// `blocks` 64-byte blocks at `data` compressed into `state` (System V:
+    /// all XMM registers the caller's to lose; xmm6-xmm10 kept regardless).
+    fn fcrypto_sha256_ni_blocks(state: *mut u32, data: *const u8, blocks: usize, k: *const u32, swap: *const u8);
+}
+
 /// Compresses `blocks` into `h`.
 ///
 /// # Safety
 /// The CPU must have the SHA extensions, SSSE3 and SSE4.1 ([`available`]).
-#[target_feature(enable = "sha,sse2,ssse3,sse4.1")]
 pub unsafe fn compress(h: &mut [u32; 8], blocks: &[[u8; 64]], k: &[u32; 64]) {
-    // Big-endian words: each 32-bit lane's bytes reversed.
-    let swap = _mm_set_epi64x(0x0c0d_0e0f_0809_0a0b, 0x0405_0607_0001_0203);
-    // SAFETY: `h` is 8 u32s: two unaligned 16-byte loads.
-    let (dcba, hgfe) = unsafe {
-        (_mm_loadu_si128(h.as_ptr() as *const __m128i), _mm_loadu_si128(h.as_ptr().add(4) as *const __m128i))
-    };
-    // (A, B, E, F) and (C, D, G, H), highest lane first, as sha256rnds2 takes them.
-    let cdab = _mm_shuffle_epi32(dcba, 0xB1);
-    let efgh = _mm_shuffle_epi32(hgfe, 0x1B);
-    let mut abef = _mm_alignr_epi8(cdab, efgh, 8);
-    let mut cdgh = _mm_blend_epi16(efgh, cdab, 0xF0);
-    for block in blocks {
-        let (abef_was, cdgh_was) = (abef, cdgh);
-        // SAFETY: a block is 64 bytes: four unaligned 16-byte loads.
-        let mut w: [__m128i; 4] = core::array::from_fn(|i| {
-            _mm_shuffle_epi8(unsafe { _mm_loadu_si128(block.as_ptr().add(16 * i) as *const __m128i) }, swap)
-        });
-        for i in 0..16 {
-            // SAFETY: `k` is 64 u32s; 4 × i + 4 ≤ 64.
-            let ki = unsafe { _mm_loadu_si128(k.as_ptr().add(4 * i) as *const __m128i) };
-            let wk = _mm_add_epi32(w[i % 4], ki);
-            cdgh = _mm_sha256rnds2_epu32(cdgh, abef, wk);
-            abef = _mm_sha256rnds2_epu32(abef, cdgh, _mm_shuffle_epi32(wk, 0x0E));
-            // The schedule's next four words, in the slot just used.
-            if i < 12 {
-                let (x0, x1, x2, x3) = (w[i % 4], w[(i + 1) % 4], w[(i + 2) % 4], w[(i + 3) % 4]);
-                let t = _mm_add_epi32(_mm_sha256msg1_epu32(x0, x1), _mm_alignr_epi8(x3, x2, 4));
-                w[i % 4] = _mm_sha256msg2_epu32(t, x3);
-            }
-        }
-        abef = _mm_add_epi32(abef, abef_was);
-        cdgh = _mm_add_epi32(cdgh, cdgh_was);
-    }
-    // Back to (A, B, C, D) and (E, F, G, H).
-    let feba = _mm_shuffle_epi32(abef, 0x1B);
-    let dchg = _mm_shuffle_epi32(cdgh, 0xB1);
-    let dcba = _mm_blend_epi16(feba, dchg, 0xF0);
-    let hgfe = _mm_alignr_epi8(dchg, feba, 8);
-    // SAFETY: as the loads above.
-    unsafe {
-        _mm_storeu_si128(h.as_mut_ptr() as *mut __m128i, dcba);
-        _mm_storeu_si128(h.as_mut_ptr().add(4) as *mut __m128i, hgfe);
-    }
+    // SAFETY: `h` is 8 u32s, `blocks` holds `len` whole blocks, `k` 64 u32s
+    // and `SWAP` 16 bytes; the caller checked the CPU.
+    unsafe { fcrypto_sha256_ni_blocks(h.as_mut_ptr(), blocks.as_ptr().cast(), blocks.len(), k.as_ptr(), SWAP.as_ptr()) }
 }
+
+// The rounds: FIPS 180-4's, four at a time. xmm1 holds (A, B, E, F) and
+// xmm2 (C, D, G, H), as sha256rnds2 takes them; xmm8 the byte swap; xmm9 and
+// xmm10 the state the block started from. The message words live in
+// M(i) = xmm(3 + i % 4). Group i (rounds 4i..4i+3) is always:
+//   xmm0 = M(i) (groups 0-3 load and byte-swap it from the block first)
+//   xmm0 += K[4i..4i+4]; sha256rnds2 xmm2, xmm1
+//   groups 3-14: M(i+1) = msg2(M(i+1) + alignr(M(i), M(i-1), 4), M(i))
+//   xmm0 = its high half; sha256rnds2 xmm1, xmm2
+//   groups 1-12: M(i-1) = msg1(M(i-1), M(i))
+core::arch::global_asm!(
+    ".text",
+    ".p2align 4",
+    ".global fcrypto_sha256_ni_blocks",
+    "fcrypto_sha256_ni_blocks:",
+    "    test rdx, rdx",
+    "    jz 4f",
+    "    sub rsp, 80",
+    "    movdqu [rsp + 0], xmm6",
+    "    movdqu [rsp + 16], xmm7",
+    "    movdqu [rsp + 32], xmm8",
+    "    movdqu [rsp + 48], xmm9",
+    "    movdqu [rsp + 64], xmm10",
+    "    movdqu xmm1, [rdi]",
+    "    movdqu xmm2, [rdi + 16]",
+    "    movdqa xmm7, xmm1",
+    "    punpcklqdq xmm1, xmm2",
+    "    punpckhqdq xmm2, xmm7",
+    "    pshufd xmm1, xmm1, 0x1B",
+    "    pshufd xmm2, xmm2, 0xB1",
+    "    movdqu xmm8, [r8]",
+    "2:",
+    "    movdqa xmm9, xmm1",
+    "    movdqa xmm10, xmm2",
+    "    movdqu xmm0, [rsi + 0]",
+    "    pshufb xmm0, xmm8",
+    "    movdqa xmm3, xmm0",
+    "    movdqu xmm7, [rcx + 0]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    movdqu xmm0, [rsi + 16]",
+    "    pshufb xmm0, xmm8",
+    "    movdqa xmm4, xmm0",
+    "    movdqu xmm7, [rcx + 16]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm3, xmm4",
+    "    movdqu xmm0, [rsi + 32]",
+    "    pshufb xmm0, xmm8",
+    "    movdqa xmm5, xmm0",
+    "    movdqu xmm7, [rcx + 32]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm4, xmm5",
+    "    movdqu xmm0, [rsi + 48]",
+    "    pshufb xmm0, xmm8",
+    "    movdqa xmm6, xmm0",
+    "    movdqu xmm7, [rcx + 48]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm6",
+    "    palignr xmm7, xmm5, 4",
+    "    paddd xmm3, xmm7",
+    "    sha256msg2 xmm3, xmm6",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm5, xmm6",
+    "    movdqa xmm0, xmm3",
+    "    movdqu xmm7, [rcx + 64]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm3",
+    "    palignr xmm7, xmm6, 4",
+    "    paddd xmm4, xmm7",
+    "    sha256msg2 xmm4, xmm3",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm6, xmm3",
+    "    movdqa xmm0, xmm4",
+    "    movdqu xmm7, [rcx + 80]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm4",
+    "    palignr xmm7, xmm3, 4",
+    "    paddd xmm5, xmm7",
+    "    sha256msg2 xmm5, xmm4",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm3, xmm4",
+    "    movdqa xmm0, xmm5",
+    "    movdqu xmm7, [rcx + 96]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm5",
+    "    palignr xmm7, xmm4, 4",
+    "    paddd xmm6, xmm7",
+    "    sha256msg2 xmm6, xmm5",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm4, xmm5",
+    "    movdqa xmm0, xmm6",
+    "    movdqu xmm7, [rcx + 112]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm6",
+    "    palignr xmm7, xmm5, 4",
+    "    paddd xmm3, xmm7",
+    "    sha256msg2 xmm3, xmm6",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm5, xmm6",
+    "    movdqa xmm0, xmm3",
+    "    movdqu xmm7, [rcx + 128]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm3",
+    "    palignr xmm7, xmm6, 4",
+    "    paddd xmm4, xmm7",
+    "    sha256msg2 xmm4, xmm3",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm6, xmm3",
+    "    movdqa xmm0, xmm4",
+    "    movdqu xmm7, [rcx + 144]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm4",
+    "    palignr xmm7, xmm3, 4",
+    "    paddd xmm5, xmm7",
+    "    sha256msg2 xmm5, xmm4",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm3, xmm4",
+    "    movdqa xmm0, xmm5",
+    "    movdqu xmm7, [rcx + 160]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm5",
+    "    palignr xmm7, xmm4, 4",
+    "    paddd xmm6, xmm7",
+    "    sha256msg2 xmm6, xmm5",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm4, xmm5",
+    "    movdqa xmm0, xmm6",
+    "    movdqu xmm7, [rcx + 176]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm6",
+    "    palignr xmm7, xmm5, 4",
+    "    paddd xmm3, xmm7",
+    "    sha256msg2 xmm3, xmm6",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm5, xmm6",
+    "    movdqa xmm0, xmm3",
+    "    movdqu xmm7, [rcx + 192]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm3",
+    "    palignr xmm7, xmm6, 4",
+    "    paddd xmm4, xmm7",
+    "    sha256msg2 xmm4, xmm3",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    sha256msg1 xmm6, xmm3",
+    "    movdqa xmm0, xmm4",
+    "    movdqu xmm7, [rcx + 208]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm4",
+    "    palignr xmm7, xmm3, 4",
+    "    paddd xmm5, xmm7",
+    "    sha256msg2 xmm5, xmm4",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    movdqa xmm0, xmm5",
+    "    movdqu xmm7, [rcx + 224]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    movdqa xmm7, xmm5",
+    "    palignr xmm7, xmm4, 4",
+    "    paddd xmm6, xmm7",
+    "    sha256msg2 xmm6, xmm5",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    movdqa xmm0, xmm6",
+    "    movdqu xmm7, [rcx + 240]",
+    "    paddd xmm0, xmm7",
+    "    sha256rnds2 xmm2, xmm1",
+    "    pshufd xmm0, xmm0, 0x0E",
+    "    sha256rnds2 xmm1, xmm2",
+    "    paddd xmm1, xmm9",
+    "    paddd xmm2, xmm10",
+    "    add rsi, 64",
+    "    dec rdx",
+    "    jnz 2b",
+    "    pshufd xmm1, xmm1, 0x1B",
+    "    pshufd xmm2, xmm2, 0xB1",
+    "    movdqa xmm7, xmm1",
+    "    pblendw xmm1, xmm2, 0xF0",
+    "    palignr xmm2, xmm7, 8",
+    "    movdqu [rdi], xmm1",
+    "    movdqu [rdi + 16], xmm2",
+    "    movdqu xmm6, [rsp + 0]",
+    "    movdqu xmm7, [rsp + 16]",
+    "    movdqu xmm8, [rsp + 32]",
+    "    movdqu xmm9, [rsp + 48]",
+    "    movdqu xmm10, [rsp + 64]",
+    "    add rsp, 80",
+    "4:",
+    "    ret",
+);
