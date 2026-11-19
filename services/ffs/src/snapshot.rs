@@ -156,7 +156,7 @@ impl<S: Store> Volume<S> {
         rec.flags |= READ_ONLY;
         // The line's first subvolume: a snapshot reads what its source sealed (§ 12).
         rec.snapshot_of = if rec.snapshot_of != 0 { rec.snapshot_of } else { src };
-        if let Some(k) = self.keys.0.get(&src).copied() {
+        if let Some(k) = self.keys.0.get(&src).map(|k| alloc::boxed::Box::new(**k)) {
             self.keys.0.insert(id, k);
         }
         rec.created_unix = self.now / 1_000_000_000;

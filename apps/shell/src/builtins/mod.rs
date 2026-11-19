@@ -54,6 +54,16 @@ pub trait System {
     fn restart(&mut self, service: &str) -> Result<(), String>;
     /// A dev image: `restart` is there.
     fn dev(&self) -> bool;
+    // Files (TASK-100), through vfs: an `Err` holds vfs's words.
+    /// A directory's entries: each name and whether it's a directory.
+    fn list(&mut self, path: &str) -> Result<Vec<(String, bool)>, String>;
+    fn read_file(&mut self, path: &str) -> Result<Vec<u8>, String>;
+    fn write_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), String>;
+    fn make_dir(&mut self, path: &str) -> Result<(), String>;
+    fn remove(&mut self, path: &str) -> Result<(), String>;
+    fn rename(&mut self, from: &str, to: &str) -> Result<(), String>;
+    /// The session's account (empty: none).
+    fn whoami(&mut self) -> Result<String, String>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +81,13 @@ pub enum Command {
     Faults,
     Version,
     Restart { service: String },
+    Ls { path: String },
+    Cat { path: String },
+    Write { path: String, text: String },
+    Mkdir { path: String },
+    Rm { path: String },
+    Mv { from: String, to: String },
+    Whoami,
 }
 
 /// Every built-in, its usage and what it does.
@@ -88,6 +105,13 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("faults", "faults", "Lists what has crashed since Freally OS started."),
     ("version", "version", "Shows the version of Freally OS."),
     ("restart", "restart <service>", "Restarts a service (dev images only)."),
+    ("ls", "ls [path]", "Lists a folder (/ when none is given). Folders end with /."),
+    ("cat", "cat <path>", "Shows what a file holds."),
+    ("write", "write <path> <text>", "Writes the text (and a new line) into a file, made or replaced."),
+    ("mkdir", "mkdir <path>", "Makes a folder."),
+    ("rm", "rm <path>", "Removes a file, or an empty folder."),
+    ("mv", "mv <from> <to>", "Moves or renames a file or folder."),
+    ("whoami", "whoami", "Shows which account this session belongs to."),
 ];
 
 /// The words for `help` or `help <command>`.
@@ -164,6 +188,36 @@ pub fn parse(line: &str, dev: bool) -> Result<Option<Command>, String> {
         "restart" if dev => match args {
             [s] => Ok(Some(Command::Restart { service: s.to_string() })),
             _ => Err(usage("restart")),
+        },
+        "whoami" => none(Command::Whoami),
+        "ls" | "cat" | "mkdir" | "rm" => {
+            let path = match (name, args) {
+                ("ls", []) => "/",
+                (_, [p]) => p,
+                _ => return Err(usage(name)),
+            };
+            if !path.starts_with('/') {
+                return Err(format!("{name}: paths start with / (/home/<you>/...). {}", usage(name)));
+            }
+            let path = path.to_string();
+            Ok(Some(match name {
+                "ls" => Command::Ls { path },
+                "cat" => Command::Cat { path },
+                "mkdir" => Command::Mkdir { path },
+                _ => Command::Rm { path },
+            }))
+        }
+        "write" => match args {
+            [p, rest @ ..] if p.starts_with('/') && !rest.is_empty() => {
+                Ok(Some(Command::Write { path: p.to_string(), text: rest.join(" ") }))
+            }
+            _ => Err(usage("write")),
+        },
+        "mv" => match args {
+            [a, b] if a.starts_with('/') && b.starts_with('/') => {
+                Ok(Some(Command::Mv { from: a.to_string(), to: b.to_string() }))
+            }
+            _ => Err(usage("mv")),
         },
         _ => Err(format!("{name}: there's no such command. Type help to see them.")),
     }
@@ -287,6 +341,38 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
         Command::Restart { service } => match sys.restart(service) {
             Ok(()) => text(format!("{service} restarted.\n")),
             Err(e) => fail(e),
+        },
+        Command::Ls { path } => match sys.list(path) {
+            Ok(list) if list.is_empty() => text(String::from("(empty)\n")),
+            Ok(list) => {
+                text(list.into_iter().map(|(n, dir)| if dir { format!("{n}/\n") } else { format!("{n}\n") }).collect())
+            }
+            Err(e) => fail(format!("ls: {path}: {e}")),
+        },
+        Command::Cat { path } => match sys.read_file(path) {
+            Ok(bytes) => text(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(e) => fail(format!("cat: {path}: {e}")),
+        },
+        Command::Write { path, text: t } => match sys.write_file(path, format!("{t}\n").as_bytes()) {
+            Ok(()) => text(String::new()),
+            Err(e) => fail(format!("write: {path}: {e}")),
+        },
+        Command::Mkdir { path } => match sys.make_dir(path) {
+            Ok(()) => text(String::new()),
+            Err(e) => fail(format!("mkdir: {path}: {e}")),
+        },
+        Command::Rm { path } => match sys.remove(path) {
+            Ok(()) => text(String::new()),
+            Err(e) => fail(format!("rm: {path}: {e}")),
+        },
+        Command::Mv { from, to } => match sys.rename(from, to) {
+            Ok(()) => text(String::new()),
+            Err(e) => fail(format!("mv: {from}: {e}")),
+        },
+        Command::Whoami => match sys.whoami() {
+            Ok(u) if u.is_empty() => text(String::from("No one: no session (log in first).\n")),
+            Ok(u) => text(format!("{u}\n")),
+            Err(e) => fail(format!("whoami: {e}")),
         },
     }
 }

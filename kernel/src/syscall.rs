@@ -635,14 +635,14 @@ fn take_message(bytes: u64, len: u64, handles: u64, nhandles: u64) -> Result<Mes
 }
 
 /// Copies a message out to user memory, adding its handles to the caller's table.
-fn give_message(m: Message, bytes: u64, handles: u64, actual: u64) -> Result<(u64, u64), FErr> {
+fn give_message(mut m: Message, bytes: u64, handles: u64, actual: u64) -> Result<(u64, u64), FErr> {
     copy_to_user(bytes, &m.bytes)?;
     let p = proc::current().ok_or(FErr::BadState)?;
     let me = proc::as_process(&p)?;
     let mut values = Vec::new();
     {
         let mut inner = me.inner.lock();
-        for h in m.handles {
+        for h in core::mem::take(&mut m.handles) {
             values.push(inner.handles.add(h)?);
         }
     }

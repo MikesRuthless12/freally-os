@@ -3,6 +3,8 @@
 //! one admin queue and one I/O queue pair, polled (interrupts come with
 //! MSI-X). It reads its disk's GPT when it starts, and every write passes
 //! the partition interlock first: only inside Freally OS's own partitions.
+//! It serves the block protocol (TASK-100) to `ffs` alone: 4 KiB blocks
+//! within a partition named by its GPT name.
 //!
 //! In e2e images it proves itself as it starts: a write to block 0 (the
 //! protective MBR) is refused with `AccessDenied` before it reaches the
@@ -15,10 +17,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use drv_nvme::interlock::Interlock;
 use drv_nvme::{Command, Completion, Ring, cq_doorbell, reg, sq_doorbell};
-use fcore_abi::{FErr, cache, perm, well_known};
+use fcore_abi::{FErr, cache, perm, signal, well_known};
 use fstd::handle::Handle;
-use fstd::ipc::Client;
+use fstd::ipc::{Channel, Client};
 use fstd::time::{Duration, Instant};
+use fwire::proto::block as blk;
+use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
 
 fstd::program!(run);
@@ -63,8 +67,10 @@ struct Nvme {
     block: u32,
     blocks: u64,
     interlock: Interlock,
-    /// FREALLY_DATA's last block, if the disk has one.
-    data_last: Option<u64>,
+    /// The partitions: name, first and last LBA, whether it's Freally OS's.
+    parts: Vec<(String, u64, u64, bool)>,
+    /// The controller's model and serial.
+    model: String,
 }
 
 fn value(r: &d::Resources, name: &str) -> u64 {
@@ -187,9 +193,6 @@ impl Nvme {
         Ok(unsafe { core::slice::from_raw_parts(self.buf.va as *const u8, len as usize) })
     }
 
-    // The block protocol's callers (FreallyFS, TASK-094) arrive next; until
-    // then the e2e image's proof is the one.
-    #[cfg_attr(not(feature = "flavour-e2e"), allow(dead_code))]
     /// Writes `data` (whole blocks) at `lba`: the interlock first, then the
     /// controller. A refusal never reaches the device.
     fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), FErr> {
@@ -207,7 +210,6 @@ impl Nvme {
         })
     }
 
-    #[cfg_attr(not(feature = "flavour-e2e"), allow(dead_code))]
     fn flush(&mut self) -> Result<(), String> {
         self.run(true, Command::flush(1)).map(|_| ())
     }
@@ -218,10 +220,14 @@ fn open() -> Result<Nvme, String> {
     let mut client = Client::new(devmgr);
     let (r, handles) = client
         .call::<_, d::Resources>(d::RESOURCES, &(), Vec::new(), Instant::after(Duration::from_secs(2)))
-        .map_err(|e| alloc::format!("devmgr's resources: {e:?}"))?;
+        .map_err(|e| match e {
+            // devmgr found no controller for this driver.
+            fstd::ipc::CallError::Remote(code, _) if code == FErr::NotFound as i32 => String::from(NO_CONTROLLER),
+            e => alloc::format!("devmgr's resources: {e:?}"),
+        })?;
     let take = |name: &str| r.handles.iter().find(|(n, _)| n == name).map(|(_, h)| h.0 as usize);
     let (Some(ri), Some(ci)) = (take("registers"), take("config")) else {
-        return Err(String::from("devmgr found no NVMe controller"));
+        return Err(String::from(NO_CONTROLLER));
     };
     let regs = map_mmio(&handles[ri], value(&r, "bar0"), 0x2000)?;
     let config = map_mmio(&handles[ci], value(&r, "config"), 4096)?;
@@ -247,7 +253,8 @@ fn open() -> Result<Nvme, String> {
         block: 512,
         blocks: 0,
         interlock: Interlock::read_only(),
-        data_last: None,
+        parts: Vec::new(),
+        model: String::new(),
     };
     // Reset, the admin queues, enable (§ 7.6.1).
     if n.r32(reg::CC) & 1 != 0 {
@@ -280,13 +287,14 @@ fn open() -> Result<Nvme, String> {
     fstd::info!(
         "drv-nvme: {model} (serial {serial}, firmware {fw}): {blocks} blocks of {block} bytes, {entries}-entry queues"
     );
-    (n.interlock, n.data_last) = read_gpt(&mut n);
+    n.model = alloc::format!("{model} {serial}");
+    (n.interlock, n.parts) = read_gpt(&mut n);
     Ok(n)
 }
 
-/// The disk's GPT (the primary, else the backup) as the interlock, and
-/// FREALLY_DATA's last block; a disk without one is read-only.
-fn read_gpt(n: &mut Nvme) -> (Interlock, Option<u64>) {
+/// The disk's GPT (the primary, else the backup) as the interlock, and its
+/// partitions; a disk without one is read-only.
+fn read_gpt(n: &mut Nvme) -> (Interlock, Vec<(String, u64, u64, bool)>) {
     let bs = n.block as u64;
     let last = n.blocks - 1;
     for lba in [1, last] {
@@ -295,9 +303,12 @@ fn read_gpt(n: &mut Nvme) -> (Interlock, Option<u64>) {
         let count = (h.entries_len() as u64).div_ceil(bs) as u32;
         let Ok(entries) = n.read(h.entries_lba, count).map(|b| b.to_vec()) else { continue };
         let Ok(t) = fgpt::Table::new(h, &entries) else { continue };
+        let mut parts = Vec::new();
         for p in t.partitions() {
             let len = p.name.iter().position(|&u| u == 0).unwrap_or(p.name.len());
             let name = String::from_utf16_lossy(&p.name[..len]);
+            let freally = p.type_guid == fgpt::PART_TYPE_FREALLY_SYSTEM || p.type_guid == fgpt::PART_TYPE_FREALLY_DATA;
+            parts.push((name.clone(), p.first_lba, p.last_lba, freally));
             fstd::info!(
                 "drv-nvme: partition {name}: blocks {} to {} ({} MiB)",
                 p.first_lba,
@@ -309,11 +320,10 @@ fn read_gpt(n: &mut Nvme) -> (Interlock, Option<u64>) {
         if i.is_read_only() {
             fstd::info!("drv-nvme: no Freally partition: the disk is read-only");
         }
-        let data = t.partitions().find(|p| p.type_guid == fgpt::PART_TYPE_FREALLY_DATA).map(|p| p.last_lba);
-        return (i, data);
+        return (i, parts);
     }
     fstd::info!("drv-nvme: no GPT: the disk is read-only");
-    (Interlock::read_only(), None)
+    (Interlock::read_only(), Vec::new())
 }
 
 /// The e2e image's proof at start: the interlock refuses block 0 before the
@@ -328,14 +338,17 @@ fn prove(n: &mut Nvme) {
         }
         other => fstd::error!("drv-nvme: e2e: a write to block 0 wasn't refused: {other:?}"),
     }
-    let Some(lba) = n.data_last else {
+    let Some(lba) = n.parts.iter().find(|p| p.0 == "FREALLY_DATA").map(|p| p.2) else {
         fstd::info!("drv-nvme: e2e: no FREALLY_DATA to write in");
         return;
     };
+    // FreallyFS owns the partition: the block is put back as it was.
+    let Ok(before) = n.read(lba, 1).map(|b| b.to_vec()) else { return };
     let pattern: Vec<u8> = (0..n.block).map(|i| (i * 7 + 3) as u8).collect();
     let ok =
         n.write(lba, &pattern).is_ok() && n.flush().is_ok() && n.read(lba, 1).is_ok_and(|b| b == pattern.as_slice());
-    if ok {
+    let restored = n.write(lba, &before).is_ok() && n.flush().is_ok();
+    if ok && restored {
         fstd::info!("drv-nvme: e2e: block {lba} of FREALLY_DATA written, flushed and read back the same");
     } else {
         fstd::error!("drv-nvme: e2e: block {lba} of FREALLY_DATA didn't read back as written");
@@ -349,6 +362,12 @@ fn run(_bootstrap: u32) -> i64 {
     let _ = fstd::log::connect();
     let n = match open() {
         Ok(n) => n,
+        // A machine with no NVMe drive (a VM on the files layout): nothing
+        // to drive, and nothing wrong.
+        Err(e) if e == NO_CONTROLLER => {
+            fstd::info!("drv-nvme: {e}");
+            return 0;
+        }
         Err(e) => {
             fstd::error!("drv-nvme: {e}");
             return 1;
@@ -357,7 +376,10 @@ fn run(_bootstrap: u32) -> i64 {
     hold(n)
 }
 
-/// Holds the controller: the e2e image proves it first.
+/// What `open` says when devmgr found no controller.
+const NO_CONTROLLER: &str = "devmgr found no NVMe controller";
+
+/// Serves the block protocol (the e2e image proves the driver first).
 fn hold(n: Nvme) -> i64 {
     #[cfg(feature = "flavour-e2e")]
     let n = {
@@ -365,10 +387,118 @@ fn hold(n: Nvme) -> i64 {
         prove(&mut n);
         n
     };
-    let _held = n;
-    // Callers (FreallyFS, TASK-094) come with the block protocol; until then
-    // the driver holds the controller and waits.
+    let mut n = n;
+    let Ok((listen, give)) = Channel::pair() else { return 1 };
+    if fstd::service::register(give).is_err() {
+        return 1;
+    }
+    let mut clients: Vec<(String, Channel)> = Vec::new();
     loop {
-        fstd::time::sleep(Duration::from_secs(3600));
+        let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
+        items.extend(clients.iter().map(|(_, ch)| [ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
+        match fstd::sys::wait_many(&items, u64::MAX) {
+            Ok(0) => {
+                if let Ok(m) = listen.recv(0)
+                    && let Ok((h, p)) = fwire::parse(&m.bytes)
+                    && h.ordinal == c::INCOMING
+                    && let Ok(inc) = fwire::from_payload::<c::Incoming>(p)
+                    && let Some(ch) = m.handles.into_iter().next()
+                {
+                    clients.push((inc.client, Channel(ch)));
+                }
+            }
+            Ok(k) => {
+                let (who, ch) = &clients[k - 1];
+                if !serve(&mut n, who, ch) {
+                    clients.remove(k - 1);
+                }
+            }
+            Err(_) => fstd::time::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+/// A partition's first LBA and LBA count for `count` 4 KiB blocks from
+/// `block`, wholly inside it.
+fn lbas(n: &Nvme, part: &str, block: u64, count: u32) -> Result<(u64, u32), FErr> {
+    let per = 4096 / n.block as u64;
+    let (_, first, last, _) = n.parts.iter().find(|p| p.0 == part).ok_or(FErr::NotFound)?;
+    let blocks = (last - first + 1) / per;
+    let end = block.checked_add(count as u64).ok_or(FErr::InvalidArgs)?;
+    if count == 0 || count > blk::MAX_BLOCKS || end > blocks {
+        return Err(FErr::InvalidArgs);
+    }
+    Ok((first + block * per, (count as u64 * per) as u32))
+}
+
+/// One client's requests until its channel is empty; false when it's gone.
+/// Only ffs may use the disk.
+fn serve(n: &mut Nvme, who: &str, ch: &Channel) -> bool {
+    loop {
+        let m = match ch.try_recv() {
+            Ok(m) => m,
+            Err(FErr::ShouldWait) => return true,
+            Err(_) => return false,
+        };
+        if fstd::inventory::seen(ch, &m.bytes) {
+            continue;
+        }
+        let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
+        let err = |e: FErr, why: &str| fwire::error_reply(h.txid, h.ordinal, e as i32, why);
+        let reply = if who != "ffs" {
+            err(FErr::AccessDenied, "only ffs reads and writes the disk")
+        } else {
+            match h.ordinal {
+                blk::INFO => {
+                    let per = 4096 / n.block as u64;
+                    let partitions = (n.parts.iter())
+                        .map(|(name, f, l, fr)| blk::Partition {
+                            name: name.clone(),
+                            blocks: (l - f + 1) / per,
+                            freally: *fr,
+                        })
+                        .collect();
+                    fwire::reply(h.txid, h.ordinal, &blk::Info { model: n.model.clone(), partitions })
+                }
+                blk::READ => match fwire::from_payload::<blk::Read>(p) {
+                    Ok(r) => match lbas(n, &r.partition, r.block, r.count) {
+                        Ok((lba, count)) => match n.read(lba, count) {
+                            Ok(bytes) => fwire::reply(h.txid, h.ordinal, &blk::Data { bytes: bytes.to_vec() }),
+                            Err(e) => {
+                                fstd::error!("drv-nvme: {e}");
+                                err(FErr::Internal, "the read failed")
+                            }
+                        },
+                        Err(e) => err(e, "outside the partition"),
+                    },
+                    Err(e) => err(FErr::InvalidArgs, e.describe()),
+                },
+                blk::WRITE => match fwire::from_payload::<blk::Write>(p) {
+                    Ok(w) if w.bytes.len().is_multiple_of(4096) => {
+                        match lbas(n, &w.partition, w.block, (w.bytes.len() / 4096) as u32) {
+                            // The interlock stands in `write` itself, before the controller.
+                            Ok((lba, _)) => match n.write(lba, &w.bytes) {
+                                Ok(()) => fwire::reply(h.txid, h.ordinal, &()),
+                                Err(e) => err(e, "the write was refused"),
+                            },
+                            Err(e) => err(e, "outside the partition"),
+                        }
+                    }
+                    Ok(_) => err(FErr::InvalidArgs, "whole 4 KiB blocks only"),
+                    Err(e) => err(FErr::InvalidArgs, e.describe()),
+                },
+                blk::FLUSH => match n.flush() {
+                    Ok(()) => fwire::reply(h.txid, h.ordinal, &()),
+                    Err(e) => {
+                        fstd::error!("drv-nvme: {e}");
+                        err(FErr::Internal, "the flush failed")
+                    }
+                },
+                _ => err(FErr::NotSupported, "not served"),
+            }
+        };
+        if let Ok(msg) = reply {
+            let _ = ch.send(&msg, Vec::new());
+        }
     }
 }

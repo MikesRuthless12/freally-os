@@ -225,3 +225,29 @@ fn a_crash_at_any_write_of_a_file_commit_leaves_one_whole_generation() {
         assert!(report.is_clean(), "crash at step {n}, mode {mode}: {:?}", report.findings);
     }
 }
+
+#[test]
+fn rename_moves_files_and_directories_and_keeps_the_volume_whole() {
+    let mut v = Volume::format(MemStore::new(4096), [3; 16]).unwrap();
+    let a = v.create(SYSTEM, ROOT_INO, "a", FileKind::Dir).unwrap();
+    let b = v.create(SYSTEM, a, "b", FileKind::Dir).unwrap();
+    let f = v.create(SYSTEM, a, "note.txt", FileKind::File).unwrap();
+    v.write(SYSTEM, f, 0, b"hello").unwrap();
+    // A file within its directory, then across.
+    v.rename(SYSTEM, a, "note.txt", a, "renamed.txt").unwrap();
+    assert!(v.lookup(SYSTEM, a, "note.txt").unwrap().is_none());
+    v.rename(SYSTEM, a, "renamed.txt", b, "moved.txt").unwrap();
+    assert_eq!(v.lookup(SYSTEM, b, "moved.txt").unwrap().unwrap().child, f);
+    assert_eq!(v.read(SYSTEM, f, 0, 5).unwrap(), b"hello");
+    // A directory up a level: its parent and the links follow.
+    v.rename(SYSTEM, a, "b", ROOT_INO, "b").unwrap();
+    assert_eq!(v.stat(SYSTEM, b).unwrap().parent, ROOT_INO);
+    // Not into itself, not over a name, not from nowhere.
+    let c = v.create(SYSTEM, b, "c", FileKind::Dir).unwrap();
+    assert_eq!(v.rename(SYSTEM, ROOT_INO, "b", c, "loop"), Err(FsError::BadName));
+    assert_eq!(v.rename(SYSTEM, ROOT_INO, "b", ROOT_INO, "a"), Err(FsError::Exists));
+    assert_eq!(v.rename(SYSTEM, ROOT_INO, "missing", ROOT_INO, "x"), Err(FsError::NotFound));
+    v.commit().unwrap();
+    let r = v.fsck().unwrap();
+    assert!(r.is_clean(), "{:?}", r.findings);
+}

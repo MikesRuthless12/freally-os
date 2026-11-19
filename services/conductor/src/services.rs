@@ -388,8 +388,11 @@ impl Conductor {
         let caller_m = self.services.iter().find(|s| s.m.name == caller).map(|s| s.m.clone());
         let demand = self.services.iter().any(|s| s.m.name == want.name && s.m.start == fsvc::Start::Demand);
         // The desktop starts apps: it may reach any service started on demand.
+        // Every process may reach vfs, which checks each request itself
+        // (the caller's name and the session's account: TASK-100).
         let allowed = want.name == "logger"
             || want.name == "stage"
+            || want.name == "vfs"
             || (caller == "desktop" && demand)
             || caller_m.is_some_and(|m| m.after.contains(&want.name))
             || (cfg!(feature = "flavour-e2e") && caller == "cdpd");

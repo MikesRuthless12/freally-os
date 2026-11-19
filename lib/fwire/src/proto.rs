@@ -789,6 +789,269 @@ pub mod cdpd {
     }
 }
 
+/// The block protocol (TASK-100, PRD § 9): drv-nvme to ffs. 4 KiB blocks
+/// within a partition named by its GPT name; every write passes the
+/// partition interlock first.
+pub mod block {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `()` → `Info`.
+    pub const INFO: u32 = 1;
+    /// `Read` → `Data`.
+    pub const READ: u32 = 2;
+    /// `Write` → `()`.
+    pub const WRITE: u32 = 3;
+    /// `()` → `()`: everything written is durable.
+    pub const FLUSH: u32 = 4;
+    /// The most blocks one read or write carries (a message holds 64 KiB).
+    pub const MAX_BLOCKS: u32 = 15;
+
+    wire_struct! {
+        /// A partition: its GPT name, its size in 4 KiB blocks, and whether
+        /// it's Freally OS's (writable through the interlock).
+        pub struct Partition { pub name: String, pub blocks: u64, pub freally: bool }
+    }
+    wire_struct! {
+        pub struct Info { pub model: String, pub partitions: Vec<Partition> }
+    }
+    wire_struct! {
+        pub struct Read { pub partition: String, pub block: u64, pub count: u32 }
+    }
+    wire_struct! {
+        pub struct Data { pub bytes: Vec<u8> }
+    }
+    wire_struct! {
+        pub struct Write { pub partition: String, pub block: u64, pub bytes: Vec<u8> }
+    }
+}
+
+/// FreallyFS's protocol (TASK-100): ffs to vfs (and accounts, TASK-101):
+/// a subvolume, an inode, a name.
+pub mod ffs {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `Name` → `Entry`.
+    pub const LOOKUP: u32 = 1;
+    /// `Ino` → `Stat`.
+    pub const STAT: u32 = 2;
+    /// `Ino` → `Entries`.
+    pub const READDIR: u32 = 3;
+    /// `Create` → `Entry`.
+    pub const CREATE: u32 = 4;
+    /// `Read` → `Data`.
+    pub const READ: u32 = 5;
+    /// `Write` → `()`.
+    pub const WRITE: u32 = 6;
+    /// `Truncate` → `()`.
+    pub const TRUNCATE: u32 = 7;
+    /// `Name` → `()`.
+    pub const UNLINK: u32 = 8;
+    /// `Rename` → `()`.
+    pub const RENAME: u32 = 9;
+    /// `()` → `()`: commit.
+    pub const FSYNC: u32 = 10;
+    /// `Snapshot` → `Subvol`.
+    pub const SNAPSHOT: u32 = 11;
+    /// `Named` → `Subvol`: the subvolume called this.
+    pub const FIND: u32 = 12;
+    /// `Home` → `Subvol`: a new encrypted home (accounts; e2e: the door).
+    pub const CREATE_HOME: u32 = 13;
+    /// `Unlock` → `()`.
+    pub const UNLOCK: u32 = 14;
+    /// `Subvol` → `()`: commit, then forget the key.
+    pub const LOCK: u32 = 15;
+
+    /// Inode kinds as the protocol carries them.
+    pub const FILE: u8 = 1;
+    pub const DIR: u8 = 2;
+
+    wire_struct! {
+        /// An inode of a subvolume.
+        pub struct Ino { pub sv: u64, pub ino: u64 }
+    }
+    wire_struct! {
+        /// A name in a directory.
+        pub struct Name { pub sv: u64, pub dir: u64, pub name: String }
+    }
+    wire_struct! {
+        pub struct Entry { pub ino: u64, pub kind: u8 }
+    }
+    wire_struct! {
+        pub struct Entries { pub entries: Vec<(String, Entry)> }
+    }
+    wire_struct! {
+        pub struct Stat { pub kind: u8, pub size: u64, pub nlink: u32, pub modified_ns: u64, pub created_ns: u64 }
+    }
+    wire_struct! {
+        pub struct Create { pub sv: u64, pub dir: u64, pub name: String, pub kind: u8 }
+    }
+    wire_struct! {
+        pub struct Read { pub sv: u64, pub ino: u64, pub offset: u64, pub len: u32 }
+    }
+    wire_struct! {
+        pub struct Data { pub bytes: Vec<u8> }
+    }
+    wire_struct! {
+        pub struct Write { pub sv: u64, pub ino: u64, pub offset: u64, pub bytes: Vec<u8> }
+    }
+    wire_struct! {
+        pub struct Truncate { pub sv: u64, pub ino: u64, pub size: u64 }
+    }
+    wire_struct! {
+        pub struct Rename { pub sv: u64, pub dir: u64, pub name: String, pub to_dir: u64, pub to_name: String }
+    }
+    wire_struct! {
+        pub struct Snapshot { pub sv: u64, pub name: String }
+    }
+    wire_struct! {
+        pub struct Named { pub name: String }
+    }
+    wire_struct! {
+        pub struct Subvol { pub sv: u64 }
+    }
+    wire_struct! {
+        /// A home: its subvolume's name (`home:<user>`), its owner's id, its key.
+        pub struct Home { pub name: String, pub owner: [u8; 16], pub key: [u8; 32] }
+    }
+    wire_struct! {
+        pub struct Unlock { pub sv: u64, pub key: [u8; 32] }
+    }
+}
+
+/// The file protocol (FR-043, TASK-100): every process to vfs, by path.
+/// `/system` is read-only for everyone; `/home/<user>` belongs to the
+/// session's account alone.
+pub mod vfs {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `Open` → `Opened`.
+    pub const OPEN: u32 = 1;
+    /// `ReadAt` → `Data`: from the handle's place, which moves on.
+    pub const READ: u32 = 2;
+    /// `WriteAt` → `()`: at the handle's place, which moves on.
+    pub const WRITE: u32 = 3;
+    /// `Seek` → `()`.
+    pub const SEEK: u32 = 4;
+    /// `Handle` → `()`.
+    pub const CLOSE: u32 = 5;
+    /// `Path` → `Stat`.
+    pub const STAT: u32 = 6;
+    /// `Path` → `Entries`.
+    pub const READDIR: u32 = 7;
+    /// `Path` → `()`.
+    pub const MKDIR: u32 = 8;
+    /// `Rename` → `()`.
+    pub const RENAME: u32 = 9;
+    /// `Path` → `()`.
+    pub const UNLINK: u32 = 10;
+    /// `()` → `()`: everything written is durable.
+    pub const FSYNC: u32 = 11;
+    /// `Snapshot` → `()`: a read-only snapshot of the session's home.
+    pub const SNAPSHOT: u32 = 12;
+    /// `()` → `Who`: the session's account (empty: none).
+    pub const WHOAMI: u32 = 13;
+    /// `Session` → `()`: accounts (and, in e2e images, conductor's door) sets the session.
+    pub const SET_SESSION: u32 = 14;
+
+    wire_struct! {
+        /// Open flags: `write`, `create` (if missing), `truncate`.
+        pub struct Open { pub path: String, pub write: bool, pub create: bool, pub truncate: bool }
+    }
+    wire_struct! {
+        pub struct Opened { pub handle: u32, pub size: u64 }
+    }
+    wire_struct! {
+        pub struct Handle { pub handle: u32 }
+    }
+    wire_struct! {
+        pub struct ReadAt { pub handle: u32, pub len: u32 }
+    }
+    wire_struct! {
+        pub struct Data { pub bytes: Vec<u8> }
+    }
+    wire_struct! {
+        pub struct WriteAt { pub handle: u32, pub bytes: Vec<u8> }
+    }
+    wire_struct! {
+        pub struct Seek { pub handle: u32, pub to: u64 }
+    }
+    wire_struct! {
+        pub struct Path { pub path: String }
+    }
+    wire_struct! {
+        /// `dir`; the size in bytes (a directory: its entries); times (Unix ns).
+        pub struct Stat { pub dir: bool, pub size: u64, pub modified_ns: u64, pub created_ns: u64 }
+    }
+    wire_struct! {
+        /// Each name and whether it's a directory.
+        pub struct Entries { pub entries: Vec<(String, bool)> }
+    }
+    wire_struct! {
+        pub struct Rename { pub from: String, pub to: String }
+    }
+    wire_struct! {
+        pub struct Snapshot { pub name: String }
+    }
+    wire_struct! {
+        pub struct Who { pub user: String }
+    }
+    wire_struct! {
+        /// The session's user (empty: none) and their home's subvolume.
+        pub struct Session { pub user: String, pub sv: u64 }
+    }
+}
+
+/// The accounts protocol (TASK-101, PRD § 10): the welcome and login
+/// screens, Settings → Accounts, and (in e2e images) conductor's test door.
+pub mod accounts {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `()` → `Users`: who can log in (the login screen's list).
+    pub const LIST: u32 = 1;
+    /// `Create` → `()`: the first account (the Owner) from the welcome
+    /// screen; any later one needs the Owner logged in and their password.
+    pub const CREATE: u32 = 2;
+    /// `Login` → `()`. A wrong password: `AccessDenied`, "That password
+    /// didn't match."; from the third in a row, `Busy` until a second more
+    /// has passed for each.
+    pub const LOGIN: u32 = 3;
+    /// `()` → `()`: the home locked, its key zeroed, the session ended.
+    pub const LOGOUT: u32 = 4;
+    /// `ChangePassword` → `()`: the session's own (the key re-wrapped, the
+    /// files untouched).
+    pub const CHANGE_PASSWORD: u32 = 5;
+    /// `()` → `Who`: the session's account (empty: none).
+    pub const SESSION: u32 = 6;
+
+    wire_struct! {
+        /// One account as the login screen shows it.
+        pub struct User { pub username: String, pub display_name: String, pub owner: bool }
+    }
+    wire_struct! {
+        pub struct Users { pub users: Vec<User> }
+    }
+    wire_struct! {
+        pub struct Create { pub username: String, pub display_name: String, pub password: String, pub owner_password: String }
+    }
+    wire_struct! {
+        pub struct Login { pub username: String, pub password: String }
+    }
+    wire_struct! {
+        pub struct ChangePassword { pub old: String, pub new: String }
+    }
+    wire_struct! {
+        pub struct Who { pub user: User }
+    }
+}
+
 /// The inventory's ordinals (TASK-063, FR-040, e2e images only): every
 /// process answers `ASK` itself (fstd, never passed to the service) with how
 /// often each request ordinal reached it. `SERVICES` lists what each
@@ -804,6 +1067,7 @@ pub mod inventory {
         pub struct Served { pub ordinals: Vec<(u32, u32)> }
     }
 
+    use super::{accounts as acc, block as blk, ffs as fs, vfs as vf};
     use super::{
         cdpd as cd, conductor as c, devmgr as d, display as disp, input as inp, logger as l, monitor as mon,
         serial as s, stage as st, terminal as term,
@@ -864,5 +1128,56 @@ pub mod inventory {
         ("monitor", &[(mon::STATE, "state")]),
         ("terminal", &[(term::FEED, "feed"), (term::TYPE, "type"), (term::SCREEN, "screen")]),
         ("cdpd", &[(cd::CALL, "call")]),
+        ("drv-nvme", &[(blk::INFO, "info"), (blk::READ, "read"), (blk::WRITE, "write"), (blk::FLUSH, "flush")]),
+        (
+            "ffs",
+            &[
+                (fs::LOOKUP, "lookup"),
+                (fs::STAT, "stat"),
+                (fs::READDIR, "readdir"),
+                (fs::CREATE, "create"),
+                (fs::READ, "read"),
+                (fs::WRITE, "write"),
+                (fs::TRUNCATE, "truncate"),
+                (fs::UNLINK, "unlink"),
+                (fs::RENAME, "rename"),
+                (fs::FSYNC, "fsync"),
+                (fs::SNAPSHOT, "snapshot"),
+                (fs::FIND, "find"),
+                (fs::CREATE_HOME, "create_home"),
+                (fs::UNLOCK, "unlock"),
+                (fs::LOCK, "lock"),
+            ],
+        ),
+        (
+            "vfs",
+            &[
+                (vf::OPEN, "open"),
+                (vf::READ, "read"),
+                (vf::WRITE, "write"),
+                (vf::SEEK, "seek"),
+                (vf::CLOSE, "close"),
+                (vf::STAT, "stat"),
+                (vf::READDIR, "readdir"),
+                (vf::MKDIR, "mkdir"),
+                (vf::RENAME, "rename"),
+                (vf::UNLINK, "unlink"),
+                (vf::FSYNC, "fsync"),
+                (vf::SNAPSHOT, "snapshot"),
+                (vf::WHOAMI, "whoami"),
+                (vf::SET_SESSION, "set_session"),
+            ],
+        ),
+        (
+            "accounts",
+            &[
+                (acc::LIST, "list"),
+                (acc::CREATE, "create"),
+                (acc::LOGIN, "login"),
+                (acc::LOGOUT, "logout"),
+                (acc::CHANGE_PASSWORD, "change_password"),
+                (acc::SESSION, "session"),
+            ],
+        ),
     ];
 }

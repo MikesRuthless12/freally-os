@@ -131,16 +131,24 @@ impl Client {
     ) -> Result<(Rep, Vec<Handle>), CallError> {
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1).max(1);
-        let msg = fwire::request(txid, ordinal, req)?;
+        let mut msg = fwire::request(txid, ordinal, req)?;
         let raw: Vec<u32> = handles.iter().map(Handle::raw).collect();
         let mut reply = vec![0u8; fwire::HEADER_LEN + 4096];
         let mut rh = [0u32; 16];
-        let (n, nh) = loop {
-            match sys::channel_call(self.channel.0.raw(), &msg, &raw, &mut reply, &mut rh, deadline_ns) {
-                Ok(r) => break r,
-                Err(FErr::BufferTooSmall) if reply.len() < 65_536 => reply.resize(65_536, 0),
-                Err(e) => return Err(e.into()),
+        let called = sys::channel_call(self.channel.0.raw(), &msg, &raw, &mut reply, &mut rh, deadline_ns);
+        // A request may carry a secret (a home's key, a password): not left in freed heap.
+        crate::secret::wipe(&mut msg);
+        let (n, nh) = match called {
+            Ok(r) => r,
+            // The reply came but didn't fit: it's still waiting (a read with
+            // too little room takes nothing). Read it with room for any
+            // message; calling again would send the request twice, and the
+            // second answer would be taken as the next call's.
+            Err(FErr::BufferTooSmall) => {
+                reply.resize(65_536, 0);
+                sys::channel_read(self.channel.0.raw(), &mut reply, &mut rh)?
             }
+            Err(e) => return Err(e.into()),
         };
         handles.into_iter().for_each(|h| {
             h.into_raw();
@@ -173,7 +181,10 @@ impl Client {
         use fcore_abi::signal;
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1).max(1);
-        self.channel.send(&fwire::request(txid, ordinal, req)?, Vec::new())?;
+        let mut msg = fwire::request(txid, ordinal, req)?;
+        let sent = self.channel.send(&msg, Vec::new());
+        crate::secret::wipe(&mut msg);
+        sent?;
         let mut items = alloc::vec![[self.channel.0.raw(), signal::READABLE | signal::PEER_CLOSED]];
         items.extend(others.iter().map(|&o| [o, signal::READABLE]));
         loop {

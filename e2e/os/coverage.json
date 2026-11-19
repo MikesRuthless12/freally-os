@@ -364,6 +364,55 @@
       "what": "drv-nvme on the NVMe disk: Identify, the GPT read, a write to block 0 refused by the partition interlock (AccessDenied) before the controller sees it, a block of FREALLY_DATA written, flushed and read back."
     },
     {
+      "id": "fs.files",
+      "task": "TASK-100",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/terminal.rs",
+      "what": "Through the Terminal, fstd::fs, vfs, ffs and drv-nvme: a folder made, a file written, read, moved and removed in the session's home; / and /system listed."
+    },
+    {
+      "id": "fs.permissions",
+      "task": "TASK-100",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/terminal.rs",
+      "what": "Another account's home is AccessDenied and not listed in /home; /system is read-only; with no session, no home."
+    },
+    {
+      "id": "fs.persists",
+      "task": "TASK-100",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/terminal.rs",
+      "what": "A file written and synced is there after the machine resets mid-session; the mount after it runs ffsck, clean."
+    },
+    {
+      "id": "accounts.lifecycle",
+      "task": "TASK-101",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "On a disk with no accounts the first made is the Owner; bad names and short passwords refused; a wrong password says so; logged in, the home is the session's (written and read in the Terminal); logged out, shut; only the Owner, with its password, adds another, whose home is its own."
+    },
+    {
+      "id": "accounts.throttle",
+      "task": "TASK-101",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "US-015: from the third wrong password in a row, each makes the next try wait a second more, the right password included; a success starts the count again."
+    },
+    {
+      "id": "accounts.password",
+      "task": "TASK-101",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "A password change needs the old one; after it the old one is refused and the new one opens the same home with its files, before and after the machine resets."
+    },
+    {
+      "id": "accounts.key_gone",
+      "task": "TASK-101",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "FR-046: a scan of all guest RAM (QMP pmemsave) finds the account's master key while it's logged in and nowhere after logout."
+    },
+    {
       "id": "crisp.scales",
       "task": "TASK-090A",
       "setup": "e2e",

@@ -161,6 +161,73 @@ impl<S: Store> Volume<S> {
         (parent.modified_ns, parent.changed_ns) = (self.now, self.now);
         self.put_inode(sv, dir, &parent)
     }
+
+    /// Moves `name` in `dir` to `to_name` in `to_dir` (the same subvolume).
+    /// The new name must be free; a directory can't move into itself.
+    pub fn rename(&mut self, sv: u64, dir: u64, name: &str, to_dir: u64, to_name: &str) -> Result<(), FsError> {
+        self.writable(sv)?;
+        if !valid_name(to_name) {
+            return Err(FsError::BadName);
+        }
+        let e = self.lookup(sv, dir, name)?.ok_or(FsError::NotFound)?;
+        self.dir_inode(sv, to_dir)?;
+        if self.lookup(sv, to_dir, to_name)?.is_some() {
+            return Err(FsError::Exists);
+        }
+        if e.kind == FileKind::Dir {
+            // Not into itself or anything under it: walk up from the target.
+            let mut at = to_dir;
+            loop {
+                if at == e.child {
+                    return Err(FsError::BadName);
+                }
+                let i = self.stat(sv, at)?;
+                if i.parent == at {
+                    break;
+                }
+                at = i.parent;
+            }
+        }
+        // Take the entry out of the old directory.
+        let key = Key::new(dir, kind::DIR, name_hash(name));
+        let mut list = decode(&self.sv_get(sv, &key)?.ok_or(FsError::NotFound)?)?;
+        list.retain(|x| x.name != name);
+        if list.is_empty() {
+            self.sv_delete(sv, &key)?;
+        } else {
+            self.sv_insert(sv, key, &encode(&list))?;
+        }
+        // Put it in the new one.
+        let to_key = Key::new(to_dir, kind::DIR, name_hash(to_name));
+        let mut to_list = match self.sv_get(sv, &to_key)? {
+            Some(r) => decode(&r)?,
+            None => Vec::new(),
+        };
+        to_list.push(DirEntry { child: e.child, kind: e.kind, name: String::from(to_name) });
+        self.sv_insert(sv, to_key, &encode(&to_list))?;
+        // The directories' sizes and links; a moved directory's parent.
+        let now = self.now;
+        let mut from = self.stat(sv, dir)?;
+        from.size -= 1;
+        (from.modified_ns, from.changed_ns) = (now, now);
+        if e.kind == FileKind::Dir && dir != to_dir {
+            from.nlink -= 1;
+        }
+        self.put_inode(sv, dir, &from)?;
+        let mut to = self.stat(sv, to_dir)?;
+        to.size += 1;
+        (to.modified_ns, to.changed_ns) = (now, now);
+        if e.kind == FileKind::Dir && dir != to_dir {
+            to.nlink += 1;
+        }
+        self.put_inode(sv, to_dir, &to)?;
+        let mut child = self.stat(sv, e.child)?;
+        child.changed_ns = now;
+        if e.kind == FileKind::Dir {
+            child.parent = to_dir;
+        }
+        self.put_inode(sv, e.child, &child)
+    }
 }
 
 #[cfg(test)]

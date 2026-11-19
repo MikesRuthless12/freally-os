@@ -1,11 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "svc-accounts"
-description = "accounts: local accounts and .facct bundles."
+description = "accounts: local accounts, their passwords, and each home's key while its owner is logged in."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "accounts"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+# The test door may create accounts and log in (conductor's `accounts ...`).
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fcrypto.workspace = true
+frandom.workspace = true
+fstd.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

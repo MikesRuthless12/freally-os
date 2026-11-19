@@ -19,6 +19,8 @@ mod sweep;
 
 #[path = "../../../e2e/os/specs/a11y.rs"]
 mod a11y;
+#[path = "../../../e2e/os/specs/accounts.rs"]
+mod accounts;
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
 #[path = "../../../e2e/os/specs/cdp.rs"]
@@ -82,6 +84,13 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.gpt", boot::gpt),
     ("boot.gpt_fallback", boot::gpt_fallback),
     ("nvme.interlock", storage::interlock),
+    ("fs.files", terminal::fs_files),
+    ("fs.permissions", terminal::fs_permissions),
+    ("fs.persists", terminal::fs_persists),
+    ("accounts.lifecycle", accounts::lifecycle),
+    ("accounts.throttle", accounts::throttle),
+    ("accounts.password", accounts::password),
+    ("accounts.key_gone", accounts::key_gone),
     ("stage.windows", stage::windows),
     ("ui.cursor", stage::cursor),
     ("stage.doors", stage::doors),

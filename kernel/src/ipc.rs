@@ -29,6 +29,18 @@ pub struct Message {
     pub handles: Vec<Handle>,
 }
 
+/// A message's bytes are wiped when it goes (delivered, or dropped with its
+/// channel): what passes through the kernel (a home's key on its way to
+/// ffs, a password on its way to accounts) isn't left in freed heap (FR-046).
+impl Drop for Message {
+    fn drop(&mut self) {
+        for b in self.bytes.iter_mut() {
+            // SAFETY: a valid byte of the message.
+            unsafe { core::ptr::write_volatile(b, 0) };
+        }
+    }
+}
+
 struct Pair {
     /// `inbox[i]`: what end `i` reads.
     inbox: [SpinLock<VecDeque<Message>>; 2],

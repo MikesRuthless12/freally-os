@@ -10,6 +10,8 @@ struct Pretend {
     scale: Option<u16>,
     restarted: Vec<String>,
     dev: bool,
+    /// Files by path (folders hold None).
+    files: alloc::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
 
 impl System for Pretend {
@@ -72,6 +74,69 @@ impl System for Pretend {
     fn dev(&self) -> bool {
         self.dev
     }
+    fn list(&mut self, path: &str) -> Result<Vec<(String, bool)>, String> {
+        let prefix = if path.ends_with('/') { path.to_string() } else { format!("{path}/") };
+        Ok(self
+            .files
+            .iter()
+            .filter_map(|(p, v)| {
+                p.strip_prefix(&prefix).filter(|r| !r.contains('/')).map(|r| (r.to_string(), v.is_none()))
+            })
+            .collect())
+    }
+    fn read_file(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        match self.files.get(path) {
+            Some(Some(b)) => Ok(b.clone()),
+            Some(None) => Err("a directory isn't a file (WrongType)".into()),
+            None if path.starts_with("/home/sam") => Err("not yours to reach (AccessDenied)".into()),
+            None => Err("no such name (NotFound)".into()),
+        }
+    }
+    fn write_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        self.files.insert(path.into(), Some(bytes.to_vec()));
+        Ok(())
+    }
+    fn make_dir(&mut self, path: &str) -> Result<(), String> {
+        self.files.insert(path.into(), None);
+        Ok(())
+    }
+    fn remove(&mut self, path: &str) -> Result<(), String> {
+        self.files.remove(path).map(|_| ()).ok_or_else(|| "no such name (NotFound)".into())
+    }
+    fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
+        let v = self.files.remove(from).ok_or("no such name (NotFound)")?;
+        self.files.insert(to.into(), v);
+        Ok(())
+    }
+    fn whoami(&mut self) -> Result<String, String> {
+        Ok("tester".into())
+    }
+}
+
+#[test]
+fn the_file_commands_parse_and_say_what_happened() {
+    assert_eq!(ok("ls"), Command::Ls { path: "/".into() });
+    assert_eq!(ok("cat /home/tester/a.txt"), Command::Cat { path: "/home/tester/a.txt".into() });
+    assert_eq!(
+        ok("write /home/tester/a.txt hello there"),
+        Command::Write { path: "/home/tester/a.txt".into(), text: "hello there".into() }
+    );
+    assert_eq!(ok("mv /a /b"), Command::Mv { from: "/a".into(), to: "/b".into() });
+    assert_eq!(ok("whoami"), Command::Whoami);
+    assert!(parse("cat notes.txt", true).unwrap_err().contains("paths start with /"));
+    assert!(parse("write /x", true).unwrap_err().contains("usage: write <path> <text>"));
+    let mut p = Pretend::default();
+    let mut say = |line: &str| run(&ok(line), &mut p).text;
+    assert_eq!(say("mkdir /home/tester/Docs"), "");
+    assert_eq!(say("write /home/tester/Docs/a.txt hello there"), "");
+    assert_eq!(say("cat /home/tester/Docs/a.txt"), "hello there\n");
+    assert_eq!(say("ls /home/tester"), "Docs/\n");
+    assert_eq!(say("ls /home/tester/Docs"), "a.txt\n");
+    assert_eq!(say("mv /home/tester/Docs/a.txt /home/tester/Docs/b.txt"), "");
+    assert_eq!(say("cat /home/sam/secret"), "cat: /home/sam/secret: not yours to reach (AccessDenied)\n");
+    assert_eq!(say("rm /home/tester/Docs/b.txt"), "");
+    assert_eq!(say("ls /home/tester/Docs"), "(empty)\n");
+    assert_eq!(say("whoami"), "tester\n");
 }
 
 fn ok(line: &str) -> Command {

@@ -11,6 +11,7 @@ publish = false
 cdp-proto.workspace = true
 fimage = { workspace = true, features = ["decode"] }
 fjson.workspace = true
+fcrypto.workspace = true
 fscreen.workspace = true
 fsi.workspace = true
 fui = { workspace = true, features = ["ui"] }

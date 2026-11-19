@@ -508,6 +508,18 @@ impl From<FErr> for &'static str {
 
 /// Boot options (BootInfo's `cmdline`, TASK-074): a dev or e2e bootloader
 /// reads them from `\FREALLY\CMDLINE.TXT`; a release one never does.
+/// The accounts' parameters (PRD § 10, provider configuration). Argon2id's
+/// are written into each record, so they're re-tuned only upward.
+pub mod accounts {
+    pub const ARGON2_M_KIB: u32 = 65_536;
+    /// On a machine with less than 2 GiB of RAM.
+    pub const ARGON2_M_KIB_SMALL: u32 = 32_768;
+    pub const ARGON2_T: u32 = 3;
+    pub const ARGON2_P: u32 = 1;
+    pub const SALT_LEN: usize = 16;
+    pub const MIN_PASSWORD: usize = 8;
+}
+
 pub mod cmdline {
     /// The first line of a boot-options file, NUL-padded: printable ASCII
     /// only (anything else ends it), at most 255 bytes.

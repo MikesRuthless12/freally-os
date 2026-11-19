@@ -1,14 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "svc-ffs"
-description = "ffs: FreallyFS, the copy-on-write filesystem."
+description = "ffs: FreallyFS, the copy-on-write filesystem, on the data partition."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ffs"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+# The test door may make a home and unlock it (conductor's `vfs session`).
+flavour-e2e = []
+
 [dependencies]
+fcore-abi.workspace = true
 fcrypto.workspace = true
+frandom.workspace = true
+fstd.workspace = true
+fwire.workspace = true
 
 [lints]
 workspace = true

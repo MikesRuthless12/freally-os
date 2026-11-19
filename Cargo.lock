@@ -82,6 +82,7 @@ version = "0.4.0"
 dependencies = [
  "app-terminal",
  "cdp-proto",
+ "fcrypto",
  "ffont",
  "fimage",
  "fjson",
@@ -284,6 +285,13 @@ version = "0.4.0"
 [[package]]
 name = "svc-accounts"
 version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "fcrypto",
+ "frandom",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "svc-brain"
@@ -347,7 +355,11 @@ dependencies = [
 name = "svc-ffs"
 version = "0.4.0"
 dependencies = [
+ "fcore-abi",
  "fcrypto",
+ "frandom",
+ "fstd",
+ "fwire",
 ]
 
 [[package]]
@@ -380,6 +392,11 @@ version = "0.4.0"
 [[package]]
 name = "svc-vfs"
 version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "xtask"

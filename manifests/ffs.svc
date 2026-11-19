@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = ffs
+binary      = /system/services/ffs
+description = Keeps your files on the disk: FreallyFS, every change whole or not at all, each home sealed with its owner's key.
+start       = boot
+after       = logger, drv-nvme
+restart     = on-failure
+class       = background
+# Storage is QEMU-only in Phase 6: dev and e2e images.
+flavours    = dev, e2e

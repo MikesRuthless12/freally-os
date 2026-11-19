@@ -60,6 +60,8 @@ pub fn call(
         "Target.getTargets" => Ok(Value::obj([("targetInfos", Value::Arr(vec![desktop_target()]))])),
         // The harness's view of QEMU's PCI bus (QMP query-pci), to check devmgr's.
         "Freally.qemuPci" => qmp.execute("query-pci", None).map_err(|e| (-32000, e)),
+        // Every place guest RAM holds a byte pattern (TASK-101: no key after logout).
+        "Freally.scanMemory" => scan_memory(qmp, shot_dir, params).map_err(|e| (-32000, e)),
         "Freally.quit" => {
             let _ = qmp.execute("quit", None);
             Ok(Value::Obj(Vec::new()))
@@ -69,6 +71,53 @@ pub fn call(
         }
         m => Err((-32601, format!("{m} isn't served"))),
     }
+}
+
+/// Where guest RAM holds `pattern` (hex, 8 bytes or more): QMP
+/// `pmemsave` in 64 MiB pieces, each overlapping the last by the pattern's
+/// length less one, so a match across two pieces is found once. q35 keeps
+/// RAM at 0 (up to 2 GiB when there's more than 2.75 GiB), the rest from 4 GiB.
+fn scan_memory(qmp: &mut Qmp, dir: &Path, params: &Value) -> Result<Value, String> {
+    let hex = params.get("pattern").and_then(Value::as_str).ok_or("no pattern")?;
+    let pattern = unhex(hex).ok_or("the pattern isn't hex")?;
+    if pattern.len() < 8 {
+        return Err("a pattern this short would match by chance".into());
+    }
+    let summary = qmp.execute("query-memory-size-summary", None)?;
+    let size = summary.get("base-memory").and_then(Value::as_i64).ok_or("no base-memory")? as u64;
+    let low = if size > 0xB000_0000 { 0x8000_0000 } else { size };
+    let path = dir.join(format!("ram-{}.bin", std::process::id()));
+    const PIECE: u64 = 64 << 20;
+    let back = pattern.len() as u64 - 1;
+    let mut at = Vec::new();
+    for (start, len) in [(0u64, low), (1u64 << 32, size - low)] {
+        let mut done = 0;
+        while done < len {
+            let from = start + done - if done > 0 { back } else { 0 };
+            let end = start + (done + PIECE).min(len);
+            let args = Value::obj([
+                ("val", from.into()),
+                ("size", (end - from).into()),
+                ("filename", path.display().to_string().into()),
+            ]);
+            qmp.execute("pmemsave", Some(args))?;
+            let bytes = std::fs::read(&path).map_err(|e| format!("pmemsave: {e}"))?;
+            at.extend(
+                bytes.windows(pattern.len()).enumerate().filter(|(_, w)| *w == pattern).map(|(i, _)| from + i as u64),
+            );
+            done = end - start;
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+    let shown: Vec<Value> = at.iter().take(16).map(|a| Value::from(format!("{a:#x}"))).collect();
+    Ok(Value::obj([("found", at.len().into()), ("at", Value::Arr(shown)), ("scanned", size.into())]))
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
 pub fn desktop_target() -> Value {

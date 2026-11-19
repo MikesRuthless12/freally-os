@@ -52,6 +52,10 @@ pub struct Door {
     terminal: crate::door_terminal::TermDoor,
     /// Monitor's (`monitor …`).
     monitor: crate::door_monitor::MonDoor,
+    /// Test sessions (`vfs session <user>`, TASK-100).
+    vfs: crate::door_vfs::VfsDoor,
+    /// Accounts (`accounts ...`, TASK-101).
+    accounts: crate::door_accounts::AccountsDoor,
     /// cdpd's client (`cdpd …`, TASK-063).
     cdpd: Option<Client>,
 }
@@ -67,6 +71,8 @@ impl Door {
             stage: crate::door_stage::StageDoor::default(),
             terminal: crate::door_terminal::TermDoor::default(),
             monitor: crate::door_monitor::MonDoor::default(),
+            vfs: crate::door_vfs::VfsDoor::default(),
+            accounts: crate::door_accounts::AccountsDoor::default(),
             cdpd: None,
         }
     }
@@ -352,6 +358,16 @@ impl Door {
             }
             "monitor" => {
                 for line in self.monitor.run(c, arg) {
+                    self.send(&line);
+                }
+            }
+            "vfs" => {
+                for line in self.vfs.run(c, arg) {
+                    self.send(&line);
+                }
+            }
+            "accounts" => {
+                for line in self.accounts.run(c, arg) {
                     self.send(&line);
                 }
             }

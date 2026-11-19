@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = accounts
+binary      = /system/services/accounts
+description = Checks your password, opens your home while you're logged in, and forgets its key when you log out.
+start       = boot
+after       = logger, vfs, ffs
+restart     = on-failure
+class       = background
+# Storage is QEMU-only in Phase 6: dev and e2e images.
+flavours    = dev, e2e

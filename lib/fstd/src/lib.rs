@@ -14,12 +14,14 @@
 extern crate alloc;
 
 pub mod ax;
+pub mod fs;
 pub mod handle;
 pub mod inventory;
 pub mod ipc;
 pub mod log;
 pub mod machine;
 pub mod process;
+pub mod secret;
 pub mod serial_json;
 pub mod service;
 pub mod time;

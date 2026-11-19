@@ -85,6 +85,11 @@ fn locked_wrong_key_right_key() {
     v.write(home, g, 0, b"after!!").unwrap();
     v.commit().unwrap();
     assert_eq!(v.read(snap, g, 0, 7).unwrap(), b"changed");
+    // Locking the home forgets the key for its whole line: a snapshot made
+    // while it was open doesn't keep a copy (FR-046).
+    v.lock(home).unwrap();
+    assert!(v.is_locked(snap).unwrap(), "the snapshot still holds the home's key after lock");
+    assert_eq!(v.read(snap, g, 0, 7).err(), Some(FsError::Locked));
     let mut v = Volume::mount(v.into_store()).unwrap();
     assert_eq!(v.read(snap, g, 0, 7).err(), Some(FsError::Locked));
     v.unlock(snap, &KEY).unwrap();

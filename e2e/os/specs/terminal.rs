@@ -22,7 +22,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 /// Starts the terminal and waits (10 s) for it to answer; its screen lines.
-fn open(ctx: &Ctx) -> Result<Vec<String>, String> {
+pub(crate) fn open(ctx: &Ctx) -> Result<Vec<String>, String> {
     ctx.door("terminal open")?;
     let start = Instant::now();
     loop {
@@ -194,7 +194,7 @@ fn shell(ctx: &Ctx, line: &str) -> Result<String, String> {
     screen_text(ctx)
 }
 
-fn expect(ctx: &Ctx, line: &str, want: &[&str]) -> Result<String, String> {
+pub(crate) fn expect(ctx: &Ctx, line: &str, want: &[&str]) -> Result<String, String> {
     let start = Instant::now();
     loop {
         let s = shell(ctx, line)?;
@@ -277,5 +277,90 @@ pub fn builtins(ctx: &mut Ctx) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(100));
     }
     ctx.keep_shot("shell")?;
+    Ok(())
+}
+
+/// Runs a command that changes something once (`expect` would run it again).
+fn once(ctx: &Ctx, line: &str, want: &[&str]) -> Result<(), String> {
+    let s = shell(ctx, line)?;
+    if !want.iter().all(|w| s.contains(w)) {
+        return Err(format!("`{line}` printed:\n{s}\n(wanted {want:?})"));
+    }
+    Ok(())
+}
+
+fn session(ctx: &Ctx, user: &str) -> Result<(), String> {
+    let said = ctx.door(&format!("vfs session {user}"))?;
+    if said != ["ok"] {
+        return Err(format!("vfs session {user}: {said:?}"));
+    }
+    Ok(())
+}
+
+/// `@fs.files` (TASK-100): in the session's home, through the Terminal,
+/// fstd::fs, vfs, ffs and drv-nvme: make a folder, write a file, read it,
+/// move it, list, remove; `/` and `/system` as they should be.
+pub fn fs_files(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("vfs: / with /system and /home")?;
+    session(ctx, "tester")?;
+    open(ctx)?;
+    expect(ctx, "whoami", &["tester"])?;
+    expect(ctx, "ls /", &["home/", "system/"])?;
+    expect(ctx, "ls /system", &["accounts/"])?;
+    once(ctx, "mkdir /home/tester/Docs", &[])?;
+    expect(ctx, "ls /home/tester", &["Docs/"])?;
+    once(ctx, "write /home/tester/Docs/note.txt hello from freally", &[])?;
+    expect(ctx, "cat /home/tester/Docs/note.txt", &["hello from freally"])?;
+    once(ctx, "mv /home/tester/Docs/note.txt /home/tester/Docs/kept.txt", &[])?;
+    expect(ctx, "ls /home/tester/Docs", &["kept.txt"])?;
+    expect(ctx, "cat /home/tester/Docs/note.txt", &["NotFound"])?;
+    once(ctx, "rm /home/tester/Docs/kept.txt", &[])?;
+    expect(ctx, "ls /home/tester/Docs", &["(empty)"])?;
+    once(ctx, "rm /home/tester/Docs", &[])?;
+    expect(ctx, "ls /home/tester", &["(empty)"])?;
+    Ok(())
+}
+
+/// `@fs.permissions` (TASK-100): another user's home is `AccessDenied`,
+/// and isn't listed; `/system` is read-only; with no session, no home.
+pub fn fs_permissions(ctx: &mut Ctx) -> Result<(), String> {
+    session(ctx, "sam")?;
+    open(ctx)?;
+    once(ctx, "write /home/sam/secret.txt only sam reads this", &[])?;
+    expect(ctx, "cat /home/sam/secret.txt", &["only sam reads this"])?;
+    session(ctx, "tester")?;
+    expect(ctx, "cat /home/sam/secret.txt", &["AccessDenied"])?;
+    expect(ctx, "ls /home/sam", &["AccessDenied"])?;
+    let homes = expect(ctx, "ls /home", &["tester/"])?;
+    if homes.contains("sam") {
+        return Err(format!("/home lists another account's home:\n{homes}"));
+    }
+    expect(ctx, "write /system/x hi", &["AccessDenied"])?;
+    expect(ctx, "write /home/sam/x hi", &["AccessDenied"])?;
+    session(ctx, "")?;
+    expect(ctx, "whoami", &["No one"])?;
+    expect(ctx, "ls /home/tester", &["AccessDenied"])?;
+    Ok(())
+}
+
+/// `@fs.persists` (TASK-100): a file written and synced is there after the
+/// machine resets mid-session; the mount after it runs ffsck, clean.
+pub fn fs_persists(ctx: &mut Ctx) -> Result<(), String> {
+    session(ctx, "keeper")?;
+    open(ctx)?;
+    once(ctx, "write /home/keeper/kept.txt survives a reset", &[])?;
+    let mounted = ctx.log_count("ffs: generation");
+    ctx.reset()?;
+    let start = Instant::now();
+    while ctx.log_count("ffs: generation") <= mounted || ctx.log_count("vfs: / with /system and /home") < 2 {
+        if start.elapsed() > Duration::from_secs(60) {
+            return Err("after the reset, ffs never said it mounted an unclean generation".into());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    ctx.expect_log("ffs: ffsck: clean")?;
+    session(ctx, "keeper")?;
+    open(ctx)?;
+    expect(ctx, "cat /home/keeper/kept.txt", &["survives a reset"])?;
     Ok(())
 }

@@ -143,6 +143,34 @@ impl System for Sys {
     fn dev(&self) -> bool {
         fstd::service::flavour() == 1
     }
+
+    fn list(&mut self, path: &str) -> Result<Vec<(String, bool)>, String> {
+        fstd::fs::read_dir(path).map_err(|e| e.describe())
+    }
+
+    fn read_file(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        fstd::fs::read(path).map_err(|e| e.describe())
+    }
+
+    fn write_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        fstd::fs::write(path, bytes).map_err(|e| e.describe())
+    }
+
+    fn make_dir(&mut self, path: &str) -> Result<(), String> {
+        fstd::fs::create_dir(path).map_err(|e| e.describe())
+    }
+
+    fn remove(&mut self, path: &str) -> Result<(), String> {
+        fstd::fs::remove(path).map_err(|e| e.describe())
+    }
+
+    fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
+        fstd::fs::rename(from, to).map_err(|e| e.describe())
+    }
+
+    fn whoami(&mut self) -> Result<String, String> {
+        fstd::fs::whoami().map_err(|e| e.describe())
+    }
 }
 
 impl Sys {

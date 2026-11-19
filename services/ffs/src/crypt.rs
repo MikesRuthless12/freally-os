@@ -15,6 +15,7 @@
 use crate::store::Store;
 use crate::volume::Volume;
 use crate::{BLOCK, FsError};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use fcrypto::aead::{xopen, xseal};
 
@@ -39,9 +40,11 @@ fn wipe(k: &mut [u8; 32]) {
 }
 
 /// The keys held, by subvolume; each wiped when it goes, and all of them
-/// when the volume does.
+/// when the volume does. Boxed, so the map's nodes hold only pointers: a
+/// B-tree shifts its entries on insert and remove, and would leave stale
+/// copies of a key behind.
 #[derive(Default)]
-pub(crate) struct Keys(pub(crate) BTreeMap<u64, [u8; 32]>);
+pub(crate) struct Keys(pub(crate) BTreeMap<u64, Box<[u8; 32]>>);
 
 impl Drop for Keys {
     fn drop(&mut self) {
@@ -51,11 +54,17 @@ impl Drop for Keys {
     }
 }
 
-/// What sealing needs for a subvolume: its key and its line.
-#[derive(Clone, Copy)]
+/// What sealing needs for a subvolume: its key and its line. The key is a
+/// copy, wiped when the sealer goes.
 pub(crate) struct Sealer {
     key: [u8; 32],
     line: u64,
+}
+
+impl Drop for Sealer {
+    fn drop(&mut self) {
+        wipe(&mut self.key);
+    }
 }
 
 impl Sealer {
@@ -89,7 +98,7 @@ impl<S: Store> Volume<S> {
             return Ok(None);
         }
         let line = if rec.snapshot_of != 0 { rec.snapshot_of } else { tree };
-        let key = *self.keys.0.get(&tree).ok_or(FsError::Locked)?;
+        let key = **self.keys.0.get(&tree).ok_or(FsError::Locked)?;
         Ok(Some(Sealer { key, line }))
     }
 
@@ -99,7 +108,7 @@ impl<S: Store> Volume<S> {
         let id = self.next_subvol_id();
         let mut check = [0u8; 32];
         let tag = xseal(key, &nonce(0, 0, id), &[], &mut check);
-        self.keys.0.insert(id, *key);
+        self.keys.0.insert(id, Box::new(*key));
         self.make_subvol(id, name)?;
         {
             let s = self.subvol(id)?;
@@ -129,15 +138,23 @@ impl<S: Store> Volume<S> {
         if xopen(key, &nonce(0, 0, line), &[], &mut check, &tag).is_err() || check != [0; 32] {
             return Err(FsError::WrongKey);
         }
-        self.keys.0.insert(sv, *key);
+        self.keys.0.insert(sv, Box::new(*key));
         Ok(())
     }
 
-    /// Commits, then forgets subvolume `sv`'s key (wiped).
+    /// Commits, then forgets the key of subvolume `sv`'s line (wiped): its
+    /// own, and its snapshots' (or, for a snapshot, its source's and theirs).
     pub fn lock(&mut self, sv: u64) -> Result<(), FsError> {
         self.commit()?;
-        if let Some(mut k) = self.keys.0.remove(&sv) {
-            wipe(&mut k);
+        let line_of = |id: u64, r: &crate::subvol::SubvolRecord| if r.snapshot_of != 0 { r.snapshot_of } else { id };
+        let line = line_of(sv, &self.subvol(sv)?.rec);
+        let held: alloc::vec::Vec<u64> = self.keys.0.keys().copied().collect();
+        for id in held {
+            if line_of(id, &self.subvol(id)?.rec) == line
+                && let Some(mut k) = self.keys.0.remove(&id)
+            {
+                wipe(&mut k);
+            }
         }
         Ok(())
     }
