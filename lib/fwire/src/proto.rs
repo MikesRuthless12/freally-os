@@ -32,6 +32,11 @@ pub mod conductor {
     /// The Brain's `reboot` (dev images; TASK-084): `Reboot` → `()`, then the
     /// machine resets half a second later (the answer has time to leave).
     pub const REBOOT: u32 = 14;
+    /// A data file one of the caller's grants allows, by name (`ByName` →
+    /// `()`, the file's VMO handle 0 of the reply, read-only): `hardware:150`,
+    /// `os:150`, `os:wallpaper` (TASK-090A: the art at nine scales, made
+    /// into a VMO only when a service first asks).
+    pub const DATA: u32 = 15;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
@@ -815,6 +820,7 @@ pub mod inventory {
                 (c::BOOT_TIMELINE, "boot_timeline"),
                 (c::STAMP, "stamp"),
                 (c::MANIFEST, "manifest"),
+                (c::DATA, "data"),
             ],
         ),
         ("logger", &[(l::WRITE, "write"), (l::READ, "read")]),

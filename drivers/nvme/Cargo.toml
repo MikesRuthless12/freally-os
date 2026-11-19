@@ -1,11 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "drv-nvme"
-description = "The NVMe driver."
+description = "drv-nvme: NVM Express, with the partition interlock: writes only inside Freally OS's own partitions."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "drv-nvme"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+# The interlock and a write-and-read-back proved as it starts.
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fgpt.workspace = true
+fstd.workspace = true
+fwire.workspace = true
+
+[dev-dependencies]
+fgpt = { workspace = true, features = ["build"] }
 
 [lints]
 workspace = true

@@ -11,6 +11,9 @@ publish = false
 # The DEFLATE and PNG decoders: for xtask reading the playbook's renders. The
 # image never carries a decoder for an outside format (FR-025).
 decode = []
+# The crisp guard (TASK-090A): count every picture drawn larger than it is.
+# The e2e and dev images and the tests; compiled out of a release.
+guard = []
 
 [lints]
 workspace = true

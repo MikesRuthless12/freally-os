@@ -92,7 +92,7 @@ pub struct BootServices {
     pub reserved: Unused,
     pub register_protocol_notify: Unused,
     pub locate_handle: Unused,
-    pub locate_device_path: Unused,
+    pub locate_device_path: extern "efiapi" fn(*const Guid, *mut *mut c_void, *mut Handle) -> Status,
     pub install_configuration_table: Unused,
     // Images
     pub load_image: Unused,
@@ -194,6 +194,36 @@ pub struct File {
 }
 
 pub const FILE_MODE_READ: u64 = 1;
+
+/// A disk or a partition, read a block at a time (TASK-091). The bootloader
+/// never writes: `write_blocks` and `flush_blocks` stay untyped.
+#[repr(C)]
+pub struct BlockIo {
+    pub revision: u64,
+    pub media: *mut BlockIoMedia,
+    pub reset: Unused,
+    pub read_blocks: extern "efiapi" fn(*mut BlockIo, u32, u64, usize, *mut c_void) -> Status,
+    pub write_blocks: Unused,
+    pub flush_blocks: Unused,
+}
+
+#[repr(C)]
+pub struct BlockIoMedia {
+    pub media_id: u32,
+    pub removable_media: u8,
+    pub media_present: u8,
+    pub logical_partition: u8,
+    pub read_only: u8,
+    pub write_caching: u8,
+    pub block_size: u32,
+    pub io_align: u32,
+    pub last_block: u64,
+}
+
+pub const BLOCK_IO_GUID: Guid =
+    Guid::new(0x964E_5B21, 0x6459, 0x11D2, [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B]);
+pub const DEVICE_PATH_GUID: Guid =
+    Guid::new(0x0957_6E91, 0x6D3F, 0x11D2, [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B]);
 
 #[repr(C)]
 pub struct GraphicsOutput {

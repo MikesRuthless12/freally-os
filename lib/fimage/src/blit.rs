@@ -50,6 +50,7 @@ impl Surface<'_> {
 
     /// Draws `src` with its top-left corner at (x, y).
     pub fn draw(&mut self, src: &Fimg, x: i32, y: i32) {
+        crate::guard::check_scale(src);
         self.draw_part(src, 0, 0, src.width, src.height, x, y, src.width, src.height);
     }
 
@@ -57,6 +58,7 @@ impl Surface<'_> {
     /// counter-clockwise on screen by the angle whose sine and cosine are
     /// given, sampled bilinearly (premultiplied, so its edges stay clean).
     pub fn turned(&mut self, src: &Fimg, (cx, cy): (f32, f32), sin: f32, cos: f32) {
+        crate::guard::check_scale(src);
         let (hw, hh) = (src.width as f32 / 2.0, src.height as f32 / 2.0);
         let reach = hw + hh;
         let (x0, x1) = ((cx - reach) as i32 - 1, (cx + reach) as i32 + 1);
@@ -78,12 +80,13 @@ impl Surface<'_> {
         }
     }
 
-    /// Lays `src`, stretched to `w × h` at (x, y), over the surface with the
-    /// "screen" blend at `opacity` (of 255): the meter's glass.
+    /// Lays `src` at (x, y), 1:1 and clipped to `w × h`, over the surface
+    /// with the "screen" blend at `opacity` (of 255): the meter's glass. Never
+    /// stretched (TASK-090A): where the box is larger than the picture, the
+    /// rest is left as it is (black, under a screen blend, changes nothing).
     pub fn screen(&mut self, src: &Fimg, x: i32, y: i32, w: u32, h: u32, opacity: u8) {
-        if src.width == 0 || src.height == 0 {
-            return;
-        }
+        crate::guard::check_scale(src);
+        let (w, h) = (w.min(src.width), h.min(src.height));
         let op = opacity as u32;
         for oy in 0..h {
             let ty = y + oy as i32;
@@ -95,7 +98,7 @@ impl Surface<'_> {
                 if tx < 0 || tx >= self.width as i32 {
                     continue;
                 }
-                let [b, g, r, _] = src.at(ox * src.width / w, oy * src.height / h);
+                let [b, g, r, _] = src.at(ox, oy);
                 let i = ty as usize * self.stride as usize + tx as usize;
                 let d = self.px[i];
                 // screen(d, s) = d + s − d·s, then mixed in at the opacity.
@@ -109,6 +112,11 @@ impl Surface<'_> {
     /// the edges stretched along their length, the middle both ways. A box
     /// smaller than the corners squeezes them evenly.
     pub fn nine(&mut self, src: &Fimg, x: i32, y: i32, w: u32, h: u32) {
+        crate::guard::check_scale(src);
+        // With no insets it's a plain stretch: the guard sees the whole.
+        if src.slice == [0; 4] {
+            crate::guard::check_size(src, src.width, src.height, w, h);
+        }
         let [l, t, r, b] = src.slice.map(u32::from);
         let (l, r) = fit(l, r, w);
         let (t, b) = fit(t, b, h);
@@ -147,6 +155,48 @@ fn bilinear(src: &Fimg, x: f32, y: f32) -> [u8; 4] {
     out
 }
 
+/// One axis of [`cover`]'s area filter at `num/den` (below 1): for each of
+/// the `screen` pixels along it, the first source pixel under it and how
+/// much of it and each next one it covers, in units where a source pixel is
+/// `2·num` long (a screen pixel, `2·den`). The shown part is centred.
+fn taps(screen: u64, size: u64, num: u64, den: u64) -> alloc::vec::Vec<(u32, alloc::vec::Vec<u64>)> {
+    let (sp, tp) = (2 * num, 2 * den);
+    let start = (size * num).saturating_sub(screen * den);
+    (0..screen)
+        .map(|i| {
+            let (a, b) = (start + i * tp, start + (i + 1) * tp);
+            let first = a / sp;
+            let weights = (first..b.div_ceil(sp).min(size)).map(|j| b.min((j + 1) * sp) - a.max(j * sp)).collect();
+            (first as u32, weights)
+        })
+        .collect()
+}
+
+/// [`cover`] for a screen smaller than the source: each screen pixel the
+/// coverage-weighted mean of the source pixels under it.
+fn cover_down(src: &Fimg, (w, h): (u64, u64), (iw, ih): (u64, u64), num: u64, den: u64) -> alloc::vec::Vec<u32> {
+    let (xt, yt) = (taps(w, iw, num, den), taps(h, ih, num, den));
+    let mut out = alloc::vec::Vec::with_capacity((w * h) as usize);
+    for (y0, wy) in &yt {
+        for (x0, wx) in &xt {
+            let (mut acc, mut total) = ([0u64; 3], 0u64);
+            for (dy, &a) in wy.iter().enumerate() {
+                for (dx, &b) in wx.iter().enumerate() {
+                    let p = src.at(x0 + dx as u32, y0 + dy as u32);
+                    let k = a * b;
+                    for c in 0..3 {
+                        acc[c] += p[c] as u64 * k;
+                    }
+                    total += k;
+                }
+            }
+            let ch = |c: usize| ((acc[c] + total / 2) / total.max(1)).min(255) as u32;
+            out.push(0xFF00_0000 | ch(2) << 16 | ch(1) << 8 | ch(0));
+        }
+    }
+    out
+}
+
 /// Two insets that fit in `size`, shrunk in proportion if they don't.
 fn fit(a: u32, b: u32, size: u32) -> (u32, u32) {
     if a + b <= size {
@@ -157,14 +207,24 @@ fn fit(a: u32, b: u32, size: u32) -> (u32, u32) {
 }
 
 /// `src` (opaque) scaled to cover a `w` × `h` screen, centred, what spills
-/// over cropped: XRGB pixels, row by row. Fixed-point bilinear, so every
-/// build of it (stage's, and the specs' that check it) gives each pixel the
-/// same; a source the screen's size comes through untouched.
+/// over cropped: XRGB pixels, row by row. All integer, so every build of it
+/// (stage's, and the specs' that check it) gives each pixel the same. A
+/// screen smaller than the source gets it brought down with an area filter
+/// (TASK-090A: each screen pixel the mean of the source under it, so the
+/// render stays as crisp as it was drawn); the source's own size comes
+/// through untouched; a larger screen is sampled bilinearly, and the crisp
+/// guard counts it.
 pub fn cover(src: &Fimg, w: u32, h: u32) -> alloc::vec::Vec<u32> {
     let (iw, ih) = (src.width.max(1) as u64, src.height.max(1) as u64);
     let (w64, h64) = (w as u64, h as u64);
     // The scale, screen over source, as num/den: the larger of the two.
     let (num, den) = if w64 * ih >= h64 * iw { (w64, iw) } else { (h64, ih) };
+    if num < den {
+        return cover_down(src, (w64, h64), (iw, ih), num, den);
+    }
+    if num > den {
+        crate::guard::check_size(src, src.width, src.height, (iw * num / den) as u32, (ih * num / den) as u32);
+    }
     // Each screen pixel's centre in the source, in 16.16, then where the
     // shown part of the source starts.
     let axis = |i: u64, screen: u64, size: u64| -> u64 {

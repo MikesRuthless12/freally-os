@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = drv-nvme
+binary      = /system/drivers/nvme
+description = Reads and writes the NVMe drive, and writes only inside Freally OS's own partitions.
+start       = boot
+after       = logger, devmgr
+restart     = on-failure
+class       = background
+grants      = dma
+# Storage is QEMU-only in Phase 6 (the phase prompt): no release image carries it yet.
+flavours    = dev, e2e

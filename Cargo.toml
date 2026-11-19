@@ -23,6 +23,7 @@ license = "Apache-2.0"
 fcore-abi = { path = "lib/fcore-abi" }
 fcrypto = { path = "lib/fcrypto" }
 fbootctl = { path = "lib/fbootctl" }
+fgpt = { path = "lib/fgpt" }
 fsi = { path = "lib/fsi" }
 ffont = { path = "lib/ffont" }
 frandom = { path = "lib/frandom" }

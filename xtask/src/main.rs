@@ -12,7 +12,9 @@ mod cdp;
 mod ci;
 mod ci_linux;
 mod doctor;
+mod fat;
 mod gates;
+mod image;
 mod keys;
 mod ktest;
 mod pack;
@@ -39,12 +41,13 @@ cargo xtask <command>
   keygen --dev --staging         make the signing keys in ~/.freally-keys/ (never --release)
   build --flavour F              the bootloader and the signed image for release, dev or e2e
   build --probe                  the probe image (dev, no desktop): what a new machine has, on screen
-  run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe)
+  run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe; --gpt: a GPT disk on NVMe)
   probe                          boot the probe headless, check what it found, keep each page as a PNG
   brain-bridge [--port N]        the Brain's MCP server for Claude Code: stdio to the dev VM's COM2 (127.0.0.1:4552)
   brain-swap <service> [--crash] swap_service's arguments: the service built for dev, signed with the dev key
   brain-test                     the Brain, every tool, swap, rollback and reboot, against a dev VM (headless)
   cdp --os [--site] [--only=ids] the CDP legs: every coverage.json feature, spec by spec
+  image --gpt [--flavour F]      a whole GPT disk: ESP, FREALLY_SYSTEM_A/B, FREALLY_DATA (--out P, --data-mib N)
   pack --flavour F [--out P]     pack an unsigned image
   sign <image> --key dev|staging sign an image in place
   verify <image>                 verify an image against the dev and staging keys
@@ -90,6 +93,7 @@ fn main() -> ExitCode {
         Some("sync-os") => sync_os::sync_os_cmd(rest),
         Some("assets") => sync_hardware::assets_cmd(rest),
         Some("specimen") => specimen::specimen_cmd(rest),
+        Some("image") => image::image_cmd(rest),
         Some("pack") => pack::pack_cmd(rest),
         Some("sign") => pack::sign_cmd(rest),
         Some("verify") => verify_cmd(rest),

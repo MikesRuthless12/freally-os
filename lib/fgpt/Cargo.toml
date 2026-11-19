@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fgpt"
+description = "fgpt: the GUID Partition Table, read (the bootloader, drv-nvme's interlock) and written (xtask's disk images), and Freally OS's own layout."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Writing a table (xtask's disk images): needs alloc.
+build = []
+
+[dependencies]
+fcore-abi.workspace = true
+
+[lints]
+workspace = true

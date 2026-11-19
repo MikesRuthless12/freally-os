@@ -96,6 +96,36 @@ fn reset_until(ctx: &mut Ctx, text: &str, n: usize) -> Result<(), String> {
 /// before conductor, crashes three times; the fourth boot lands on slot A,
 /// and the log says the update didn't start (TASK-045, FR-003).
 pub fn fallback(ctx: &mut Ctx) -> Result<(), String> {
+    fallback_on(ctx, "files")
+}
+
+/// `@boot.gpt_fallback` (TASK-091): the same, both slots read from their
+/// FREALLY_SYSTEM partitions of a GPT disk on NVMe.
+pub fn gpt_fallback(ctx: &mut Ctx) -> Result<(), String> {
+    fallback_on(ctx, "GPT")
+}
+
+/// `@boot.gpt` (TASK-091): a whole GPT disk on NVMe: the bootloader reads
+/// the table through BlockIo, boots slot A from FREALLY_SYSTEM_A, and the
+/// desktop comes up.
+pub fn gpt(ctx: &mut Ctx) -> Result<(), String> {
+    for line in [
+        "freally-boot: the GPT layout",
+        "freally-boot: booting slot A",
+        "[conductor] conductor: started from slot A",
+        "stage: first frame",
+        "desktop: art at",
+    ] {
+        ctx.expect_log(line)?;
+    }
+    if ctx.log_count("freally-boot: the files layout") != 0 {
+        return Err("the bootloader read the files layout on a GPT disk".into());
+    }
+    Ok(())
+}
+
+fn fallback_on(ctx: &mut Ctx, layout: &str) -> Result<(), String> {
+    ctx.expect_log(&format!("freally-boot: the {layout} layout"))?;
     ctx.allow_errors(&["freally-core: ERROR", "showing the panic screen", "can't start", "didn't start"]);
     ctx.expect_log("[conductor] conductor: started from slot A")?;
     let answer = ctx.door("bootctl trial b")?;

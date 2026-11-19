@@ -90,6 +90,14 @@ impl<'a> Bundle<'a> {
         self.entries().flatten().find(|e| e.0 == name).map(|(_, off, len)| &bytes[off..off + len])
     }
 
+    /// The name of the file whose bytes hold `addr` (a piece the crisp guard
+    /// caught, found by where its pixels are).
+    pub fn name_of(&self, addr: usize) -> Option<&'a str> {
+        let base = self.bytes.as_ptr() as usize;
+        let at = addr.checked_sub(base)?;
+        self.entries().flatten().find(|&(_, off, len)| at >= off && at < off + len).map(|e| e.0)
+    }
+
     pub fn len(&self) -> usize {
         self.count as usize
     }

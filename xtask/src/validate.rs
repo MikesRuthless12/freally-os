@@ -192,11 +192,13 @@ pub fn no_writes(manifests: &[fsvc::Manifest], paths: &[String], allowed: &[Stri
         }
     }
     let drivers = paths.iter().filter(|p| p.starts_with("/system/drivers/")).count();
-    Ok(match allowed {
+    let carried: Vec<String> =
+        paths.iter().filter(|p| p.starts_with("/system/drivers/")).filter_map(|p| storage(p)).collect();
+    Ok(match carried.as_slice() {
         [] => format!(
             "no writes: no storage driver among its {drivers} drivers, the root resource conductor's and devmgr's alone, no DMA"
         ),
-        a => format!("no writes outside Freally partitions: {} only with the interlock tested", a.join(", ")),
+        a => format!("no writes outside Freally partitions: {}, each with its interlock tested", a.join(", ")),
     })
 }
 

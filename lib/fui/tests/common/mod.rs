@@ -6,7 +6,8 @@
 use fui::hardware::{Hardware, RENDER_SCALE, slice_of};
 use std::sync::OnceLock;
 
-fn build(theme: &str, scale: u32) -> Hardware<'static> {
+/// The set for `theme` at `scale` percent, made as `cargo xtask assets` makes it.
+pub fn build(theme: &str, scale: u32) -> Hardware<'static> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/hardware");
     Hardware::load(scale, |piece| {
         let png = std::fs::read(format!("{dir}/{theme}/{piece}.png")).ok()?;
@@ -18,17 +19,17 @@ fn build(theme: &str, scale: u32) -> Hardware<'static> {
 
 pub fn dark() -> &'static Hardware<'static> {
     static H: OnceLock<Hardware<'static>> = OnceLock::new();
-    H.get_or_init(|| build("dark", 1))
+    H.get_or_init(|| build("dark", 100))
 }
 
 pub fn light() -> &'static Hardware<'static> {
     static H: OnceLock<Hardware<'static>> = OnceLock::new();
-    H.get_or_init(|| build("light", 1))
+    H.get_or_init(|| build("light", 100))
 }
 
 pub fn dark_2x() -> &'static Hardware<'static> {
     static H: OnceLock<Hardware<'static>> = OnceLock::new();
-    H.get_or_init(|| build("dark", 2))
+    H.get_or_init(|| build("dark", 200))
 }
 
 /// Clearly Freally green (from the deep accent to the lit track's lime):

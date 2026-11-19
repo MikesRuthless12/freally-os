@@ -80,6 +80,8 @@ const PRIVATE_PATTERNS: &[&str] = &[
     "prd.md",
     "product-vision",
     "gtm.md",
+    // FreallyFS's format spec (TASK-093): private until the format is public.
+    "ffs-format.md",
     "vision.json",
     "live-to-do",
     // The handoff note (HANDOFF.md, HANDOFF-*.md), never the bootloader's

@@ -45,6 +45,10 @@ pub struct VmOptions {
     /// Boot options on the ESP (`\FREALLY\CMDLINE.TXT`, dev and e2e only:
     /// `log=screen`, TASK-074).
     pub cmdline: Option<String>,
+    /// The GPT layout (TASK-091): the ESP folder made into a whole disk
+    /// (`disk.img`: ESP, FREALLY_SYSTEM_A and _B, FREALLY_DATA) on NVMe,
+    /// instead of the files layout's virtual FAT drive.
+    pub gpt: bool,
 }
 
 impl VmOptions {
@@ -64,6 +68,7 @@ impl VmOptions {
             probe: false,
             edid: None,
             cmdline: None,
+            gpt: false,
         }
     }
 
@@ -73,6 +78,7 @@ impl VmOptions {
         let mut o = VmOptions::new(flavour, &arg("--vm").unwrap_or_else(|| flavour.name().to_string()));
         o.headless = args.iter().any(|a| a == "--headless");
         o.probe = args.iter().any(|a| a == "--probe");
+        o.gpt = args.iter().any(|a| a == "--gpt");
         o.tcg = args.iter().any(|a| a == "--tcg") || !Path::new("/dev/kvm").exists();
         o.image_override = arg("--image").map(PathBuf::from);
         if let Some(b) = arg("--tamper") {
@@ -160,9 +166,15 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     c.args(["-rtc", "base=localtime"]);
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}"));
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=1,file={}", dir.join("OVMF_VARS_4M.fd").display()));
-    // Read-only: the bootloader never writes the ESP, and a writable virtual FAT
-    // disk stalled a fresh VM's firmware on its first boot.
-    c.arg("-drive").arg(format!("if=virtio,format=raw,readonly=on,file=fat:{}", esp.display()));
+    if o.gpt {
+        // The whole disk on NVMe (TASK-091), as a laptop's SSD.
+        c.arg("-drive").arg(format!("if=none,id=disk0,format=raw,file={}", dir.join("disk.img").display()));
+        c.args(["-device", "nvme,serial=FREALLY0,drive=disk0"]);
+    } else {
+        // Read-only: the bootloader never writes the ESP, and a writable virtual FAT
+        // disk stalled a fresh VM's firmware on its first boot.
+        c.arg("-drive").arg(format!("if=virtio,format=raw,readonly=on,file=fat:{}", esp.display()));
+    }
     c.args(["-nic", "none"]);
     c.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
     c.arg("-qmp").arg(format!("unix:{},server=on,wait=off", o.qmp_socket().display()));
@@ -217,6 +229,9 @@ pub fn start_built(o: &VmOptions, built: &Built) -> Result<Child, String> {
     }
     if let Some(byte) = o.tamper_byte {
         tamper(&esp.join("FREALLY/SYSTEM_A.FSI"), byte)?;
+    }
+    if o.gpt {
+        crate::image::disk_from_esp(&esp, &o.dir().join("disk.img"), crate::image::DATA_MIB)?;
     }
     let _ = std::fs::remove_file(o.qmp_socket());
     qemu(o, &esp).spawn().map_err(|e| format!("can't start QEMU: {e}"))

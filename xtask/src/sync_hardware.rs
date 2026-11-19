@@ -117,10 +117,10 @@ pub fn assets() -> Result<(usize, usize), String> {
         for f in wanted(&copy_dir().join(theme))?.iter().filter(|f| f.ends_with(".png")) {
             let png = std::fs::read(copy_dir().join(theme).join(f)).map_err(|e| e.to_string())?;
             let stem = f.trim_end_matches(".png");
-            for scale in [3u32, 2, 1] {
-                let file = fimage::fimg::from_png(&png, scale, RENDER_SCALE, slice_of(stem))
+            for pct in [300u32, 200, 100] {
+                let file = fimage::fimg::from_png(&png, pct, RENDER_SCALE, slice_of(stem))
                     .map_err(|e| format!("{theme}/{f}: {e}"))?;
-                let to = out.join(theme).join(format!("{stem}@{scale}x.fimg"));
+                let to = out.join(theme).join(format!("{stem}@{pct}.fimg"));
                 std::fs::create_dir_all(to.parent().unwrap_or(&out)).map_err(|e| e.to_string())?;
                 std::fs::write(&to, &file).map_err(|e| e.to_string())?;
                 n += 1;

@@ -7,9 +7,12 @@
 //!   `assets/os/MANIFEST`.
 //! - The **os set** gate: the copy is what its MANIFEST says; on a machine
 //!   with the playbook, it is the playbook's.
-//! - `os_bundle(scale)`: every piece of both themes as FIMG at `scale` (each
-//!   piece's render scale and 9-slice insets from `os.json`), the wallpaper
-//!   at 1x only (a larger screen scales it up: a soft wall bears it).
+//! - `os_bundle(pct)`: every piece of both themes but the wallpaper as FIMG
+//!   at `pct` percent (each piece's render scale and 9-slice insets from
+//!   `os.json`), one bundle for each scale the OS offers (TASK-090A).
+//! - `wallpaper_bundle()`: both themes' wallpapers whole, at the size they
+//!   were rendered (2560 × 1600); stage brings them down to the screen with
+//!   an area filter, never up on a screen no larger.
 
 use crate::util;
 use fjson::Value;
@@ -114,20 +117,30 @@ pub fn pieces() -> Result<Vec<(String, u32, [u32; 4])>, String> {
     Ok(out)
 }
 
-/// Both themes' pieces as FIMGs at `scale`, in one bundle: `dark/<piece>`,
-/// `light/<piece>` (the wallpaper only at 1x).
-pub fn os_bundle(scale: u32) -> Result<Vec<u8>, String> {
+/// Both themes' pieces but the wallpaper as FIMGs at `pct` percent, in one
+/// bundle: `dark/<piece>`, `light/<piece>`.
+pub fn os_bundle(pct: u32) -> Result<Vec<u8>, String> {
+    bundle_of(|piece| piece != "wallpaper", |_| pct)
+}
+
+/// Both themes' wallpapers, each at its render's own size: `dark/wallpaper`,
+/// `light/wallpaper`.
+pub fn wallpaper_bundle() -> Result<Vec<u8>, String> {
+    bundle_of(|piece| piece == "wallpaper", |render_scale| render_scale * 100)
+}
+
+/// The pieces `which` picks, both themes, each as FIMG at the percent `at`
+/// gives for its render scale.
+fn bundle_of(which: impl Fn(&str) -> bool, at: impl Fn(u32) -> u32) -> Result<Vec<u8>, String> {
     let dir = copy_dir();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for theme in THEMES {
-        for (piece, render_scale, slice) in pieces()? {
-            if piece == "wallpaper" && scale != 1 {
-                continue;
-            }
+        for (piece, render_scale, slice) in pieces()?.into_iter().filter(|(p, ..)| which(p)) {
+            let pct = at(render_scale);
             let png = std::fs::read(dir.join(theme).join(format!("{piece}.png")))
                 .map_err(|e| format!("assets/os/{theme}/{piece}.png: {e}"))?;
-            let fimg = fimage::fimg::from_png(&png, scale, render_scale, slice)
-                .map_err(|e| format!("{theme}/{piece}: {e}"))?;
+            let fimg = fimage::fimg::from_png(&png, pct, render_scale, slice)
+                .map_err(|e| format!("{theme}/{piece} at {pct} %: {e}"))?;
             files.push((format!("{theme}/{piece}"), fimg));
         }
     }

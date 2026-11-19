@@ -52,6 +52,17 @@ pub fn vmo_create(size: u64) -> Result<u32, FErr> {
     call1(nr::VMO_CREATE, [size, 0, 0, 0, 0, 0]).map(|h| h as u32)
 }
 
+/// A VMO of one physical run, zeroed, for a device to reach by DMA (the
+/// `dma` grant only: a storage driver, TASK-092).
+pub fn vmo_create_contiguous(size: u64) -> Result<u32, FErr> {
+    call1(nr::VMO_CREATE, [size, 1, 0, 0, 0, 0]).map(|h| h as u32)
+}
+
+/// The physical address of byte `offset` of a VMO (the `dma` grant only).
+pub fn vmo_phys(h: u32, offset: u64) -> Result<u64, FErr> {
+    call1(nr::VMO_PHYS, [h as u64, offset, 0, 0, 0, 0])
+}
+
 pub fn vm_map(aspace: u32, vmo: u32, off: u64, len: u64, hint: u64, perms: u64) -> Result<u64, FErr> {
     call1(nr::VM_MAP, [aspace as u64, vmo as u64, off, len, hint, perms])
 }

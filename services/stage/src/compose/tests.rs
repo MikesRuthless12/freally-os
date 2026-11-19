@@ -163,7 +163,7 @@ fn with_the_renders_the_ground_is_the_wallpaper_and_the_strip_its_art() {
             sp.extend_from_slice(&[b, g, r, 255]);
         }
     }
-    let strip_bytes = fimage::fimg::encode(8, 4, 1, [2, 1, 2, 1], &sp);
+    let strip_bytes = fimage::fimg::encode(8, 4, 4, [2, 1, 2, 1], &sp);
     let strip = fimage::fimg::parse(&strip_bytes).unwrap();
     let art = ThemeArt { ground: wall.clone(), strip, strip_focused: strip };
     let mut ws = Windows::new(400, 300, 32);

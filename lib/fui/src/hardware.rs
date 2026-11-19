@@ -129,6 +129,7 @@ pub enum KeyLook {
 
 #[derive(Debug)]
 pub struct Hardware<'a> {
+    /// The UI scale it was made for, in percent (100–300).
     pub scale: u32,
     /// Off, on.
     pub switch_track: [Fimg<'a>; 2],
@@ -153,15 +154,16 @@ pub struct Hardware<'a> {
 }
 
 impl<'a> Hardware<'a> {
-    /// The set at `scale`, each piece's FIMG from `get` (given a piece's
+    /// The set at `scale` percent (TASK-090A: one set for each scale the OS
+    /// offers, drawn 1:1), each piece's FIMG from `get` (given a piece's
     /// path from `PIECES`). A missing, damaged or wrongly scaled piece is an
     /// error naming it.
     pub fn load(scale: u32, mut get: impl FnMut(&str) -> Option<&'a [u8]>) -> Result<Hardware<'a>, String> {
         let mut one = |name: &str| -> Result<Fimg<'a>, String> {
             let bytes = get(name).ok_or_else(|| format!("hardware: no {name}"))?;
             let f = fimg::parse(bytes).map_err(|e| format!("hardware: {name}: {e}"))?;
-            if f.scale as u32 != scale {
-                return Err(format!("hardware: {name} is for {}x, not {scale}x", f.scale));
+            if f.scale as u32 * 25 != scale {
+                return Err(format!("hardware: {name} is for {} %, not {scale} %", f.scale as u32 * 25));
             }
             Ok(f)
         };
@@ -210,7 +212,7 @@ impl<'a> Hardware<'a> {
 
     /// A length from `hardware.json` (4x) at this set's scale.
     pub fn len(&self, v: f32) -> f32 {
-        v * self.scale as f32 / RENDER_SCALE as f32
+        v * self.scale as f32 / (RENDER_SCALE * 100) as f32
     }
 
     /// The same, in whole pixels.

@@ -76,12 +76,12 @@ fn every_piece_loads_in_both_themes_at_each_scale() {
 fn a_missing_or_wrongly_scaled_piece_is_refused() {
     let png = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/hardware/dark/lamp_on.png")).unwrap();
     let at_2x: &'static [u8] =
-        Box::leak(fimage::fimg::from_png(&png, 2, RENDER_SCALE, [0; 4]).unwrap().into_boxed_slice());
-    let err = Hardware::load(1, |_| Some(at_2x)).unwrap_err();
-    assert!(err.contains("for 2x, not 1x"), "{err}");
-    let err = Hardware::load(2, |p| if p == "fader_cap" { None } else { Some(at_2x) }).unwrap_err();
+        Box::leak(fimage::fimg::from_png(&png, 200, RENDER_SCALE, [0; 4]).unwrap().into_boxed_slice());
+    let err = Hardware::load(100, |_| Some(at_2x)).unwrap_err();
+    assert!(err.contains("for 200 %, not 100 %"), "{err}");
+    let err = Hardware::load(200, |p| if p == "fader_cap" { None } else { Some(at_2x) }).unwrap_err();
     assert!(err.contains("no fader_cap"), "{err}");
-    let err = Hardware::load(1, |_| Some(&b"FIMG nonsense"[..])).unwrap_err();
+    let err = Hardware::load(100, |_| Some(&b"FIMG nonsense"[..])).unwrap_err();
     assert!(err.starts_with("hardware: switch_track_off:"), "{err}");
 }
 

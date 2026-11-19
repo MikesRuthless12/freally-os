@@ -20,6 +20,8 @@ struct State {
     name: String,
     flavour: u8,
     handles: Vec<(String, Handle)>,
+    /// The data files mapped so far, by name: asked for again, the same bytes.
+    mapped: Vec<(String, &'static [u8])>,
     directory: Client,
 }
 
@@ -44,7 +46,8 @@ pub fn start() -> Result<(), CallError> {
             handles.push((name, h));
         }
     }
-    *STATE.0.borrow_mut() = Some(State { name: s.name, flavour: s.flavour, handles, directory: Client::new(dir) });
+    *STATE.0.borrow_mut() =
+        Some(State { name: s.name, flavour: s.flavour, handles, mapped: Vec::new(), directory: Client::new(dir) });
     Ok(())
 }
 
@@ -126,11 +129,30 @@ pub fn font(file: &str) -> Result<&'static [u8], FErr> {
     data(&alloc::format!("font:{file}"))
 }
 
-/// A data file a grant carried (`font:<file>`, `hardware:<n>x`): conductor
-/// writes its length (u64, little-endian) and then the file; mapped
-/// read-only for as long as the service runs.
+/// A data file a grant allows (`font:<file>`, handed over at start;
+/// `hardware:<pct>`, `os:<pct>`, `os:wallpaper`, asked of conductor the first
+/// time, TASK-090A): conductor writes its length (u64, little-endian) and
+/// then the file; mapped read-only for as long as the service runs, once.
 pub fn data(name: &str) -> Result<&'static [u8], FErr> {
-    let h = take_handle(name).ok_or(FErr::NotFound)?;
+    if let Some(bytes) = STATE.0.borrow().as_ref().and_then(|s| s.mapped.iter().find(|(n, _)| n == name).map(|m| m.1)) {
+        return Ok(bytes);
+    }
+    let h = match take_handle(name) {
+        Some(h) => h,
+        None => {
+            let (_, mut hs) =
+                ask_moving::<_, ()>(c::DATA, &ByName { name: String::from(name) }, Vec::new(), Duration::from_secs(5))
+                    .map_err(|e| match e {
+                        CallError::Sys(e) => e,
+                        CallError::Remote(code, _) => FErr::from_code(code as i64),
+                        CallError::Wire(_) => FErr::InvalidArgs,
+                    })?;
+            if hs.is_empty() {
+                return Err(FErr::NotFound);
+            }
+            hs.swap_remove(0)
+        }
+    };
     let mut len = [0u8; 8];
     crate::sys::vmo_read(h.raw(), 0, &mut len)?;
     let len = u64::from_le_bytes(len);
@@ -145,7 +167,11 @@ pub fn data(name: &str) -> Result<&'static [u8], FErr> {
     // The mapping lives as long as the service: keep the VMO's handle with it.
     core::mem::forget(h);
     // SAFETY: the kernel just mapped len + 8 readable bytes at `at`; they stay mapped.
-    Ok(unsafe { core::slice::from_raw_parts((at + 8) as *const u8, len as usize) })
+    let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts((at + 8) as *const u8, len as usize) };
+    if let Some(s) = STATE.0.borrow_mut().as_mut() {
+        s.mapped.push((String::from(name), bytes));
+    }
+    Ok(bytes)
 }
 
 /// Asks conductor `ordinal` with `req` (a method conductor serves, such as
@@ -170,11 +196,15 @@ pub fn ask_moving<Req: fwire::Wire, Rep: fwire::Wire>(
 }
 
 /// A VMO holding `bytes`' length (u64, little-endian) and then the bytes: how
-/// a swap's new build and a handed-over state travel (TASK-083).
+/// a swap's new build, a handed-over state and a grant's data file travel
+/// (TASK-083, TASK-090A). Written 16 MiB at a time, the most one
+/// `vmo_write` takes.
 pub fn sized_vmo(bytes: &[u8]) -> Result<Handle, FErr> {
     let h = Handle::from_raw(crate::sys::vmo_create(bytes.len() as u64 + 8)?).ok_or(FErr::NoMemory)?;
     crate::sys::vmo_write(h.raw(), 0, &(bytes.len() as u64).to_le_bytes())?;
-    crate::sys::vmo_write(h.raw(), 8, bytes)?;
+    for (i, piece) in bytes.chunks(16 << 20).enumerate() {
+        crate::sys::vmo_write(h.raw(), 8 + (i as u64) * (16 << 20), piece)?;
+    }
     Ok(h)
 }
 

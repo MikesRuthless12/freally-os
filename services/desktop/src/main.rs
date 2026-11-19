@@ -106,7 +106,8 @@ struct Desktop {
     screen: (u32, u32),
     theme: Theme,
     fonts: Fonts<'static>,
-    bundles: Vec<(u32, Bundle<'static>)>,
+    /// The hardware set at the screen's scale, and the bundle it's from.
+    hw_bundle: Bundle<'static>,
     hw: Hardware<'static>,
     rack: Win,
     places: Vec<KeyPlace>,
@@ -125,14 +126,14 @@ struct Desktop {
     shortcuts: Option<Channel>,
     clock: String,
     stamped: bool,
-    /// The OS's renders, if the image carries them.
+    /// The OS's renders at the screen's scale, if the image carries them.
     os: Option<Bundle<'static>>,
     /// The Rack's and the launcher's accessibility trees (TASK-063).
     rack_ax: fstd::ax::Publisher,
     launcher_ax: fstd::ax::Publisher,
     /// The screensaver, while one is up (TASK-077C).
     saver: Option<SaverRun>,
-    /// The savers' F (the 3x OS art's `saver_f`), loaded the first time.
+    /// The savers' F (the 300 % OS art's `saver_f`), loaded the first time.
     saver_f: Option<svc_desktop::saver::Sprite>,
     #[cfg(feature = "flavour-dev")]
     door: Option<Door>,
@@ -157,11 +158,22 @@ fn fonts() -> Result<Fonts<'static>, String> {
     .map_err(|e| alloc::format!("the fonts: {e:?}"))
 }
 
-/// The hardware set's bundles, by scale.
 /// The OS's own renders (TASK-052): the Rack's faceplate, the clock's well,
-/// the apps' icons, at 1x.
-fn os_art() -> Option<Bundle<'static>> {
-    fstd::service::data("os:1x").ok().and_then(|b| Bundle::parse(b).ok())
+/// the apps' icons, the mark, from the bundle made for `pct` percent
+/// (TASK-090A: drawn 1:1, never scaled).
+fn os_art(pct: u16) -> Option<Bundle<'static>> {
+    fstd::info!("desktop: art at {pct} %");
+    bundle(&alloc::format!("os:{pct}"))
+}
+
+/// A bundle a grant allows (`os:150`, `hardware:150`).
+fn bundle(name: &str) -> Option<Bundle<'static>> {
+    fstd::service::data(name).ok().and_then(|b| Bundle::parse(b).ok())
+}
+
+/// The UI scale in percent.
+fn pct(t: &Theme) -> u16 {
+    (t.scale * 100.0 + 0.5) as u16
 }
 
 /// One render of the theme's (`dark/<piece>` or `light/<piece>`).
@@ -170,29 +182,13 @@ fn art<'a>(os: Option<&Bundle<'a>>, t: Theme, piece: &str) -> Option<fimage::fim
     os?.get(&alloc::format!("{theme}/{piece}")).and_then(|b| fimage::fimg::parse(b).ok())
 }
 
-fn bundles() -> Vec<(u32, Bundle<'static>)> {
-    let mut out = Vec::new();
-    for n in 1..=3u32 {
-        if let Ok(bytes) = fstd::service::data(&alloc::format!("hardware:{n}x"))
-            && let Ok(b) = Bundle::parse(bytes)
-        {
-            out.push((n, b));
-        }
-    }
-    out
-}
-
-/// The set for `theme` at the bundle nearest `scale` (rounded up).
-fn hardware(bundles: &[(u32, Bundle<'static>)], mode: Mode, scale: f32) -> Result<Hardware<'static>, String> {
-    let want = (scale + 0.999) as u32;
-    let (n, b) = bundles
-        .iter()
-        .find(|(n, _)| *n >= want)
-        .or(bundles.last())
-        .copied()
-        .ok_or_else(|| String::from("no hardware bundle"))?;
+/// The hardware set for `mode` at `pct` percent, from the bundle made for
+/// that scale (TASK-090A), and the bundle.
+fn hardware(mode: Mode, pct: u16) -> Result<(Bundle<'static>, Hardware<'static>), String> {
+    let b = bundle(&alloc::format!("hardware:{pct}"))
+        .ok_or_else(|| alloc::format!("the image has no hardware at {pct} %"))?;
     let theme = if mode == Mode::Light { "light" } else { "dark" };
-    Hardware::load(n, |piece| b.get(&alloc::format!("{theme}/{piece}")))
+    Ok((b, Hardware::load(pct as u32, |piece| b.get(&alloc::format!("{theme}/{piece}")))?))
 }
 
 fn rdtsc() -> u64 {
@@ -287,8 +283,8 @@ impl Desktop {
             .map_err(|e| alloc::format!("the screen: {e:?}"))?;
         let mode = if scr.theme == st::Theme::Light { Mode::Light } else { Mode::Dark };
         let theme = Theme::new(mode, scr.scale_pct as f32 / 100.0);
-        let bundles = bundles();
-        let hw = hardware(&bundles, mode, theme.scale)?;
+        fimage::guard::expect_scale(scr.scale_pct as u32);
+        let (hw_bundle, hw) = hardware(mode, pct(&theme))?;
         let shortcuts = stage
             .call::<_, st::Subscribed>(st::SUBSCRIBE_SHORTCUTS, &(), Vec::new(), deadline())
             .ok()
@@ -337,7 +333,7 @@ impl Desktop {
             screen: (scr.w, scr.h),
             theme,
             fonts: fonts()?,
-            bundles,
+            hw_bundle,
             hw,
             rack,
             places: rack::keys(keys.len(), theme.scale),
@@ -354,7 +350,7 @@ impl Desktop {
             shortcuts,
             clock: String::new(),
             stamped: false,
-            os: os_art(),
+            os: os_art(pct(&theme)),
             rack_ax: Default::default(),
             launcher_ax: Default::default(),
             saver: None,
@@ -761,6 +757,8 @@ impl Desktop {
                 if let Ok(sc) = fwire::from_payload::<st::SetScale>(p) {
                     self.theme.scale = sc.pct as f32 / 100.0;
                     self.places = rack::keys(self.keys.len(), self.theme.scale);
+                    fimage::guard::expect_scale(sc.pct as u32);
+                    self.os = os_art(sc.pct);
                     self.reload_art();
                 }
             }
@@ -768,10 +766,22 @@ impl Desktop {
         }
     }
 
+    /// The crisp guard (TASK-090A, dev and e2e images): a picture drawn
+    /// larger than it is since the last wake is an error naming it.
+    #[cfg(any(feature = "flavour-dev", feature = "flavour-e2e"))]
+    fn guard(&self) {
+        if let Some((n, u)) = fimage::guard::take() {
+            let name = (self.os.as_ref().and_then(|b| b.name_of(u.pixels)))
+                .or(self.hw_bundle.name_of(u.pixels))
+                .unwrap_or("a picture");
+            fstd::error!("desktop: not crisp: {}, {n} time(s)", fimage::guard::describe(name, &u));
+        }
+    }
+
     fn reload_art(&mut self) {
-        match hardware(&self.bundles, self.theme.mode, self.theme.scale) {
-            Ok(hw) => self.hw = hw,
-            Err(e) => fstd::warn!("desktop: {e}"),
+        match hardware(self.theme.mode, pct(&self.theme)) {
+            Ok((b, hw)) => (self.hw_bundle, self.hw) = (b, hw),
+            Err(e) => fstd::error!("desktop: {e}"),
         }
         self.draw_rack();
         if self.launcher.is_some() {
@@ -952,9 +962,8 @@ impl Desktop {
     /// The savers' F, as large as the image has it (any theme: the same art), once.
     fn saver_f(&mut self) -> Option<svc_desktop::saver::Sprite> {
         if self.saver_f.is_none() {
-            // The largest the image carries: 3x, else 2x, else the 1x already open.
-            let larger = ["os:3x", "os:2x"].into_iter().find_map(|n| fstd::service::data(n).ok());
-            let bundle = larger.and_then(|b| Bundle::parse(b).ok()).or(self.os);
+            // The largest the image carries (300 %), else the scale already open.
+            let bundle = bundle("os:300").or(self.os);
             let f = bundle.as_ref().and_then(|b| b.get("dark/saver_f")).and_then(|b| fimage::fimg::parse(b).ok());
             self.saver_f = f.map(|f| svc_desktop::saver::Sprite::from_bgra(f.width, f.height, f.pixels));
         }
@@ -1067,6 +1076,8 @@ impl Desktop {
                 until = until.min(self.born + 1_100_000_000);
             }
             let _ = fstd::sys::wait_many(&items, until);
+            #[cfg(any(feature = "flavour-dev", feature = "flavour-e2e"))]
+            self.guard();
             match Self::drain(&self.rack.events) {
                 Ok(evs) => evs.into_iter().for_each(|(o, p)| self.rack_event(o, &p)),
                 Err(_) => {

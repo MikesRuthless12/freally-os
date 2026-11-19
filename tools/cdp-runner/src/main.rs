@@ -23,6 +23,8 @@ mod a11y;
 mod boot;
 #[path = "../../../e2e/os/specs/cdp.rs"]
 mod cdp_specs;
+#[path = "../../../e2e/os/specs/crisp.rs"]
+mod crisp;
 #[path = "../../../e2e/os/specs/desktop.rs"]
 mod desktop;
 #[path = "../../../e2e/os/specs/display.rs"]
@@ -39,6 +41,8 @@ mod services;
 mod site_specs;
 #[path = "../../../e2e/os/specs/stage.rs"]
 mod stage;
+#[path = "../../../e2e/os/specs/storage.rs"]
+mod storage;
 #[path = "../../../e2e/os/specs/terminal.rs"]
 mod terminal;
 #[path = "../../../e2e/os/specs/theme.rs"]
@@ -75,6 +79,9 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.timeline", boot::timeline),
     ("boot.fallback", boot::fallback),
     ("boot.trial", boot::trial),
+    ("boot.gpt", boot::gpt),
+    ("boot.gpt_fallback", boot::gpt_fallback),
+    ("nvme.interlock", storage::interlock),
     ("stage.windows", stage::windows),
     ("ui.cursor", stage::cursor),
     ("stage.doors", stage::doors),
@@ -93,6 +100,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("cdp.freally", cdp_specs::freally),
     ("cdp.dom", cdp_specs::dom),
     ("desktop.sweep", desktop::sweep),
+    ("crisp.scales", crisp::scales),
     ("monitor.sweep", monitor::sweep),
     ("a11y.keyboard", a11y::keyboard),
     ("theme.both", theme::both),

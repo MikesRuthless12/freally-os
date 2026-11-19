@@ -7,7 +7,7 @@ use core::ffi::c_void;
 use core::ptr::null_mut;
 
 /// The largest image the bootloader will read (the GPT slots are 512 MiB).
-const MAX_IMAGE: u64 = 512 << 20;
+pub const MAX_IMAGE: u64 = 512 << 20;
 
 /// `\FREALLY\SYSTEM_A.FSI` and `SYSTEM_B.FSI` as NUL-terminated UTF-16.
 pub const SYSTEM_A: &[u16] = &utf16::<22>("\\FREALLY\\SYSTEM_A.FSI");

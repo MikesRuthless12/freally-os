@@ -139,63 +139,59 @@ impl Conductor {
         self.start_due();
     }
 
-    /// The data files a grant hands out, each in a VMO of its own made on
-    /// first use, holding the file's length (u64, little-endian) and then the
-    /// file (`fstd::service::data` reads it): `fonts` gives
-    /// `/system/fonts/*.ttf` as `font:<file>`; `hardware` gives
-    /// `/system/assets/hardware-<n>x.fbnd` as `hardware:<n>x`.
-    fn data_vmos(&mut self, grant: &str) -> Vec<(String, Handle)> {
-        let (dir, suffix, prefix) = match grant {
-            "fonts" => ("/system/fonts/", ".ttf", "font:"),
-            "hardware" => ("/system/assets/hardware-", ".fbnd", "hardware:"),
-            "os" => ("/system/assets/os-", ".fbnd", "os:"),
-            _ => return Vec::new(),
-        };
-        let mut out = Vec::new();
-        for path in self.image.paths().unwrap_or_default() {
-            let Some(file) = path.strip_prefix(dir).and_then(|f| f.strip_suffix(suffix).map(|stem| (f, stem))) else {
-                continue;
-            };
-            let name = if grant == "fonts" {
-                alloc::format!("{prefix}{}", file.0)
-            } else {
-                alloc::format!("{prefix}{}", file.1)
-            };
-            if !self.data.iter().any(|(n, _)| *n == name) {
-                let made = self.image.file(&path).ok().and_then(|bytes| {
-                    let vmo = Handle::from_raw(fstd::sys::vmo_create(bytes.len() as u64 + 8).ok()?)?;
-                    fstd::sys::vmo_write(vmo.raw(), 0, &(bytes.len() as u64).to_le_bytes()).ok()?;
-                    fstd::sys::vmo_write(vmo.raw(), 8, bytes).ok()?;
-                    Some(vmo)
-                });
-                match made {
-                    Some(vmo) => self.data.push((name.clone(), vmo)),
-                    None => {
-                        fstd::error!("conductor: can't hand out {path}");
-                        continue;
-                    }
+    /// The fonts a `fonts` grant hands over at start: `/system/fonts/*.ttf`
+    /// as `font:<file>`. The art (`hardware`, `os`) waits to be asked for
+    /// (`DATA`): nine scales of it, a service uses one.
+    fn font_vmos(&mut self) -> Vec<(String, Handle)> {
+        let names: Vec<String> = (self.image.paths().unwrap_or_default().into_iter())
+            .filter_map(|p| {
+                p.strip_prefix("/system/fonts/").filter(|f| f.ends_with(".ttf")).map(|f| alloc::format!("font:{f}"))
+            })
+            .collect();
+        names.into_iter().filter_map(|n| self.data_vmo(&n).map(|h| (n, h))).collect()
+    }
+
+    /// The data file called `name` (`font:<file>`, `hardware:<stem>`,
+    /// `os:<stem>`), read-only: in a VMO of its own made the first time,
+    /// holding the file's length (u64, little-endian) and then the file
+    /// (`fstd::service::data` reads it), kept for whoever asks next.
+    fn data_vmo(&mut self, name: &str) -> Option<Handle> {
+        if !self.data.iter().any(|(n, _)| n == name) {
+            let path = data_path(name)?;
+            let bytes = self.image.file(&path).ok()?;
+            let vmo = match fstd::service::sized_vmo(bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    fstd::error!("conductor: can't hand out {path}: {}", e.describe());
+                    return None;
                 }
-            }
-            // Read-only: the bytes, their length, and nothing to write with.
-            if let Some(d) = self
-                .data
-                .iter()
-                .find(|(n, _)| *n == name)
-                .and_then(|(_, v)| v.duplicate(rights::READ | rights::MAP | rights::TRANSFER).ok())
-            {
-                out.push((name, d));
-            }
+            };
+            self.data.push((String::from(name), vmo));
         }
-        out
+        // Read-only: the bytes, their length, and nothing to write with.
+        let (_, v) = self.data.iter().find(|(n, _)| n == name)?;
+        v.duplicate(rights::READ | rights::MAP | rights::TRANSFER).ok()
+    }
+
+    /// `DATA`: a data file the caller's grants allow (TASK-090A).
+    fn data_file(&mut self, caller: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
+        let b: c::ByName = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        let grant =
+            data_grant(&b.name).ok_or((FErr::InvalidArgs, alloc::format!("no data file is called {}", b.name)))?;
+        let granted =
+            self.services.iter().find(|s| s.m.name == caller).is_some_and(|s| s.m.grants.iter().any(|g| g == grant));
+        if !granted {
+            return Err((FErr::AccessDenied, alloc::format!("{caller} has no {grant} grant")));
+        }
+        let vmo = self.data_vmo(&b.name).ok_or((FErr::NotFound, alloc::format!("the image has no {}", b.name)))?;
+        Ok((Vec::new(), alloc::vec![vmo]))
     }
 
     /// The handles a manifest's grants carry, by name.
     fn granted_handles(&mut self, m: &Manifest) -> Vec<(String, Handle)> {
         let mut out = Vec::new();
-        for g in ["fonts", "hardware", "os"] {
-            if m.grants.iter().any(|x| x == g) {
-                out.extend(self.data_vmos(g));
-            }
+        if m.grants.iter().any(|x| x == "fonts") {
+            out.extend(self.font_vmos());
         }
         let dup = |h: u32, r: u32| {
             fstd::sys::call1(fcore_abi::syscall::HANDLE_DUPLICATE, [h as u64, r as u64, 0, 0, 0, 0])
@@ -366,6 +362,7 @@ impl Conductor {
             c::FAULTS => self.faults_page(payload).map(|b| (b, Vec::new())),
             c::STAMP => self.stamp(&caller, payload).map(|b| (b, Vec::new())),
             c::MANIFEST => self.manifest(payload).map(|b| (b, Vec::new())),
+            c::DATA => self.data_file(&caller, payload),
             #[cfg(feature = "flavour-dev")]
             c::SWAP => self.swap(&caller, payload, &mut handles),
             #[cfg(feature = "flavour-dev")]
@@ -716,9 +713,57 @@ pub fn boot_line(stages: &[(u8, u64)]) -> String {
     line
 }
 
+/// The grant a data file's name needs: `font:` fonts, `hardware:`
+/// hardware, `os:` os.
+pub fn data_grant(name: &str) -> Option<&'static str> {
+    [("font:", "fonts"), ("hardware:", "hardware"), ("os:", "os")]
+        .into_iter()
+        .find(|(p, _)| name.starts_with(p))
+        .map(|(_, g)| g)
+}
+
+/// Where a data file is in the image: `font:<file>` is
+/// `/system/fonts/<file>`; `hardware:<stem>` and `os:<stem>` are
+/// `/system/assets/<grant>-<stem>.fbnd`. A stem is letters, digits and
+/// `-` only, so a name never reaches another file.
+pub fn data_path(name: &str) -> Option<String> {
+    let plain = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if let Some(file) = name.strip_prefix("font:") {
+        let stem = file.strip_suffix(".ttf")?;
+        return plain(stem).then(|| alloc::format!("/system/fonts/{file}"));
+    }
+    let (kind, stem) = name.split_once(':')?;
+    (matches!(kind, "hardware" | "os") && plain(stem)).then(|| alloc::format!("/system/assets/{kind}-{stem}.fbnd"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::backoff;
+    use super::{backoff, data_grant, data_path};
+
+    #[test]
+    fn a_data_name_reaches_its_own_file_and_no_other() {
+        assert_eq!(data_path("os:150").as_deref(), Some("/system/assets/os-150.fbnd"));
+        assert_eq!(data_path("os:wallpaper").as_deref(), Some("/system/assets/os-wallpaper.fbnd"));
+        assert_eq!(data_path("hardware:300").as_deref(), Some("/system/assets/hardware-300.fbnd"));
+        assert_eq!(data_path("font:NotoSans-Regular.ttf").as_deref(), Some("/system/fonts/NotoSans-Regular.ttf"));
+        for bad in [
+            "os:../kernel",
+            "os:",
+            "os:150/x",
+            "hardware:1.5",
+            "kernel:x",
+            "font:../kernel.ttf",
+            "font:x.otf",
+            "os:150.fbnd",
+        ] {
+            assert_eq!(data_path(bad), None, "{bad}");
+        }
+        assert_eq!(
+            (data_grant("os:150"), data_grant("hardware:100"), data_grant("font:a.ttf")),
+            (Some("os"), Some("hardware"), Some("fonts"))
+        );
+        assert_eq!(data_grant("devices:x"), None);
+    }
 
     #[test]
     fn the_backoff_is_the_owners_policy() {

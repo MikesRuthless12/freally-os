@@ -18,6 +18,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fcore_abi::{FErr, perm, rights, signal, well_known};
+use fimage::bundle::Bundle;
 use fstd::handle::Handle;
 use fstd::ipc::{Channel, Client};
 use fstd::time::{Duration, Instant};
@@ -119,32 +120,80 @@ fn screen() -> Result<Screen, String> {
     Ok(Screen { px: at as *mut u32, w: info.width, h: info.height, stride: info.stride, format: info.format })
 }
 
-/// The OS's renders (TASK-052) for both themes, from the `os` grant's 1x
-/// bundle; a theme's wallpaper is scaled to the screen the first time it's
-/// shown.
+/// The OS's renders (TASK-052) for both themes at the screen's scale, from
+/// the bundle made for it (TASK-090A: drawn 1:1, never scaled); each theme's
+/// wallpaper, from its own bundle at the size it was rendered, brought down
+/// to the screen the first time it's shown.
 struct Art {
-    bundle: fimage::bundle::Bundle<'static>,
+    /// Every scale's bundle, taken at start-up: conductor's test door may be
+    /// waiting on stage at any moment after it registers, so stage never
+    /// waits on conductor then.
+    scales: Vec<(u16, Bundle<'static>)>,
+    bundle: Bundle<'static>,
+    walls: Bundle<'static>,
     dark: Option<compose::ThemeArt<'static>>,
     light: Option<compose::ThemeArt<'static>>,
 }
 
+/// Every UI scale the OS offers, in percent.
+const SCALES: [u16; 9] = [100, 125, 150, 175, 200, 225, 250, 275, 300];
+
+/// The `os` grant's bundle called `name` (`os:150`, `os:wallpaper`).
+fn os_bundle(name: &str) -> Option<Bundle<'static>> {
+    fstd::service::data(name).ok().and_then(|b| Bundle::parse(b).ok())
+}
+
+/// A theme's piece (`dark/<piece>`) of `b`.
+fn piece(b: &Bundle<'static>, theme: &str, piece: &str) -> Option<fimage::fimg::Fimg<'static>> {
+    b.get(&alloc::format!("{theme}/{piece}")).and_then(|f| fimage::fimg::parse(f).ok())
+}
+
 impl Art {
-    fn load() -> Option<Art> {
-        let bytes = fstd::service::data("os:1x").ok()?;
-        let bundle = fimage::bundle::Bundle::parse(bytes).ok()?;
-        Some(Art { bundle, dark: None, light: None })
+    fn load(pct: u16) -> Option<Art> {
+        let scales: Vec<(u16, Bundle<'static>)> =
+            SCALES.iter().filter_map(|&p| os_bundle(&alloc::format!("os:{p}")).map(|b| (p, b))).collect();
+        let bundle = scales.iter().find(|(p, _)| *p == pct)?.1;
+        fstd::info!("stage: art at {pct} %");
+        Some(Art { scales, bundle, walls: os_bundle("os:wallpaper")?, dark: None, light: None })
+    }
+
+    /// The scale changed: the strips made for it; the grounds stay.
+    fn rescale(&mut self, pct: u16) {
+        let Some(&(_, bundle)) = self.scales.iter().find(|(p, _)| *p == pct) else {
+            fstd::error!("stage: the image has no art at {pct} %");
+            return;
+        };
+        fstd::info!("stage: art at {pct} %");
+        self.bundle = bundle;
+        for (theme, slot) in [("dark", &mut self.dark), ("light", &mut self.light)] {
+            if let Some(a) = slot.as_mut()
+                && let (Some(strip), Some(focused)) =
+                    (piece(&self.bundle, theme, "title_strip"), piece(&self.bundle, theme, "title_strip_focused"))
+            {
+                (a.strip, a.strip_focused) = (strip, focused);
+            }
+        }
     }
 
     fn for_theme(&mut self, mode: Mode, w: u32, h: u32) -> Option<&compose::ThemeArt<'static>> {
         let (name, slot) = if mode == Mode::Light { ("light", &mut self.light) } else { ("dark", &mut self.dark) };
         if slot.is_none() {
-            let get = |piece: &str| {
-                self.bundle.get(&alloc::format!("{name}/{piece}")).and_then(|b| fimage::fimg::parse(b).ok())
-            };
-            let (wall, strip, strip_focused) = (get("wallpaper")?, get("title_strip")?, get("title_strip_focused")?);
+            let wall = piece(&self.walls, name, "wallpaper")?;
+            let (strip, strip_focused) =
+                (piece(&self.bundle, name, "title_strip")?, piece(&self.bundle, name, "title_strip_focused")?);
             *slot = Some(compose::ThemeArt { ground: fimage::blit::cover(&wall, w, h), strip, strip_focused });
         }
         slot.as_ref()
+    }
+
+    /// The crisp guard (TASK-090A, dev and e2e images): a picture drawn
+    /// larger than it is since the last frame is an error naming it.
+    #[cfg(any(feature = "flavour-dev", feature = "flavour-e2e"))]
+    fn guard(&self) {
+        if let Some((n, u)) = fimage::guard::take() {
+            let name = self.bundle.name_of(u.pixels).or(self.walls.name_of(u.pixels)).unwrap_or("a picture");
+            fstd::error!("stage: not crisp: {}, {n} time(s)", fimage::guard::describe(name, &u));
+        }
     }
 }
 
@@ -185,6 +234,7 @@ fn run(_bootstrap: u32) -> i64 {
     // 16-inch 2560×1600 panel, 100 % in a VM.
     let pct = fedid::scale_for(&fstd::machine::edid(), screen.w);
     fstd::info!("stage: {}x{}, starting at {pct} %", screen.w, screen.h);
+    fimage::guard::expect_scale(pct as u32);
     let theme = Theme::new(Mode::Dark, pct as f32 / 100.0);
     let strip = theme.px(fui::tokens_os::TITLE_STRIP_H);
     let mut s = Stage {
@@ -201,7 +251,7 @@ fn run(_bootstrap: u32) -> i64 {
         idle: svc_stage::idle::Idle::new(Instant::now().as_ns()),
         shortcuts: None,
         stamped: false,
-        art: Art::load(),
+        art: Art::load(pct),
         screen,
     };
     let Ok((listen, give)) = Channel::pair() else { return 1 };
@@ -562,6 +612,10 @@ impl Stage {
 
     fn set_scale(&mut self, pct: u16) {
         self.theme.scale = pct as f32 / 100.0;
+        fimage::guard::expect_scale(pct as u32);
+        if let Some(a) = self.art.as_mut() {
+            a.rescale(pct);
+        }
         self.desk.windows.set_strip(self.theme.px(fui::tokens_os::TITLE_STRIP_H));
         self.damage(self.back.rect());
         for w in &self.wins {
@@ -833,6 +887,10 @@ impl Stage {
             for r in &damage {
                 compose::compose(&mut self.back, *r, &self.desk.windows, &surface, &mut look);
             }
+        }
+        #[cfg(any(feature = "flavour-dev", feature = "flavour-e2e"))]
+        if let Some(a) = &self.art {
+            a.guard();
         }
         // What changed, and where the cursor was and is: on the screen, cursor on top.
         let mut shown = damage;

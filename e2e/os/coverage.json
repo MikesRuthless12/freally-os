@@ -13,6 +13,8 @@
     "e2e-ab": { "flavour": "e2e", "slot_b": "crash-test" },
     "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" },
     "e2e-panel-16": { "flavour": "e2e", "edid": "panel-16" },
+    "e2e-gpt": { "flavour": "e2e", "gpt": true },
+    "e2e-gpt-ab": { "flavour": "e2e", "gpt": true, "slot_b": "crash-test" },
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
     "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" }
@@ -339,6 +341,34 @@
       "setup": "e2e-panel-16",
       "spec": "e2e/os/specs/saver.rs",
       "what": "Warp at 2560x1600: the tunnel of green light, Fs streaking past, at least 30 frames a second."
+    },
+    {
+      "id": "boot.gpt",
+      "task": "TASK-091",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "A whole GPT disk on NVMe (ESP, FREALLY_SYSTEM_A and _B, FREALLY_DATA): the bootloader reads the table through BlockIo, boots slot A from its partition, and the desktop comes up."
+    },
+    {
+      "id": "boot.gpt_fallback",
+      "task": "TASK-091",
+      "setup": "e2e-gpt-ab",
+      "spec": "e2e/os/specs/boot.rs",
+      "what": "On the GPT disk, a slot B that crashes in trial three times falls back to slot A, both read from their partitions."
+    },
+    {
+      "id": "nvme.interlock",
+      "task": "TASK-092",
+      "setup": "e2e-gpt",
+      "spec": "e2e/os/specs/storage.rs",
+      "what": "drv-nvme on the NVMe disk: Identify, the GPT read, a write to block 0 refused by the partition interlock (AccessDenied) before the controller sees it, a block of FREALLY_DATA written, flushed and read back."
+    },
+    {
+      "id": "crisp.scales",
+      "task": "TASK-090A",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/crisp.rs",
+      "what": "Every UI scale 100-300 %: stage and the desktop take the art made for it, the title strip is its own pixels, nothing drawn larger than it is or from another scale (the crisp guard)."
     }
   ]
 }

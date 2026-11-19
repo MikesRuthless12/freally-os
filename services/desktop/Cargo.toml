@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [features]
 flavour-release = []
-flavour-dev = []
-flavour-e2e = []
+flavour-dev = ["fimage/guard"]
+flavour-e2e = ["fimage/guard"]
 # `cargo xtask brain-swap desktop --crash`: a build that ends a second after it
 # starts, to prove a swap's automatic rollback (TASK-083). Never in an image.
 swap-crash-test = []

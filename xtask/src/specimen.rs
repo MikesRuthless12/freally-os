@@ -102,7 +102,7 @@ pub fn specimen_cmd(_args: &[String]) -> Result<(), String> {
     std::fs::write(out.join("noto-sans.png"), fimage::png::encode(w as u32, c.h as u32, 3, &rgb))
         .map_err(|e| e.to_string())?;
     let bgra: Vec<u8> = c.px.iter().flat_map(|&p| [p as u8, (p >> 8) as u8, (p >> 16) as u8, 255]).collect();
-    std::fs::write(out.join("noto-sans.fimg"), fimage::fimg::encode(w as u32, c.h as u32, 1, [0; 4], &bgra))
+    std::fs::write(out.join("noto-sans.fimg"), fimage::fimg::encode(w as u32, c.h as u32, 4, [0; 4], &bgra))
         .map_err(|e| e.to_string())?;
     println!("specimen: {}", out.join("noto-sans.png").display());
     mono(&dir, &out)?;
@@ -175,11 +175,11 @@ fn controls(out: &std::path::Path) -> Result<(), String> {
         let files: Vec<(String, Vec<u8>)> = fui::hardware::PIECES
             .iter()
             .map(|p| {
-                let f = base.join(theme).join(format!("{p}@2x.fimg"));
+                let f = base.join(theme).join(format!("{p}@200.fimg"));
                 std::fs::read(&f).map(|b| (p.to_string(), b)).map_err(|e| format!("{}: {e}", f.display()))
             })
             .collect::<Result<_, _>>()?;
-        let hw = Hardware::load(2, |p| files.iter().find(|(n, _)| n == p).map(|(_, b)| b.as_slice()))?;
+        let hw = Hardware::load(200, |p| files.iter().find(|(n, _)| n == p).map(|(_, b)| b.as_slice()))?;
         let t = Theme::new(mode, 2.0);
         let y0 = i as u32 * half;
         px[(y0 * w) as usize..((y0 + half) * w) as usize].fill(t.colour(Tok::Bg).xrgb());

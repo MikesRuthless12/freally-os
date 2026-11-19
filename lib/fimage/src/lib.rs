@@ -14,11 +14,15 @@
 #![no_std]
 
 extern crate alloc;
+// The host-only decoders' linear light needs powf (TASK-090A).
+#[cfg(feature = "decode")]
+extern crate std;
 
 pub mod blit;
 pub mod bundle;
 pub mod deflate;
 pub mod fimg;
+pub mod guard;
 #[cfg(feature = "decode")]
 pub mod inflate;
 pub mod png;

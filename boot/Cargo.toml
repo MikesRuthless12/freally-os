@@ -18,6 +18,7 @@ fbootctl.workspace = true
 fcore-abi.workspace = true
 fcrypto = { workspace = true, features = ["shani"] }
 fedid.workspace = true
+fgpt.workspace = true
 fsi.workspace = true
 fscreen.workspace = true
 

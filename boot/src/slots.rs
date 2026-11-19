@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! A/B slots (TASK-045, FR-003): reads `FreallyBootCtl`, picks the slot by
-//! fbootctl's rules (PRD § 3), reads that slot's image, and saves the record
+//! fbootctl's rules (PRD § 3), reads that slot's image (from its GPT
+//! partition when the disk has Freally OS's GPT layout, TASK-091, else from
+//! the files layout), and saves the record
 //! before anything else happens when the rules changed it, so a trial that
 //! crashes still counts.
 
-use crate::read;
 use crate::uefi::*;
+use crate::{gpt, read};
 use fbootctl::{BootCtl, State, slot_name};
 use fcore_abi::FREALLY_VENDOR_GUID;
 
@@ -70,6 +72,9 @@ pub unsafe fn choose(st: &SystemTable, bs: &BootServices, image: Handle) -> Resu
     // SAFETY: as this function's.
     let stored = unsafe { read_var(rt, &mut buf) };
     let mut present = [true, true];
+    // SAFETY: as this function's.
+    let disk = unsafe { gpt::find(bs, image) };
+    say!("freally-boot: {}", if disk.is_some() { "the GPT layout" } else { "the files layout" });
     loop {
         let d = fbootctl::decide(stored, present, "");
         let Some(s) = d.boot else {
@@ -85,7 +90,12 @@ pub unsafe fn choose(st: &SystemTable, bs: &BootServices, image: Handle) -> Resu
             return Err(d.ctl);
         };
         // SAFETY: as this function's.
-        let bytes = unsafe { read::read_image(bs, image, SYSTEM[s as usize]) };
+        let bytes = unsafe {
+            match &disk {
+                Some(d) => gpt::read_slot(bs, d, s as usize),
+                None => read::read_image(bs, image, SYSTEM[s as usize]),
+            }
+        };
         if bytes == Err(read::MISSING) {
             say!("freally-boot: slot {} has no image", slot_name(s));
             present[s as usize] = false;

@@ -12,6 +12,7 @@ fcore-abi.workspace = true
 fcrypto.workspace = true
 fedid.workspace = true
 fsi = { workspace = true, features = ["build"] }
+fgpt = { workspace = true, features = ["build"] }
 fsvc.workspace = true
 ffont = { workspace = true, features = ["raster"] }
 fscreen.workspace = true

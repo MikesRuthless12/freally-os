@@ -23,6 +23,7 @@ compile_error!("exactly one flavour");
 
 #[macro_use]
 mod console;
+mod gpt;
 mod handoff;
 mod keys;
 mod read;

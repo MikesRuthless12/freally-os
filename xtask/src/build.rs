@@ -97,6 +97,7 @@ pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "svc-devmgr", bin: "devmgr", path: "/system/services/devmgr", kind: fsi::Kind::Service },
     UserProgram { package: "drv-gop-fb", bin: "drv-gop-fb", path: "/system/drivers/gop-fb", kind: fsi::Kind::Driver },
     UserProgram { package: "drv-i8042", bin: "drv-i8042", path: "/system/drivers/i8042", kind: fsi::Kind::Driver },
+    UserProgram { package: "drv-nvme", bin: "drv-nvme", path: "/system/drivers/nvme", kind: fsi::Kind::Driver },
     UserProgram { package: "svc-stage", bin: "stage", path: "/system/services/stage", kind: fsi::Kind::Service },
     UserProgram { package: "svc-desktop", bin: "desktop", path: "/system/services/desktop", kind: fsi::Kind::Service },
     UserProgram { package: "app-terminal", bin: "terminal", path: "/system/apps/terminal", kind: fsi::Kind::App },

@@ -54,6 +54,9 @@ pub struct Hardware {
     /// The display controller whose memory holds the framebuffer (its PCI
     /// address), when one does.
     pub display: Option<String>,
+    /// The first NVMe controller (class 01, subclass 08, interface 02): its
+    /// PCI address, its configuration page and its BAR0 (TASK-092).
+    nvme: Option<(String, u64, u64)>,
     framebuffer: (u64, u64, u32, u32, u32, u32),
     edid_len: u64,
     madt: Vec<u8>,
@@ -91,8 +94,9 @@ impl Hardware {
         let hpet = get(&mut mem, b"HPET").and_then(|t| facpi::hpet(&t)).is_some();
         let mut pci = Vec::new();
         let mut bars = Vec::new();
+        let mut storage = Vec::new();
         for e in get(&mut mem, b"MCFG").map(|t| facpi::mcfg(&t)).unwrap_or_default() {
-            scan(root.raw(), &e, e.start_bus, &mut pci, &mut bars, 0);
+            scan(root.raw(), &e, e.start_bus, &mut pci, &mut bars, &mut storage, 0);
         }
         let fb = &bi.framebuffer;
         let display = holder(&bars, fb.base);
@@ -105,6 +109,7 @@ impl Hardware {
             hpet,
             firmware,
             display,
+            nvme: storage.into_iter().next(),
             framebuffer: (fb.base, fb.size, fb.width, fb.height, fb.stride_px, fb.format as u32),
             edid_len: bi.edid.len,
             madt,
@@ -167,6 +172,17 @@ impl Hardware {
             }
             // COM2 and COM3 with their IRQs. COM1 is the logger's (conductor
             // hands it over before any driver runs).
+            // The controller's registers (the doorbells of the admin queue
+            // and one I/O queue pair: 8 KiB) and its configuration page (to
+            // let it master the bus). No IRQ yet: the driver polls.
+            "drv-nvme" => {
+                let (at, config, bar0) = self.nvme.clone().ok_or(FErr::NotFound)?;
+                add("registers", self.carve(resource::MMIO, bar0, 0x2000)?, &mut handles);
+                add("config", self.carve(resource::MMIO, config, 4096)?, &mut handles);
+                values.push((String::from("bar0"), bar0));
+                values.push((String::from("config"), config));
+                devices.push(at);
+            }
             "drv-uart16550" => {
                 for (name, port, irq) in [("com2", 0x2F8u64, 3u8), ("com3", 0x3E8, 4)] {
                     add(name, self.carve(resource::IO_PORT, port, 8)?, &mut handles);
@@ -218,8 +234,17 @@ fn memory_bars(va: u64) -> Vec<u64> {
 }
 
 /// Every function on `bus` and the buses behind its bridges; each display
-/// controller's memory BARs into `bars`.
-fn scan(root: u32, e: &facpi::Ecam, bus: u8, out: &mut Vec<d::PciDevice>, bars: &mut Vec<(String, u64)>, depth: u32) {
+/// controller's memory BARs into `bars`; each NVMe controller's address,
+/// configuration page and BAR0 into `storage`.
+fn scan(
+    root: u32,
+    e: &facpi::Ecam,
+    bus: u8,
+    out: &mut Vec<d::PciDevice>,
+    bars: &mut Vec<(String, u64)>,
+    storage: &mut Vec<(String, u64, u64)>,
+    depth: u32,
+) {
     if depth > 32 || bus < e.start_bus || bus > e.end_bus {
         return;
     }
@@ -252,11 +277,18 @@ fn scan(root: u32, e: &facpi::Ecam, bus: u8, out: &mut Vec<d::PciDevice>, bars: 
                     let at = pci_address(&p);
                     bars.extend(memory_bars(va).into_iter().map(|b| (at.clone(), b)));
                 }
+                if (p.class, p.subclass, p.prog_if) == (0x01, 0x08, 0x02)
+                    && header & 0x7F == 0
+                    && let Some(&bar0) = memory_bars(va).first()
+                    && bar0 != 0
+                {
+                    storage.push((pci_address(&p), phys, bar0));
+                }
                 out.push(p);
                 if header & 0x7F == 1 {
                     let secondary = cfg8(va, 0x19);
                     if secondary > bus {
-                        scan(root, e, secondary, out, bars, depth + 1);
+                        scan(root, e, secondary, out, bars, storage, depth + 1);
                     }
                 }
             }

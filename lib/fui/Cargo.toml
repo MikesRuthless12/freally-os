@@ -18,7 +18,7 @@ ffont = { workspace = true, features = ["raster"], optional = true }
 fimage = { workspace = true, optional = true }
 
 [dev-dependencies]
-fimage = { workspace = true, features = ["decode"] }
+fimage = { workspace = true, features = ["decode", "guard"] }
 fjson.workspace = true
 
 [lints]

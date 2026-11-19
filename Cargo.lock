@@ -112,6 +112,12 @@ dependencies = [
 [[package]]
 name = "drv-nvme"
 version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "fgpt",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "drv-uart16550"
@@ -158,6 +164,13 @@ name = "ffont"
 version = "0.4.0"
 
 [[package]]
+name = "fgpt"
+version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+]
+
+[[package]]
 name = "fimage"
 version = "0.4.0"
 
@@ -184,6 +197,7 @@ dependencies = [
  "fcore-abi",
  "fcrypto",
  "fedid",
+ "fgpt",
  "fscreen",
  "fsi",
 ]
@@ -366,6 +380,7 @@ dependencies = [
  "fcrypto",
  "fedid",
  "ffont",
+ "fgpt",
  "fimage",
  "fjson",
  "fscreen",

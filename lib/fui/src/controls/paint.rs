@@ -119,7 +119,8 @@ fn meter_window(hw: &Hardware, cells: u32) -> (u32, u32) {
 
 /// A meter at (x, y), its LED ladder lit bottom up for a level in dBFS: lit
 /// cells their zone's on tile, the rest their zone's off tile; the bezel
-/// round them and the glass over them. The figure beside it is the
+/// round them and the glass over them (laid 1:1 from the window's top:
+/// its highlight where the light catches it, TASK-090A). The figure beside it is the
 /// caller's, so a reader who can't tell the tints still reads the level.
 pub fn paint_meter(s: &mut Surface, hw: &Hardware, x: i32, y: i32, cells: u32, db: f32) {
     let (w, h) = meter_size(hw, cells);
