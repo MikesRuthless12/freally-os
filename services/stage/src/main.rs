@@ -584,6 +584,14 @@ impl Stage {
                     Ok((fwire::to_payload(&st::ClipText { text: self.clipboard.clone() }), Vec::new()))
                 })
             }
+            st::CLEAR_CLIPBOARD => {
+                if name == "accounts" {
+                    self.clipboard.clear();
+                    Ok((Vec::new(), Vec::new()))
+                } else {
+                    Err((FErr::AccessDenied, "only accounts empties the clipboard"))
+                }
+            }
             st::CARRY => {
                 fwire::from_payload::<st::Carry>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|c| {
                     self.own(conn, c.window_id)?;

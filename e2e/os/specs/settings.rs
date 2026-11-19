@@ -66,7 +66,7 @@ fn expect_look(ctx: &mut Ctx, want: &str) -> Result<(), String> {
     }
 }
 
-fn press_id(ctx: &mut Ctx, id: &str) -> Result<(), String> {
+pub(crate) fn press_id(ctx: &mut Ctx, id: &str) -> Result<(), String> {
     let n = until_q(ctx, &sel(id))?;
     click(ctx, n)
 }
@@ -88,7 +88,7 @@ fn expect_lit(ctx: &mut Ctx, id: &str, lit: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn chosen(ctx: &mut Ctx, id: &str) -> Result<(), String> {
+pub(crate) fn chosen(ctx: &mut Ctx, id: &str) -> Result<(), String> {
     until_attr(ctx, &sel(id), "aria-selected", "true")
 }
 
@@ -99,7 +99,7 @@ fn with(ctx: &mut Ctx, held: &str, code: &str) -> Result<(), String> {
 }
 
 /// Settings open (Super+I, as Windows has it), on Personalisation.
-fn open(ctx: &mut Ctx) -> Result<(), String> {
+pub(crate) fn open(ctx: &mut Ctx) -> Result<(), String> {
     if q(ctx, &sel("settings-tabs"))? == 0 {
         with(ctx, "MetaLeft", "KeyI")?;
         until_q(ctx, &sel("settings-tabs"))?;
@@ -258,6 +258,8 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     expect_focus(ctx, "settings-tab-personalisation")?;
     for (code, id) in [
         ("ArrowDown", "settings-tab-accounts"),
+        ("ArrowDown", "settings-tab-update"),
+        ("ArrowDown", "settings-tab-hardware"),
         ("ArrowDown", "settings-tab-about"),
         ("ArrowDown", "settings-tab-personalisation"),
         ("ArrowUp", "settings-tab-about"),
@@ -427,7 +429,7 @@ pub fn accounts(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// What stage's clipboard holds (cdpd's read-back).
-fn clipboard(ctx: &mut Ctx) -> Result<String, String> {
+pub(crate) fn clipboard(ctx: &mut Ctx) -> Result<String, String> {
     let v = ctx
         .cdp
         .call("Freally.readBack", Value::obj([("service", "stage".into()), ("query", "clipboard".into())]))
@@ -435,15 +437,15 @@ fn clipboard(ctx: &mut Ctx) -> Result<String, String> {
     Ok(v.get("value").and_then(Value::as_str).unwrap_or("").to_string())
 }
 
-/// `@settings.hardware` (TASK-111, FR-053): About's hardware report copied
+/// `@settings.hardware` (TASK-111, FR-053): the hardware report copied
 /// (read back from stage's clipboard: every section, the driver that took
 /// the NVMe disk, the image's version) and saved to Home ▸ Exports (read
 /// back through the Terminal).
 pub fn hardware(ctx: &mut Ctx) -> Result<(), String> {
     signed_in(ctx)?;
     open(ctx)?;
-    press_id(ctx, "settings-tab-about")?;
-    chosen(ctx, "settings-tab-about")?;
+    press_id(ctx, "settings-tab-hardware")?;
+    chosen(ctx, "settings-tab-hardware")?;
     let copied = ctx.log_count("settings: the hardware report copied");
     press_id(ctx, "settings-report-copy")?;
     ctx.expect_log_count("settings: the hardware report copied", copied + 1)?;
@@ -474,7 +476,42 @@ pub fn hardware(ctx: &mut Ctx) -> Result<(), String> {
     crate::terminal::expect(
         ctx,
         "cat /home/mike/Exports/hardware-report.txt",
-        &["Freally OS hardware report", "Drivers"],
+        // The report is longer than the Terminal: its tail is on the screen.
+        &["Drivers", ": drv-nvme", "Boot"],
     )?;
+    // The report stays on the clipboard until the session ends: nothing one
+    // person copied reaches the next.
+    if ctx.door("accounts logout")? != ["ok"] {
+        return Err("accounts logout didn't answer ok".into());
+    }
+    let left = clipboard(ctx)?;
+    if !left.is_empty() {
+        return Err(format!("after logout the clipboard still holds {} bytes", left.len()));
+    }
     Ok(())
+}
+
+/// `@settings.about.licences` (TASK-116): Settings ▸ About says the code's
+/// licence (Apache-2.0), where the name and mark's terms are, and the third
+/// parties' notices; the version and the slot it started from.
+pub fn about_licences(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    open(ctx)?;
+    press_id(ctx, "settings-tab-about")?;
+    chosen(ctx, "settings-tab-about")?;
+    for (id, want) in [
+        ("settings-about-licence", "Apache-2.0"),
+        ("settings-about-brand", "TRADEMARKS.md"),
+        ("settings-about-notices", "THIRD-PARTY-NOTICES.md"),
+        ("settings-about-version", env!("CARGO_PKG_VERSION")),
+        ("settings-about-slot", "A, build "),
+    ] {
+        let n = crate::sweep::until_q(ctx, &crate::session::sel(id))?;
+        let v = crate::sweep::attr(ctx, n, "aria-valuenow")?.unwrap_or_default();
+        if !v.contains(want) {
+            return Err(format!("{id} says {v:?}, not {want:?}"));
+        }
+    }
+    press_id(ctx, "settings-cancel")?;
+    closed(ctx)
 }

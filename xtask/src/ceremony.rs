@@ -304,6 +304,68 @@ pub fn load(args: &[String]) -> Result<[u8; 32], String> {
     open(&text, &quietly("The release key's passphrase: ")?)
 }
 
+/// The files `sign` was given: every argument but the flags and their values.
+fn files_named(args: &[String]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--key" || a == "--from" {
+            it.next();
+        } else {
+            out.push(PathBuf::from(a));
+        }
+    }
+    out
+}
+
+/// `cargo xtask sign --key release --from <drive> <file>…` (FR-051): only a
+/// committed tree whose HEAD carries this version's tag; each image signed
+/// in place, each update package made again around its image signed; then
+/// `SHA256SUMS.txt` beside them, naming each.
+pub fn sign_release(args: &[String]) -> Result<(), String> {
+    let files = files_named(args);
+    let dir = files.first().and_then(|f| f.parent()).map(Path::to_path_buf).ok_or(
+        "cargo xtask sign --key release --from <the release key drive's folder> <image or .fup>… (one folder)",
+    )?;
+    if files.iter().any(|f| f.parent() != Some(dir.as_path())) {
+        return Err("the files to sign are in one folder: SHA256SUMS.txt goes beside them".into());
+    }
+    crate::release::committed_and_tagged()?;
+    let mut seed = load(args)?;
+    let signed = sign_each(&files, &seed);
+    seed.fill(0);
+    let mut sums = String::new();
+    for (f, bytes) in files.iter().zip(signed?) {
+        std::fs::write(f, &bytes).map_err(|e| format!("{}: {e}", f.display()))?;
+        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        sums.push_str(&format!("{}  {name}\n", util::hex(&fcrypto::sha2::sha256(&bytes))));
+        println!("sign: {} signed with the release key", f.display());
+    }
+    std::fs::write(dir.join("SHA256SUMS.txt"), sums).map_err(|e| e.to_string())?;
+    println!("sign: {}", dir.join("SHA256SUMS.txt").display());
+    Ok(())
+}
+
+/// Each file signed, in memory (nothing is written unless all of them sign).
+fn sign_each(files: &[PathBuf], seed: &[u8; 32]) -> Result<Vec<Vec<u8>>, String> {
+    let mut out = Vec::new();
+    for f in files {
+        let bytes = std::fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        let at = |e: &str| format!("{}: {e}", f.display());
+        out.push(if bytes.starts_with(&fsi::fup::MAGIC) {
+            let (oldest, notes, image) = fsi::fup::unpack(&bytes).map_err(at)?;
+            let mut image = image.to_vec();
+            fsi::sign(&mut image, seed).map_err(|e| at(e.describe()))?;
+            fsi::fup::make(oldest, notes, &image, seed).map_err(at)?
+        } else {
+            let mut image = bytes;
+            fsi::sign(&mut image, seed).map_err(|e| at(e.describe()))?;
+            image
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +383,13 @@ mod tests {
         }
         assert!(drive_verdict(Path::new("/home/m/os/keys"), Drive::Usb, repo, keys).is_err(), "the repo");
         assert!(drive_verdict(Path::new("/home/m/.freally-keys/r"), Drive::Usb, repo, keys).is_err(), "the keys");
+    }
+
+    #[test]
+    fn the_files_to_sign_are_the_arguments_but_the_flags() {
+        let args: Vec<String> =
+            ["a/SYSTEM.FSI", "--key", "release", "--from", "/mnt/e/k", "a/x.fup"].map(String::from).to_vec();
+        assert_eq!(files_named(&args), [PathBuf::from("a/SYSTEM.FSI"), PathBuf::from("a/x.fup")]);
     }
 
     #[test]

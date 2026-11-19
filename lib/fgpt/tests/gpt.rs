@@ -119,3 +119,65 @@ fn the_interlock_answers_by_partition() {
     assert!(!t.freally_owns(data.2, 0), "nothing isn't a write");
     assert!(!t.freally_owns(u64::MAX, 2), "no wrap-around");
 }
+
+/// TASK-114: a disk grown before its first boot, FREALLY_DATA taking the
+/// new room; both tables read back whole at their new places; nothing grown
+/// where it isn't Freally OS's to grow.
+#[test]
+fn a_grown_disk_gives_freally_data_the_room() {
+    let (start, _, layout) = disk();
+    let header = &start[512..1024];
+    let mut entries = start[1024..1024 + 128 * 128].to_vec();
+    let bigger = 2 * BLOCKS;
+    let g = fgpt::grow(header, &mut entries, bigger, BLOCK).expect("a grown disk");
+    let mib = (1 << 20) / BLOCK as u64;
+    assert_eq!((g.data_last + 1) % mib, 0, "on a whole MiB");
+    assert!(g.data_last > layout[3].3 + BLOCKS - 4 * mib);
+    let pad = |h: [u8; 92]| {
+        let mut b = vec![0u8; 512];
+        b[..92].copy_from_slice(&h);
+        b
+    };
+    let p = Header::parse(&pad(g.primary), 1, bigger - 1).unwrap();
+    let t = Table::new(p, &entries).unwrap();
+    let parts: Vec<_> = t.partitions().collect();
+    assert_eq!(parts[3].last_lba, g.data_last);
+    for i in 0..3 {
+        assert_eq!((parts[i].first_lba, parts[i].last_lba), (layout[i].2, layout[i].3), "the others as they were");
+    }
+    let b = Header::parse(&pad(g.backup), bigger - 1, bigger - 1).unwrap();
+    assert_eq!((b.alternate_lba, b.entries_lba), (1, g.backup_entries_lba));
+    assert_eq!(p.alternate_lba, bigger - 1);
+    // The same size: nothing to do. Grown once: nothing more.
+    let mut again = start[1024..1024 + 128 * 128].to_vec();
+    assert_eq!(fgpt::grow(header, &mut again, BLOCKS, BLOCK), None);
+    let mut twice = entries.clone();
+    assert_eq!(fgpt::grow(&pad(g.primary), &mut twice, bigger, BLOCK), None);
+}
+
+#[test]
+fn a_disk_not_ours_or_damaged_isnt_grown() {
+    let (start, _, _) = disk();
+    // Damaged: a flipped byte in the header.
+    let mut header = start[512..1024].to_vec();
+    header[60] ^= 1;
+    let mut entries = start[1024..1024 + 128 * 128].to_vec();
+    assert_eq!(fgpt::grow(&header, &mut entries, 2 * BLOCKS, BLOCK), None);
+    // Its last partition not FREALLY_DATA (another system's disk).
+    let layout = freally_layout(BLOCKS, BLOCK).unwrap();
+    let parts: Vec<Part> = layout
+        .iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, &(t, name, first, last))| Part {
+            type_guid: t,
+            unique: guid_from([i as u8 + 1; 16]),
+            first_lba: first,
+            last_lba: last,
+            name,
+        })
+        .collect();
+    let (start, _) = tables(BLOCKS, BLOCK, guid_from([9; 16]), &parts);
+    let mut entries = start[1024..1024 + 128 * 128].to_vec();
+    assert_eq!(fgpt::grow(&start[512..1024], &mut entries, 2 * BLOCKS, BLOCK), None);
+}

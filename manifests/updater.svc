@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = updater
+binary      = /system/services/updater
+description = Installs signed updates into the system slot not running, and switches back.
+start       = demand
+after       = logger, drv-nvme
+restart     = on-failure
+class       = background
+# Storage in every flavour from the tester build (TASK-114): a release build's devmgr gives drv-nvme a virtual machine's controller only.
+flavours    = release, dev, e2e

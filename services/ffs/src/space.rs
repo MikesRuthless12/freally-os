@@ -79,6 +79,22 @@ impl Space {
         self.free.insert(start, (len, freed));
     }
 
+    /// The volume grown from `old` blocks to `new` (TASK-114): the new ones
+    /// free to use, joined to a free run that ends at `old`.
+    pub fn grow(&mut self, old: u64, new: u64) {
+        if new <= old {
+            return;
+        }
+        let (mut start, mut len) = (old, new - old);
+        if let Some((&s, &(l, 0))) = self.free.range(..old).next_back()
+            && s + l == old
+        {
+            self.free.remove(&s);
+            (start, len) = (s, l + len);
+        }
+        self.free.insert(start, (len, 0));
+    }
+
     /// At the start of generation `generation`: every extent it may write is
     /// marked free-to-use (0) and joined with its neighbours, so old frees
     /// don't fragment the tree.

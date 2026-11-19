@@ -116,6 +116,7 @@ pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "app-session", bin: "welcome", path: "/system/apps/welcome", kind: fsi::Kind::App },
     UserProgram { package: "app-session", bin: "login", path: "/system/apps/login", kind: fsi::Kind::App },
     UserProgram { package: "svc-cdpd", bin: "cdpd", path: "/system/services/cdpd", kind: fsi::Kind::Service },
+    UserProgram { package: "svc-updater", bin: "updater", path: "/system/services/updater", kind: fsi::Kind::Service },
     UserProgram { package: "svc-brain", bin: "brain", path: "/system/services/brain", kind: fsi::Kind::Service },
     UserProgram {
         package: "drv-uart16550",
@@ -341,4 +342,18 @@ pub fn hashes_cmd(args: &[String]) -> Result<(), String> {
         println!("hash {} {efi} {content}", f.name());
     }
     Ok(())
+}
+
+/// An update's image (TASK-110): the flavour's programs, packed as
+/// `version` and signed with the flavour's key; `kernel_features` (an
+/// update that never starts: `crash-ud2`). → `target/freally/update-<flavour>/`.
+pub fn update_image(flavour: Flavour, version: &str, kernel_features: &[&str]) -> Result<PathBuf, String> {
+    let out = util::target_dir().join("freally").join(format!("update-{}", flavour.name()));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let kernel = build_kernel(flavour, kernel_features)?;
+    let user = build_user_with(&pack::programs_for(flavour, &[])?, flavour, &[])?;
+    let image = out.join("SYSTEM.FSI");
+    pack::pack_as(flavour, &image, &kernel, &user, &[], &[], version)?;
+    pack::sign(&image, pack::signing_key(flavour))?;
+    Ok(image)
 }

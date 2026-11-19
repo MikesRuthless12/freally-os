@@ -74,7 +74,8 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
         };
         let top = h - RACK_H as usize;
         let plate = |y: i32| crate::art::rack("dark", (w as u32, RACK_H as u32), (w / 2) as i32, y);
-        if px(w / 2, top) == plate(0) && px(w / 2, top + 28) == plate(28) {
+        // Above where a line of text could sit.
+        if px(w / 2, top) == plate(0) && px(w / 2, top + 6) == plate(6) {
             break shot;
         }
         if start.elapsed() > std::time::Duration::from_secs(5) {
@@ -105,6 +106,13 @@ pub fn rack(ctx: &mut Ctx) -> Result<(), String> {
         .count();
     if digits < 40 {
         return Err(format!("no clock digits at the Rack's right ({digits} green pixels)"));
+    }
+
+    // This setup has no disk: a guest session, and the rack says nothing is kept.
+    let n = crate::sweep::until_q(ctx, &crate::session::sel("rack-no-disk"))?;
+    let said = crate::sweep::attr(ctx, n, "aria-label")?.unwrap_or_default();
+    if !said.starts_with("Nothing you make here is kept") {
+        return Err(format!("the rack's guest notice says {said:?}"));
     }
 
     ctx.keep_shot("desktop")?;

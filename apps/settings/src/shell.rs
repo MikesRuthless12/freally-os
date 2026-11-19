@@ -16,21 +16,25 @@ use fwire::proto::stage::Look;
 
 /// The categories, in their fixed order (FR-080: the list grows to
 /// Windows', each name and place fixed now). Update and the hardware report
-/// join between Accounts and About in Phase 7.
+/// joined between Accounts and About in Phase 7 (TASK-110, TASK-111).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
     Personalisation,
     Accounts,
+    Update,
+    Hardware,
     About,
 }
 
-pub const PANELS: [Panel; 3] = [Panel::Personalisation, Panel::Accounts, Panel::About];
+pub const PANELS: [Panel; 5] = [Panel::Personalisation, Panel::Accounts, Panel::Update, Panel::Hardware, Panel::About];
 
 impl Panel {
     pub fn name(self) -> &'static str {
         match self {
             Panel::Personalisation => "Personalisation",
             Panel::Accounts => "Accounts",
+            Panel::Update => "Update",
+            Panel::Hardware => "Hardware report",
             Panel::About => "About",
         }
     }
@@ -39,6 +43,8 @@ impl Panel {
         match self {
             Panel::Personalisation => "settings-tab-personalisation",
             Panel::Accounts => "settings-tab-accounts",
+            Panel::Update => "settings-tab-update",
+            Panel::Hardware => "settings-tab-hardware",
             Panel::About => "settings-tab-about",
         }
     }
@@ -111,11 +117,20 @@ pub struct Shell {
     pub focus: Focus,
     /// How many keys the Accounts panel has (the app counts them).
     pub actions: usize,
+    /// How many keys the Update panel has (the app counts them).
+    pub updates: usize,
 }
 
 impl Shell {
     pub fn new(saved: Look) -> Shell {
-        Shell { panel: Panel::Personalisation, pending: saved.clone(), saved, focus: Focus::Tabs, actions: 0 }
+        Shell {
+            panel: Panel::Personalisation,
+            pending: saved.clone(),
+            saved,
+            focus: Focus::Tabs,
+            actions: 0,
+            updates: 0,
+        }
     }
 
     pub fn dirty(&self) -> bool {
@@ -142,7 +157,9 @@ impl Shell {
         match self.panel {
             Panel::Personalisation => (0..ROWS.len()).filter(|&i| ROWS[i].enabled(&self.pending)).collect(),
             Panel::Accounts => (0..self.actions).collect(),
-            Panel::About => (0..crate::hardware::KEYS.len()).collect(),
+            Panel::Update => (0..self.updates).collect(),
+            Panel::Hardware => (0..crate::hardware::KEYS.len()).collect(),
+            Panel::About => alloc::vec::Vec::new(),
         }
     }
 
@@ -324,8 +341,9 @@ mod tests {
         let mut s = shell();
         assert_eq!(s.key(key::DOWN, false), Outcome::Changed);
         assert_eq!(s.panel, Panel::Accounts);
-        s.key(key::DOWN, false);
-        s.key(key::DOWN, false);
+        for _ in 0..4 {
+            s.key(key::DOWN, false);
+        }
         assert_eq!(s.panel, Panel::Personalisation, "↓ from the last wraps");
         s.key(key::UP, false);
         assert_eq!(s.panel, Panel::About, "↑ from the first wraps");
@@ -333,13 +351,9 @@ mod tests {
         assert_eq!(s.panel, Panel::Personalisation);
         s.key(key::END, false);
         assert_eq!(s.panel, Panel::About);
-        // About: the tab list, the hardware report's two keys, then the bar
-        // (OK, Cancel), then round again.
-        assert_eq!(
-            s.stops(),
-            [Focus::Tabs, Focus::Control(0), Focus::Control(1), Focus::Bar(Bar::Ok), Focus::Bar(Bar::Cancel)]
-        );
-        for _ in 0..5 {
+        // About: the tab list, then the bar (OK, Cancel), then round again.
+        assert_eq!(s.stops(), [Focus::Tabs, Focus::Bar(Bar::Ok), Focus::Bar(Bar::Cancel)]);
+        for _ in 0..3 {
             s.key(key::TAB, false);
         }
         assert_eq!(s.focus, Focus::Tabs);

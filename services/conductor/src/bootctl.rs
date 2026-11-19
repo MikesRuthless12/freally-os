@@ -88,9 +88,8 @@ impl Boot {
     }
 
     /// The next boot from the other slot, if it holds a system that started
-    /// cleanly (the Brain's `reboot { slot: "other" }`, dev images; TASK-084).
-    #[cfg(any(feature = "flavour-dev", test))]
-    #[cfg_attr(not(feature = "flavour-dev"), allow(dead_code))]
+    /// cleanly (the Brain's `reboot { slot: "other" }`, TASK-084; Settings ▸
+    /// Updates' *Switch back*, TASK-110).
     pub fn switch_to_other(&mut self) -> Result<(), alloc::string::String> {
         let other = 1 - self.slot;
         let mut ctl = self.ctl.ok_or_else(|| alloc::string::String::from("there's no A/B record to change"))?;
@@ -109,9 +108,7 @@ impl Boot {
     }
 
     /// An update in slot `s`: a trial of `version`, made active for the next
-    /// boot. Its one caller today is the e2e door, so it's compiled into e2e
-    /// images only; Settings ▸ Updates (v0.8.0) takes the gate off.
-    #[cfg(feature = "flavour-e2e")]
+    /// boot (the updater, TASK-110; the e2e door).
     pub fn start_trial(&mut self, s: u8, version: &str) -> Result<(), FErr> {
         let mut ctl = self.ctl.ok_or(FErr::BadState)?;
         ctl.start_trial(s, version);

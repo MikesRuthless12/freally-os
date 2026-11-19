@@ -39,8 +39,10 @@ struct Heap(UnsafeCell<State>);
 unsafe impl Sync for Heap {}
 
 #[global_allocator]
-static HEAP: Heap =
-    Heap(UnsafeCell::new(State { free: [core::ptr::null_mut(); CLASSES.len()], spare: [(core::ptr::null_mut(), 0); SPARES] }));
+static HEAP: Heap = Heap(UnsafeCell::new(State {
+    free: [core::ptr::null_mut(); CLASSES.len()],
+    spare: [(core::ptr::null_mut(), 0); SPARES],
+}));
 
 /// Maps `bytes` (rounded up) of fresh zeroed memory.
 fn map(bytes: usize) -> *mut u8 {

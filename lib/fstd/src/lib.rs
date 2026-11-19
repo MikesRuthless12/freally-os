@@ -20,6 +20,7 @@ pub mod inventory;
 pub mod ipc;
 pub mod log;
 pub mod machine;
+pub mod mmio;
 pub mod process;
 pub mod secret;
 pub mod serial_json;

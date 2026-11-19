@@ -539,8 +539,12 @@ pub fn copy_pause(ctx: &mut Ctx) -> Result<(), String> {
 /// (the source stays), through the engine.
 pub fn copy_drag(ctx: &mut Ctx) -> Result<(), String> {
     signed_in(ctx)?;
-    made(ctx, &["write /home/mike/keep.txt kept", "mkdir /home/mike/Copies"])?;
+    // A folder of its own: by now the home is longer than the window, and a
+    // row out of view has nothing on the screen to drag.
+    made(ctx, &["mkdir /home/mike/Drag", "write /home/mike/Drag/keep.txt kept", "mkdir /home/mike/Drag/Copies"])?;
     open_files(ctx)?;
+    double(ctx, &row("Drag"))?;
+    until_attr(ctx, &sel("files-path"), "aria-valuenow", "/home/mike/Drag")?;
     let (kx, ky) = centre(ctx, &row("keep.txt"))?;
     let to = centre(ctx, &row("Copies"))?;
     let before = finished(ctx).len();
@@ -548,7 +552,7 @@ pub fn copy_drag(ctx: &mut Ctx) -> Result<(), String> {
     drag(ctx, (kx - 60, ky), to)?;
     key(ctx, "ControlLeft", false)?;
     copies_done(ctx, before)?;
-    expect(ctx, "cat /home/mike/Copies/keep.txt", &["kept"])?;
+    expect(ctx, "cat /home/mike/Drag/Copies/keep.txt", &["kept"])?;
     until_q(ctx, &row("keep.txt"))?;
     Ok(())
 }

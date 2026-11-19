@@ -55,6 +55,8 @@ pub struct VmOptions {
     /// An account carried in before the first boot (TASK-106): its bundle
     /// taken from this disk (another VM's), for this user.
     pub carry: Option<(PathBuf, String)>,
+    /// The update packages `@update.*` use, put in /system/updates (TASK-110).
+    pub updates: bool,
 }
 
 impl VmOptions {
@@ -77,6 +79,7 @@ impl VmOptions {
             gpt: false,
             keep_disk: false,
             carry: None,
+            updates: false,
         }
     }
 
@@ -104,6 +107,16 @@ impl VmOptions {
 
     pub fn qmp_socket(&self) -> PathBuf {
         self.dir().join("qmp.sock")
+    }
+
+    /// The firmware's variables (made once from OVMF_VARS, then kept).
+    pub fn vars(&self) -> PathBuf {
+        self.dir().join("OVMF_VARS_4M.fd")
+    }
+
+    /// A copy of the variables a good boot left, started from later.
+    pub fn settled_vars(&self) -> PathBuf {
+        self.dir().join("OVMF_VARS_4M.settled")
     }
 
     pub fn com1_log(&self) -> PathBuf {
@@ -144,14 +157,38 @@ pub fn lay_out(o: &VmOptions, built: &Built) -> Result<PathBuf, String> {
             let _ = std::fs::remove_file(esp.join("FREALLY/CMDLINE.TXT"));
         }
     }
-    let vars = dir.join("OVMF_VARS_4M.fd");
+    let vars = o.vars();
+    // One stocked with updates (`@update.*` write slot B and its record
+    // themselves) starts from the variables its first good boot left (slot A
+    // good, B empty, the firmware's boot entry made): fresh ones would do,
+    // but QEMU's firmware misses an NVMe disk far more often with them.
+    let settled = o.settled_vars();
+    if o.updates && settled.exists() {
+        copy(&settled, &vars)?;
     // A VM with a slot B starts from fresh firmware variables: its A/B record
     // is rebuilt on the first boot, so no earlier run decides how this one
     // starts. So does one whose store is filling (`vars_full`).
-    if !vars.exists() || o.slot_b.is_some() || std::fs::read(&vars).is_ok_and(|b| vars_full(&b)) {
+    } else if !vars.exists() || o.slot_b.is_some() || o.updates || std::fs::read(&vars).is_ok_and(|b| vars_full(&b)) {
         copy(Path::new(OVMF_VARS), &vars)?;
     }
     Ok(esp)
+}
+
+/// An update VM's variables kept once its first boot is good: conductor up
+/// from slot A, the record as a first boot makes it.
+fn settle(o: &VmOptions) {
+    if !o.updates || o.settled_vars().exists() {
+        return;
+    }
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(60) {
+        let log = std::fs::read(o.com1_log()).unwrap_or_default();
+        if String::from_utf8_lossy(&log).contains("conductor: started from slot A (Good") {
+            let _ = std::fs::copy(o.vars(), o.settled_vars());
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// Whether OVMF's variable store (its first 256 KiB; unwritten flash is
@@ -184,7 +221,7 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     // reads the RTC as the time (time zones come with Settings).
     c.args(["-rtc", "base=localtime"]);
     c.arg("-drive").arg(format!("if=pflash,format=raw,unit=0,readonly=on,file={OVMF_CODE}"));
-    c.arg("-drive").arg(format!("if=pflash,format=raw,unit=1,file={}", dir.join("OVMF_VARS_4M.fd").display()));
+    c.arg("-drive").arg(format!("if=pflash,format=raw,unit=1,file={}", o.vars().display()));
     if o.gpt {
         // The whole disk on NVMe (TASK-091), as a laptop's SSD.
         c.arg("-drive").arg(format!("if=none,id=disk0,format=raw,file={}", dir.join("disk.img").display()));
@@ -254,6 +291,9 @@ pub fn start_built(o: &VmOptions, built: &Built) -> Result<Child, String> {
         if let Some((from, user)) = &o.carry {
             crate::carry::carry(from, user, &o.dir().join("disk.img"))?;
         }
+        if o.updates {
+            crate::fup::stock(&o.dir().join("disk.img"), o.flavour)?;
+        }
     }
     let _ = std::fs::remove_file(o.qmp_socket());
     qemu(o, &esp).spawn().map_err(|e| format!("can't start QEMU: {e}"))
@@ -275,6 +315,7 @@ pub fn start_booted(o: &VmOptions, built: &Built) -> Result<Child, String> {
             let log = std::fs::read(o.com1_log()).unwrap_or_default();
             let text = String::from_utf8_lossy(&log);
             if text.contains("freally-boot ") {
+                settle(&o);
                 return Ok(child);
             }
             if text.contains("BdsDxe: No bootable option") || start.elapsed() > std::time::Duration::from_secs(45) {

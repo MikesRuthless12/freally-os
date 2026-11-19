@@ -4,8 +4,8 @@
 //! service (`main.rs`) resolves them through ffs.
 //!
 //! - `/` holds `home` and `system`.
-//! - `/system` is the system subvolume: read-only for everyone, but
-//!   `accounts` writes the account records under `/system/accounts`.
+//! - `/system` is the system subvolume: read-only for everyone, but the
+//!   account records under `/system/accounts` are `accounts'` alone.
 //! - `/home/<user>` is that account's home: the session's account alone may
 //!   read or write it; another's is `AccessDenied` whether it exists or not.
 //! - With no session, no home is anyone's.
@@ -82,9 +82,16 @@ pub fn check(who: &Caller, place: &Place, access: Access) -> Result<(), FErr> {
     match (place, access) {
         (Place::Root | Place::Homes, Access::Read) => Ok(()),
         (Place::Root | Place::Homes, Access::Write) => Err(FErr::AccessDenied),
+        // The account records (each password's salt and wrapped key): accounts
+        // alone, to read or to write.
+        (Place::System(parts), _) if parts.first().is_some_and(|p| p == "accounts") => {
+            if system {
+                Ok(())
+            } else {
+                Err(FErr::AccessDenied)
+            }
+        }
         (Place::System(_), Access::Read) => Ok(()),
-        // The account records: accounts alone.
-        (Place::System(parts), Access::Write) if system && parts.first().is_some_and(|p| p == "accounts") => Ok(()),
         (Place::System(_), Access::Write) => Err(FErr::AccessDenied),
         (Place::Home(user, _), _) if !system && who.session == Some(user.as_str()) => Ok(()),
         (Place::Home(..), _) => Err(FErr::AccessDenied),
@@ -147,5 +154,20 @@ mod tests {
         assert_eq!(check(&mike, &Place::Homes, Access::Write), Err(FErr::AccessDenied));
         assert_eq!(homes_listed(&mike), s(&["mike"]));
         assert!(homes_listed(&nobody).is_empty());
+    }
+
+    /// The records hold each password's salt and wrapped key: anyone who
+    /// could copy them could guess passwords offline.
+    #[test]
+    fn the_account_records_are_accounts_alone() {
+        let mike = Caller { service: "terminal", session: Some("mike") };
+        let accounts = Caller { service: "accounts", session: None };
+        for p in ["/system/accounts", "/system/accounts/mike.rec"] {
+            let place = parse(p).unwrap();
+            assert_eq!(check(&mike, &place, Access::Read), Err(FErr::AccessDenied), "{p}");
+            assert_eq!(check(&accounts, &place, Access::Read), Ok(()), "{p}");
+        }
+        assert_eq!(check(&mike, &parse("/system").unwrap(), Access::Read), Ok(()), "the rest is anyone's to read");
+        assert_eq!(check(&mike, &parse("/system/version").unwrap(), Access::Read), Ok(()));
     }
 }

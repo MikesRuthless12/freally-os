@@ -53,6 +53,9 @@ struct Accounts {
     /// answered: reaching stage means asking conductor, which may be the
     /// one waiting on that request (its test door).
     to_show: Option<AccountRecord>,
+    /// The clipboard to empty once the login or logout is answered (as
+    /// `to_show`: never while conductor may be waiting on the reply).
+    to_clear: bool,
 }
 
 fn refused(r: Refused) -> (FErr, String) {
@@ -147,9 +150,7 @@ impl Accounts {
         if !svc_accounts::valid_username(username) {
             return Err(refused(Refused::BadUsername));
         }
-        if display_name.chars().count() > 64 {
-            return Err(refused(Refused::BadDisplayName));
-        }
+        svc_accounts::check_display_name(display_name).map_err(refused)?;
         svc_accounts::check_password(password).map_err(refused)?;
         if self.records.iter().any(|r| r.username == username) {
             return Err((FErr::AlreadyExists, alloc::format!("There's already an account called {username}.")));
@@ -248,16 +249,30 @@ impl Accounts {
         Ok(fwire::to_payload(&()))
     }
 
-    /// An account's look put on the screen (after a login, and when it's
-    /// saved), between requests.
-    fn show(&mut self, r: &AccountRecord) {
+    /// stage, connected the first time it's needed.
+    fn stage(&mut self) -> Option<&mut Client> {
         if self.stage.is_none() {
             match fstd::service::connect("stage") {
                 Ok(ch) => self.stage = Some(Client::new(ch)),
-                Err(e) => fstd::warn!("accounts: stage: {e:?}: {}'s look isn't on the screen", r.username),
+                Err(e) => fstd::warn!("accounts: stage: {e:?}"),
             }
         }
-        let Some(stage) = self.stage.as_mut() else { return };
+        self.stage.as_mut()
+    }
+
+    /// The clipboard emptied as a session starts or ends: nothing one
+    /// person copied reaches the next.
+    fn clear_clipboard(&mut self) {
+        let Some(stage) = self.stage() else { return };
+        if let Err(e) = Self::call::<_, ()>(stage, st::CLEAR_CLIPBOARD, &()) {
+            fstd::warn!("accounts: the clipboard wasn't emptied: {}", e.1);
+        }
+    }
+
+    /// An account's look put on the screen (after a login, and when it's
+    /// saved), between requests.
+    fn show(&mut self, r: &AccountRecord) {
+        let Some(stage) = self.stage() else { return };
         let l = r.look;
         let theme = if r.dark { st::Theme::Dark } else { st::Theme::Light };
         let wall = st::WALLPAPERS.get(l.wallpaper as usize).copied().unwrap_or("studio");
@@ -445,6 +460,7 @@ impl Accounts {
             v::SET_SESSION,
             &v::Session { user: r.username.clone(), sv: r.home_subvolume },
         )?;
+        self.to_clear = true;
         fstd::info!("accounts: {} logged in", r.username);
         self.to_show = Some(r.clone());
         self.session = Some(Session { username: r.username, home: r.home_subvolume, key });
@@ -458,6 +474,7 @@ impl Accounts {
         let Some(s) = self.session.take() else { return Ok(fwire::to_payload(&())) };
         let locked = Self::call::<_, ()>(&mut self.ffs, f::LOCK, &f::Subvol { sv: s.home });
         let ended = Self::call::<_, ()>(&mut self.vfs, v::SET_SESSION, &v::Session { user: String::new(), sv: 0 });
+        self.to_clear = true;
         fstd::info!("accounts: {} logged out", s.username);
         locked.and(ended).map(|_| fwire::to_payload(&()))
     }
@@ -493,7 +510,9 @@ impl Accounts {
         fn arg<T: fwire::Wire>(p: &[u8]) -> Result<T, (FErr, String)> {
             fwire::from_payload(p).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))
         }
-        let _ = who;
+        if !svc_accounts::may(who, ordinal) {
+            return Err((FErr::AccessDenied, alloc::format!("{who} may not ask accounts for that")));
+        }
         match ordinal {
             a::LIST => Ok(fwire::to_payload(&a::Users {
                 users: self
@@ -595,6 +614,7 @@ fn run(_bootstrap: u32) -> i64 {
         next_try: 0,
         stage: None,
         to_show: None,
+        to_clear: false,
     };
     acc.load();
     fstd::info!(
@@ -626,6 +646,9 @@ fn run(_bootstrap: u32) -> i64 {
                 let who = who.clone();
                 if !serve(&mut acc, &who, ch) {
                     clients.remove(k - 1);
+                }
+                if core::mem::take(&mut acc.to_clear) {
+                    acc.clear_clipboard();
                 }
                 if let Some(r) = acc.to_show.take() {
                     acc.show(&r);

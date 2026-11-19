@@ -57,6 +57,8 @@ mod storage;
 mod terminal;
 #[path = "../../../e2e/os/specs/theme.rs"]
 mod theme;
+#[path = "../../../e2e/os/specs/update.rs"]
+mod update;
 
 use cdp_proto::Cdp;
 use fjson::Value;
@@ -109,6 +111,11 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("login.shutdown", session::login_shutdown),
     ("settings.look", settings::look_spec),
     ("settings.hardware", settings::hardware),
+    ("settings.about.licences", settings::about_licences),
+    ("update.bad-signature", update::bad_signature),
+    ("update.install", update::install),
+    ("update.switch-back", update::switch_back),
+    ("update.fallback", update::fallback),
     ("settings.keyboard", settings::keyboard),
     ("settings.accounts", settings::accounts),
     ("files.browse", files::browse),
@@ -162,6 +169,7 @@ pub const SITE_SPECS: &[(&str, SiteSpec)] = &[
     ("site.no_private", site_specs::no_private),
     ("site.cursor", site_specs::cursor),
     ("site.toggles", site_specs::toggles),
+    ("site.documents", site_specs::documents),
 ];
 
 /// A screen a spec expects, drawn on the host by `fscreen` to compare.

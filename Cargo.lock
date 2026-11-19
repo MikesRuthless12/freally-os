@@ -450,6 +450,13 @@ dependencies = [
 [[package]]
 name = "svc-updater"
 version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "fcrypto",
+ "fsi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "svc-vfs"

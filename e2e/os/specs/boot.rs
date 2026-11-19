@@ -80,7 +80,7 @@ pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
 
 /// Resets the VM (QMP system_reset, as a restart button does) and waits for
 /// the `n`th line containing `text`.
-fn reset_until(ctx: &mut Ctx, text: &str, n: usize) -> Result<(), String> {
+pub(crate) fn reset_until(ctx: &mut Ctx, text: &str, n: usize) -> Result<(), String> {
     ctx.reset()?;
     let start = std::time::Instant::now();
     while ctx.log_count(text) < n {
@@ -155,7 +155,7 @@ fn fallback_on(ctx: &mut Ctx, layout: &str) -> Result<(), String> {
 }
 
 /// Waits for the crash-test kernel's panic (the `n`th ERROR line).
-fn reset_wait_crash(ctx: &mut Ctx, n: usize) -> Result<(), String> {
+pub(crate) fn reset_wait_crash(ctx: &mut Ctx, n: usize) -> Result<(), String> {
     ctx.expect_log_count("freally-core: ERROR", n).map_err(|e| format!("the trial image didn't crash: {e}"))
 }
 

@@ -12,6 +12,7 @@ pub mod accounts;
 pub mod hardware;
 pub mod personalisation;
 pub mod shell;
+pub mod updates;
 
 /// Key usages Settings reads.
 pub mod key {

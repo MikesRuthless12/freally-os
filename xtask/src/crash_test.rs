@@ -96,7 +96,8 @@ fn judge(part: &str) -> Boot {
         {
             return Boot::Broken(format!("ffsck: {what}"));
         }
-        if line.contains("drv-nvme: command") && line.contains("never completed") {
+        // A bring-up the driver gave up on (one it tried again is said with "asking again").
+        if line.contains("drv-nvme: command") && line.contains("never completed") && !line.contains("asking again") {
             return Boot::NoController;
         }
         if line.contains("wasn't unmounted: ffsck ran") {
@@ -168,7 +169,7 @@ impl<'a> Machine<'a> {
     }
 
     fn vars(&self) -> std::path::PathBuf {
-        self.o.dir().join("OVMF_VARS_4M.fd")
+        self.o.vars()
     }
 
     /// QEMU quits (the load mid-write: a crash too) and starts again on the
@@ -212,7 +213,7 @@ impl<'a> Machine<'a> {
                 }
                 b => {
                     if self.settled.is_none() {
-                        let s = self.o.dir().join("OVMF_VARS_4M.settled");
+                        let s = self.o.settled_vars();
                         std::fs::copy(self.vars(), &s).map_err(|e| format!("the firmware's variables: {e}"))?;
                         self.settled = Some(s);
                     }
@@ -233,7 +234,7 @@ pub fn run(resets: usize, seed: u64, planted: bool) -> Result<String, String> {
     o.port_offset = PORT_OFFSET;
     println!("crash-test: {resets} resets, seed {seed}{}", if planted { ", the planted ordering bug" } else { "" });
     // Fresh firmware variables and disk for each run.
-    let _ = std::fs::remove_file(o.dir().join("OVMF_VARS_4M.fd"));
+    let _ = std::fs::remove_file(o.vars());
     let mut m = Machine::start(o, &built)?;
     let result = (|| {
         let mut rng = Rng(seed | 1);

@@ -37,7 +37,7 @@ impl facpi::Mem for Phys {
             let a = addr + i as u64;
             let Some(va) = self.page(a & !0xFFF) else { return false };
             // SAFETY: a read-only mapping of that page, kept for devmgr's life.
-            *b = unsafe { core::ptr::read_volatile((va + (a & 0xFFF)) as *const u8) };
+            *b = unsafe { fstd::mmio::read8(va + (a & 0xFFF)) };
         }
         true
     }
@@ -65,11 +65,11 @@ pub struct Hardware {
 /// Reads a u8/u16 from a mapped configuration space.
 fn cfg8(va: u64, off: u64) -> u8 {
     // SAFETY: inside a mapped 4 KiB configuration page.
-    unsafe { core::ptr::read_volatile((va + off) as *const u8) }
+    unsafe { fstd::mmio::read8(va + off) }
 }
 fn cfg16(va: u64, off: u64) -> u16 {
     // SAFETY: as above, 2-aligned.
-    unsafe { core::ptr::read_volatile((va + off) as *const u16) }
+    unsafe { fstd::mmio::read16(va + off) }
 }
 
 impl Hardware {
@@ -244,7 +244,7 @@ fn msix(va: u64, bar0: u64) -> Option<(u64, u64)> {
         }
         if cfg8(va, at) == 0x11 {
             // SAFETY: the table register, inside the mapped configuration page.
-            let table = unsafe { core::ptr::read_volatile((va + at + 4) as *const u32) } as u64;
+            let table = unsafe { fstd::mmio::read32(va + at + 4) } as u64;
             return (table & 7 == 0).then(|| (at, bar0 + (table & !0xFFF)));
         }
         at = (cfg8(va, at + 1) & 0xFC) as u64;
@@ -252,16 +252,25 @@ fn msix(va: u64, bar0: u64) -> Option<(u64, u64)> {
     None
 }
 
+/// Whether an NVMe controller from `vendor` goes to drv-nvme (TASK-114). A
+/// release build's storage is for virtual machines for now (the tester
+/// image): QEMU's, VirtualBox's and VMware's controllers, never a real
+/// computer's own disk, not even to read it. Dev and e2e images take any.
+pub fn storage_allowed(release: bool, vendor: u16) -> bool {
+    const VIRTUAL: [u16; 3] = [0x1B36, 0x80EE, 0x15AD];
+    !release || VIRTUAL.contains(&vendor)
+}
+
 fn memory_bars(va: u64) -> Vec<u64> {
     let mut out = Vec::new();
     let mut i = 0u64;
     while i < 6 {
         // SAFETY: the BARs, inside the mapped configuration page.
-        let lo = unsafe { core::ptr::read_volatile((va + 0x10 + 4 * i) as *const u32) } as u64;
+        let lo = unsafe { fstd::mmio::read32(va + 0x10 + 4 * i) } as u64;
         if lo & 1 == 0 {
             if (lo >> 1) & 3 == 2 && i < 5 {
                 // SAFETY: as above.
-                let hi = unsafe { core::ptr::read_volatile((va + 0x14 + 4 * i) as *const u32) } as u64;
+                let hi = unsafe { fstd::mmio::read32(va + 0x14 + 4 * i) } as u64;
                 out.push((hi << 32) | (lo & !0xF));
                 i += 1;
             } else {
@@ -322,7 +331,16 @@ fn scan(
                     && let Some(&bar0) = memory_bars(va).first()
                     && bar0 != 0
                 {
-                    storage.push(Nvme { at: pci_address(&p), config: phys, bar0, msix: msix(va, bar0) });
+                    if storage_allowed(cfg!(feature = "flavour-release"), p.vendor) {
+                        storage.push(Nvme { at: pci_address(&p), config: phys, bar0, msix: msix(va, bar0) });
+                    } else {
+                        fstd::info!(
+                            "devmgr: the NVMe controller at {} ({:04x}:{:04x}) is left alone: this build's storage is for virtual machines",
+                            pci_address(&p),
+                            p.vendor,
+                            p.id
+                        );
+                    }
                 }
                 out.push(p);
                 if header & 0x7F == 1 {
@@ -337,6 +355,20 @@ fn scan(
             if func == 0 && (!present || header & 0x80 == 0) {
                 break;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_release_build_takes_only_a_virtual_machines_disk() {
+        for vm in [0x1B36, 0x80EE, 0x15AD] {
+            assert!(super::storage_allowed(true, vm), "{vm:04x}");
+        }
+        for real in [0x144D, 0x15B7, 0x8086, 0x1E0F] {
+            assert!(!super::storage_allowed(true, real), "{real:04x}: a real computer's disk");
+            assert!(super::storage_allowed(false, real), "dev and e2e take any");
         }
     }
 }

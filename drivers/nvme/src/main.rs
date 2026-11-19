@@ -29,6 +29,8 @@ fstd::program!(run);
 
 /// Entries in each queue.
 const ENTRIES: u16 = 32;
+/// Bring-ups tried before the driver gives up (TASK-092A).
+const BRING_UP_TRIES: u32 = 2;
 /// The data buffer: 128 KiB (32 pages), the most one command moves.
 const BUF: u64 = 128 << 10;
 
@@ -98,17 +100,17 @@ impl Nvme {
     /// The PCI command register (memory space bit 1, bus mastering bit 2).
     fn pci_command(&self) -> u16 {
         // SAFETY: the function's configuration page, mapped.
-        unsafe { core::ptr::read_volatile((self.config + 4) as *const u16) }
+        unsafe { fstd::mmio::read16(self.config + 4) }
     }
 
     fn r32(&self, off: usize) -> u32 {
         // SAFETY: inside the mapped registers.
-        unsafe { core::ptr::read_volatile((self.regs + off as u64) as *const u32) }
+        unsafe { fstd::mmio::read32(self.regs + off as u64) }
     }
 
     fn w32(&self, off: usize, v: u32) {
         // SAFETY: inside the mapped registers.
-        unsafe { core::ptr::write_volatile((self.regs + off as u64) as *mut u32, v) }
+        unsafe { fstd::mmio::write32(self.regs + off as u64, v) }
     }
 
     fn w64(&self, off: usize, v: u64) {
@@ -134,9 +136,42 @@ impl Nvme {
         }
     }
 
+    /// The bring-up (§ 7.6.1), once: memory space and bus mastering on, the
+    /// controller disabled, the admin queues given (the completion queue's
+    /// old phase bits cleared), enabled, and the controller identified into
+    /// `page` within 2 s (a controller that answers at all answers in
+    /// microseconds).
+    fn bring_up(&mut self, entries: u16, page: u64) -> Result<(), String> {
+        // Memory space and bus mastering on (the command register, offset 4).
+        // SAFETY: the function's configuration page, mapped.
+        unsafe {
+            let cmd = self.config + 4;
+            fstd::mmio::write16(cmd, fstd::mmio::read16(cmd) | 0b110);
+        }
+        if self.r32(reg::CC) & 1 != 0 {
+            self.w32(reg::CC, 0);
+        }
+        self.wait_ready(false)?;
+        self.admin.ring = Ring::new(entries);
+        // SAFETY: the admin completion queue's page, ours.
+        unsafe { core::ptr::write_bytes(self.admin.cq.va as *mut u8, 0, 4096) };
+        let size = (entries - 1) as u32;
+        self.w32(reg::AQA, size << 16 | size);
+        self.w64(reg::ASQ, self.admin.sq.phys);
+        self.w64(reg::ACQ, self.admin.cq.phys);
+        self.w32(reg::CC, drv_nvme::CC_ENABLE);
+        self.wait_ready(true)?;
+        self.run_within(false, Command::identify(1, 0, page), 2_000_000_000).map(|_| ())
+    }
+
     /// Submits `cmd` on the admin queue (or the I/O queue) and polls for its
     /// completion, up to 5 s.
-    fn run(&mut self, io: bool, mut cmd: Command) -> Result<Completion, String> {
+    fn run(&mut self, io: bool, cmd: Command) -> Result<Completion, String> {
+        self.run_within(io, cmd, 5_000_000_000)
+    }
+
+    /// As [`run`], giving up after `timeout` ns.
+    fn run_within(&mut self, io: bool, mut cmd: Command, timeout: u64) -> Result<Completion, String> {
         let (regs, cap, config) = (self.regs, self.cap, self.config);
         let q = if io { self.io.as_mut().ok_or("no I/O queue")? } else { &mut self.admin };
         let (slot, cid) = q.ring.submit();
@@ -146,11 +181,11 @@ impl Nvme {
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), (q.sq.va + slot as u64 * 64) as *mut u8, 64) };
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // SAFETY: the doorbell is inside the mapped registers.
-        unsafe {
-            core::ptr::write_volatile((regs + sq_doorbell(cap, q.qid) as u64) as *mut u32, q.ring.sq_tail as u32)
-        };
-        let until = Instant::now().as_ns() + 5_000_000_000;
-        let irq = self.irq.as_ref().map(Handle::raw);
+        unsafe { fstd::mmio::write32(regs + sq_doorbell(cap, q.qid) as u64, q.ring.sq_tail as u32) };
+        let until = Instant::now().as_ns() + timeout;
+        // Only I/O completions interrupt (MSI-X entry 1); the admin queue's
+        // entry 0 stays masked, so it's polled.
+        let irq = if io { self.irq.as_ref().map(Handle::raw) } else { None };
         let mut spins = 0u32;
         loop {
             let mut raw = [0u8; 16];
@@ -165,7 +200,7 @@ impl Nvme {
             let c = Completion::parse(&raw);
             if let Some(head) = q.ring.consume(&c) {
                 // SAFETY: as above.
-                unsafe { core::ptr::write_volatile((regs + cq_doorbell(cap, q.qid) as u64) as *mut u32, head as u32) };
+                unsafe { fstd::mmio::write32(regs + cq_doorbell(cap, q.qid) as u64, head as u32) };
                 if c.cid != cid {
                     continue;
                 }
@@ -177,12 +212,8 @@ impl Nvme {
             }
             if Instant::now().as_ns() > until {
                 // SAFETY: inside the mapped registers and configuration page.
-                let (csts, pci) = unsafe {
-                    (
-                        core::ptr::read_volatile((regs + reg::CSTS as u64) as *const u32),
-                        core::ptr::read_volatile((config + 4) as *const u16),
-                    )
-                };
+                let (csts, pci) =
+                    unsafe { (fstd::mmio::read32(regs + reg::CSTS as u64), fstd::mmio::read16(config + 4)) };
                 return Err(alloc::format!(
                     "command {:#x} never completed (CSTS {csts:#x}, PCI command {pci:#x})",
                     cmd.opcode
@@ -233,10 +264,28 @@ impl Nvme {
     /// controller. A refusal never reaches the device.
     fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), FErr> {
         let count = data.len() as u64 / self.block as u64;
+        self.interlock.check_write(lba, count)?;
+        self.write_through(lba, data)
+    }
+
+    /// The table's own blocks (TASK-114's grow): the primary table (blocks 1
+    /// to 33 of a 512-byte disk) or the backup at the end, and nothing else.
+    fn write_table(&mut self, lba: u64, data: &[u8]) -> Result<(), FErr> {
+        let count = data.len() as u64 / self.block as u64;
+        let table = (16 * 1024 / self.block as u64) + 1;
+        let primary = lba >= 1 && lba + count <= 1 + table;
+        let backup = lba + table >= self.blocks && lba + count <= self.blocks;
+        if !(primary || backup) {
+            return Err(FErr::AccessDenied);
+        }
+        self.write_through(lba, data)
+    }
+
+    fn write_through(&mut self, lba: u64, data: &[u8]) -> Result<(), FErr> {
+        let count = data.len() as u64 / self.block as u64;
         if data.is_empty() || !(data.len() as u64).is_multiple_of(self.block as u64) || data.len() as u64 > BUF {
             return Err(FErr::InvalidArgs);
         }
-        self.interlock.check_write(lba, count)?;
         // SAFETY: `data` fits the buffer.
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.buf.va as *mut u8, data.len()) };
         let prp = self.prp(data.len() as u64).map_err(|_| FErr::InvalidArgs)?;
@@ -252,20 +301,23 @@ impl Nvme {
 }
 
 /// MSI-X on (TASK-092A): the capability found in the configuration page,
-/// entry 0 of its table given the kernel's vector, legacy INTx off. Its
-/// line and vector; `None` (the driver polls, as before) if something's
-/// missing.
+/// entry 1 of its table given the kernel's vector (the I/O queue's), legacy
+/// INTx off. Entry 0, the admin queue's, stays masked: QEMU keeps the table
+/// across a reset, and its firmware, which always uses the admin queue,
+/// missed the disk on a third of warm resets while entry 0 still rang (none
+/// with it masked: crash-test, 12 resets each). Its line and vector; `None`
+/// (the driver polls, as before) if something's missing.
 fn msix(registers: &Handle, table_page: Option<&Handle>, cap: u64, bar0: u64, config: u64) -> Option<(Handle, u32)> {
     // SAFETY: offsets inside the function's 4 KiB configuration page, mapped.
     let rd = |o: u64, n: u32| unsafe {
         match n {
-            1 => core::ptr::read_volatile((config + o) as *const u8) as u32,
-            2 => core::ptr::read_volatile((config + o) as *const u16) as u32,
-            _ => core::ptr::read_volatile((config + o) as *const u32),
+            1 => fstd::mmio::read8(config + o) as u32,
+            2 => fstd::mmio::read16(config + o) as u32,
+            _ => fstd::mmio::read32(config + o),
         }
     };
     // SAFETY: as above.
-    let wr16 = |o: u64, v: u16| unsafe { core::ptr::write_volatile((config + o) as *mut u16, v) };
+    let wr16 = |o: u64, v: u16| unsafe { fstd::mmio::write16(config + o, v) };
     // devmgr found the capability (and granted the table's page).
     let at = cap;
     if rd(at, 1) != 0x11 {
@@ -273,6 +325,10 @@ fn msix(registers: &Handle, table_page: Option<&Handle>, cap: u64, bar0: u64, co
         return None;
     }
     let control = rd(at + 2, 2) as u16;
+    if control & 0x7FF < 1 {
+        fstd::info!("drv-nvme: the MSI-X table has one entry: completions are polled");
+        return None;
+    }
     let table = rd(at + 4, 4);
     if table & 7 != 0 {
         fstd::info!("drv-nvme: the MSI-X table isn't in BAR 0: completions are polled");
@@ -306,12 +362,15 @@ fn msix(registers: &Handle, table_page: Option<&Handle>, cap: u64, bar0: u64, co
         return None;
     };
     let (address, data) = (message as u32, (message >> 32) as u32);
-    // SAFETY: entry 0 of the table (16 bytes), mapped above.
+    // SAFETY: entries 0 and 1 of the table (16 bytes each), mapped above:
+    // entry 0 masked (its vector control's bit 0), entry 1 ours.
     unsafe {
-        core::ptr::write_volatile(entry as *mut u32, address);
-        core::ptr::write_volatile((entry + 4) as *mut u32, 0);
-        core::ptr::write_volatile((entry + 8) as *mut u32, data);
-        core::ptr::write_volatile((entry + 12) as *mut u32, 0);
+        fstd::mmio::write32(entry + 12, 1);
+        let one = entry + 16;
+        fstd::mmio::write32(one, address);
+        fstd::mmio::write32(one + 4, 0);
+        fstd::mmio::write32(one + 8, data);
+        fstd::mmio::write32(one + 12, 0);
     }
     // Enabled, the function unmasked; INTx off (command bit 10).
     wr16(at + 2, (control | 1 << 15) & !(1 << 14));
@@ -335,31 +394,14 @@ fn open() -> Result<Nvme, String> {
     };
     let regs = map_mmio(&handles[ri], value(&r, "bar0"), 0x2000)?;
     let config = map_mmio(&handles[ci], value(&r, "config"), 4096)?;
-    let irq = match r.values.iter().find(|(n, _)| n == "msix-cap") {
-        Some(&(_, cap)) => msix(&handles[ri], take("msix-table").map(|i| &handles[i]), cap, value(&r, "bar0"), config),
-        None => {
-            fstd::info!("drv-nvme: no MSI-X capability: completions are polled");
-            None
-        }
-    };
-    match &irq {
-        Some((_, vector)) => fstd::info!("drv-nvme: MSI-X on: completions interrupt on vector {vector}"),
-        None => fstd::info!("drv-nvme: polling completions"),
-    }
-    // Memory space and bus mastering on (the command register, offset 4).
-    // SAFETY: the function's configuration page, mapped.
-    unsafe {
-        let cmd = (config + 4) as *mut u16;
-        core::ptr::write_volatile(cmd, core::ptr::read_volatile(cmd) | 0b110);
-    }
     // SAFETY: inside the mapped registers.
-    let cap = unsafe { core::ptr::read_volatile(regs as *const u64) };
+    let cap = unsafe { fstd::mmio::read64(regs) };
     let entries = ENTRIES.min(drv_nvme::max_entries(cap).min(u16::MAX as u32) as u16);
     let queue = |qid: u16| -> Result<Queue, String> {
         Ok(Queue { qid, sq: Dma::new(4096)?, cq: Dma::new(4096)?, ring: Ring::new(entries) })
     };
     let mut n = Nvme {
-        irq: irq.map(|(h, _)| h),
+        irq: None,
         regs,
         config,
         cap,
@@ -379,35 +421,35 @@ fn open() -> Result<Nvme, String> {
         n.r32(reg::CSTS),
         n.pci_command()
     );
-    // Reset, the admin queues, enable (§ 7.6.1).
-    if n.r32(reg::CC) & 1 != 0 {
-        n.w32(reg::CC, 0);
-    }
-    n.wait_ready(false)?;
-    let size = (entries - 1) as u32;
-    n.w32(reg::AQA, size << 16 | size);
-    n.w64(reg::ASQ, n.admin.sq.phys);
-    n.w64(reg::ACQ, n.admin.cq.phys);
-    n.w32(reg::CC, drv_nvme::CC_ENABLE);
-    n.wait_ready(true)?;
     let page = Dma::new(4096)?;
-    // A cold start can leave QEMU's controller deaf to its first command
-    // (TASK-092A): reset once and ask again.
-    if let Err(e) = n.run(false, Command::identify(1, 0, page.phys)) {
+    // A controller can be deaf to its first command (TASK-092A): reset once
+    // and ask again. (On QEMU's very first start with fresh firmware
+    // variables it can stay deaf through any reset, a function reset
+    // included: only a fresh QEMU process helps. The tester guide says so.)
+    let mut tries = 1;
+    while let Err(e) = n.bring_up(entries, page.phys) {
+        if tries == BRING_UP_TRIES {
+            return Err(e);
+        }
         fstd::warn!("drv-nvme: {e}: resetting the controller and asking again");
-        n.w32(reg::CC, 0);
-        n.wait_ready(false)?;
-        n.admin.ring = Ring::new(entries);
-        // SAFETY: the admin completion queue's page, ours: its old phase bits cleared.
-        unsafe { core::ptr::write_bytes(n.admin.cq.va as *mut u8, 0, 4096) };
-        n.w32(reg::AQA, size << 16 | size);
-        n.w64(reg::ASQ, n.admin.sq.phys);
-        n.w64(reg::ACQ, n.admin.cq.phys);
-        n.w32(reg::CC, drv_nvme::CC_ENABLE);
-        n.wait_ready(true)?;
-        n.run(false, Command::identify(1, 0, page.phys))?;
+        tries += 1;
+    }
+    if tries > 1 {
         fstd::info!("drv-nvme: the controller answered after a reset");
     }
+    // MSI-X once the controller answers (the admin queue is polled).
+    let irq = match r.values.iter().find(|(n, _)| n == "msix-cap") {
+        Some(&(_, cap)) => msix(&handles[ri], take("msix-table").map(|i| &handles[i]), cap, value(&r, "bar0"), config),
+        None => {
+            fstd::info!("drv-nvme: no MSI-X capability: completions are polled");
+            None
+        }
+    };
+    match &irq {
+        Some((_, vector)) => fstd::info!("drv-nvme: MSI-X on: completions interrupt on vector {vector}"),
+        None => fstd::info!("drv-nvme: polling completions"),
+    }
+    n.irq = irq.map(|(h, _)| h);
     // SAFETY: the page the controller just filled.
     let id = unsafe { core::slice::from_raw_parts(page.va as *const u8, 4096) };
     let (model, serial, fw) = drv_nvme::identify_controller(id);
@@ -421,7 +463,7 @@ fn open() -> Result<Nvme, String> {
     // One I/O queue pair: completions first.
     let io = queue(1)?;
     let cq = if n.irq.is_some() {
-        Command::create_cq_irq(1, entries as u32, io.cq.phys, 0)
+        Command::create_cq_irq(1, entries as u32, io.cq.phys, 1)
     } else {
         Command::create_cq(1, entries as u32, io.cq.phys)
     };
@@ -432,6 +474,7 @@ fn open() -> Result<Nvme, String> {
         "drv-nvme: {model} (serial {serial}, firmware {fw}): {blocks} blocks of {block} bytes, {entries}-entry queues"
     );
     n.model = alloc::format!("{model} {serial}");
+    grow_gpt(&mut n);
     (n.interlock, n.parts) = read_gpt(&mut n);
     if n.irq.is_some() {
         fstd::info!(
@@ -444,6 +487,47 @@ fn open() -> Result<Nvme, String> {
 
 /// The disk's GPT (the primary, else the backup) as the interlock, and its
 /// partitions; a disk without one is read-only.
+/// A disk grown since its table was written (a tester's virtual disk made
+/// bigger before its first boot, TASK-114): FREALLY_DATA, the last
+/// partition, takes the new room (`fgpt::grow`, only on a table of Freally
+/// OS's layout). The one place drv-nvme writes a table: the new backup first
+/// (where nothing was), then the primary's entries and header, so a cut
+/// leaves the old table whole.
+fn grow_gpt(n: &mut Nvme) {
+    let bs = n.block;
+    let last = n.blocks - 1;
+    let Ok(head) = n.read(1, 1).map(|b| b.to_vec()) else { return };
+    let Ok(h) = fgpt::Header::parse(&head, 1, last) else { return };
+    let count = (h.entries_len() as u64).div_ceil(bs as u64) as u32;
+    let Ok(mut entries) = n.read(h.entries_lba, count).map(|b| b.to_vec()) else { return };
+    let Some(g) = fgpt::grow(&head, &mut entries, n.blocks, bs) else { return };
+    let block = |hd: &[u8; fgpt::HEADER_SIZE as usize]| {
+        let mut b = alloc::vec![0u8; bs as usize];
+        b[..hd.len()].copy_from_slice(hd);
+        b
+    };
+    let steps = [
+        (g.backup_entries_lba, entries.clone()),
+        (g.backup_lba, block(&g.backup)),
+        (h.entries_lba, entries),
+        (1, block(&g.primary)),
+    ];
+    for (lba, bytes) in steps {
+        if let Err(e) = n.write_table(lba, &bytes) {
+            fstd::error!("drv-nvme: growing the table at block {lba}: {e:?}");
+            return;
+        }
+    }
+    match n.flush() {
+        Ok(()) => fstd::info!(
+            "drv-nvme: the disk grew: FREALLY_DATA now ends at block {} ({} MiB of disk)",
+            g.data_last,
+            (n.blocks * bs as u64) >> 20
+        ),
+        Err(e) => fstd::error!("drv-nvme: the grown table's flush: {e}"),
+    }
+}
+
 fn read_gpt(n: &mut Nvme) -> (Interlock, Vec<(String, u64, u64, bool)>) {
     let bs = n.block as u64;
     let last = n.blocks - 1;
@@ -582,7 +666,7 @@ fn lbas(n: &Nvme, part: &str, block: u64, count: u32) -> Result<(u64, u32), FErr
 }
 
 /// One client's requests until its channel is empty; false when it's gone.
-/// Only ffs may use the disk.
+/// Only ffs and the updater may use the disk, each its own partitions.
 fn serve(n: &mut Nvme, who: &str, ch: &Channel) -> bool {
     loop {
         let m = match ch.try_recv() {
@@ -595,8 +679,9 @@ fn serve(n: &mut Nvme, who: &str, ch: &Channel) -> bool {
         }
         let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
         let err = |e: FErr, why: &str| fwire::error_reply(h.txid, h.ordinal, e as i32, why);
-        let reply = if who != "ffs" {
-            err(FErr::AccessDenied, "only ffs reads and writes the disk")
+        let mine = |part: &str| drv_nvme::may_use(who, part);
+        let reply = if !matches!(who, "ffs" | "updater") {
+            err(FErr::AccessDenied, "only ffs and the updater use the disk")
         } else {
             match h.ordinal {
                 blk::INFO => {
@@ -611,6 +696,7 @@ fn serve(n: &mut Nvme, who: &str, ch: &Channel) -> bool {
                     fwire::reply(h.txid, h.ordinal, &blk::Info { model: n.model.clone(), partitions })
                 }
                 blk::READ => match fwire::from_payload::<blk::Read>(p) {
+                    Ok(r) if !mine(&r.partition) => err(FErr::AccessDenied, "not a partition of yours"),
                     Ok(r) => match lbas(n, &r.partition, r.block, r.count) {
                         Ok((lba, count)) => match n.read(lba, count) {
                             Ok(bytes) => fwire::reply(h.txid, h.ordinal, &blk::Data { bytes: bytes.to_vec() }),
@@ -624,6 +710,7 @@ fn serve(n: &mut Nvme, who: &str, ch: &Channel) -> bool {
                     Err(e) => err(FErr::InvalidArgs, e.describe()),
                 },
                 blk::WRITE => match fwire::from_payload::<blk::Write>(p) {
+                    Ok(w) if !mine(&w.partition) => err(FErr::AccessDenied, "not a partition of yours"),
                     Ok(w) if w.bytes.len().is_multiple_of(4096) => {
                         match lbas(n, &w.partition, w.block, (w.bytes.len() / 4096) as u32) {
                             // The interlock stands in `write` itself, before the controller.

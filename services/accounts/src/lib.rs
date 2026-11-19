@@ -96,8 +96,32 @@ pub fn valid_username(u: &str) -> bool {
         && b[1..].iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_' || *c == b'-')
 }
 
+/// At most 64 characters, and no more than the record's 255 bytes.
+pub fn check_display_name(d: &str) -> Result<(), Refused> {
+    if d.chars().count() > 64 || d.len() > 255 { Err(Refused::BadDisplayName) } else { Ok(()) }
+}
+
 pub fn check_password(p: &str) -> Result<(), Refused> {
     if p.chars().count() < MIN_PASSWORD { Err(Refused::ShortPassword) } else { Ok(()) }
+}
+
+/// Which requests each caller may make (conductor lets only these connect):
+/// the desktop asks who's there; the login screen logs in; the welcome
+/// screen makes or brings in the first account; Settings does the rest but
+/// logging in or out; conductor (its e2e test door) anything. Nothing else
+/// is answered.
+pub fn may(who: &str, ordinal: u32) -> bool {
+    use fwire::proto::accounts as a;
+    match who {
+        "desktop" => matches!(ordinal, a::LIST | a::SESSION),
+        "login" => matches!(ordinal, a::LIST | a::SESSION | a::LOGIN),
+        "welcome" => {
+            matches!(ordinal, a::LIST | a::SESSION | a::LOGIN | a::CREATE | a::IMPORT | a::BUNDLES | a::PREVIEW)
+        }
+        "settings" => !matches!(ordinal, a::LOGIN | a::LOGOUT),
+        "conductor" => true,
+        _ => false,
+    }
 }
 
 /// The record file's name: its id as 32 hex digits, `.rec`.
@@ -136,7 +160,8 @@ impl AccountRecord {
         let u = &self.username.as_bytes()[..self.username.len().min(32)];
         b[160] = u.len() as u8;
         b[161..161 + u.len()].copy_from_slice(u);
-        let d = &self.display_name.as_bytes()[..self.display_name.len().min(255)];
+        // Cut, if ever, at a character's edge: a record that reads back.
+        let d = &self.display_name.as_bytes()[..self.display_name.floor_char_boundary(255)];
         b[193] = d.len() as u8;
         b[194..194 + d.len()].copy_from_slice(d);
         let crc = fcrypto::crc32c::crc32c(&b[..508]);
@@ -321,6 +346,37 @@ mod tests {
         assert_eq!(check_password("seven77"), Err(Refused::ShortPassword));
         assert_eq!(check_password("eight888"), Ok(()));
         assert_eq!(check_password("ünïcødé!"), Ok(()), "characters, not bytes");
+    }
+
+    #[test]
+    fn a_display_name_is_never_cut_mid_character() {
+        // 64 characters of four bytes each: 256 bytes, past the record's 255.
+        let long = "😀".repeat(64);
+        assert_eq!(check_display_name(&long), Err(Refused::BadDisplayName));
+        assert_eq!(check_display_name(&"😀".repeat(63)), Ok(()));
+        assert_eq!(check_display_name(&"a".repeat(64)), Ok(()));
+        assert_eq!(check_display_name(&"a".repeat(65)), Err(Refused::BadDisplayName));
+        // Whatever reaches a record still reads back: never cut mid-character.
+        let mut r = record();
+        r.display_name = long;
+        let back = AccountRecord::decode(&r.encode()).expect("the record reads back");
+        assert_eq!(back.display_name, "😀".repeat(63));
+    }
+
+    #[test]
+    fn each_caller_may_ask_only_what_it_needs() {
+        use fwire::proto::accounts as a;
+        assert!(may("desktop", a::LIST) && may("desktop", a::SESSION));
+        for o in [a::LOGIN, a::LOGOUT, a::CREATE, a::REMOVE, a::EXPORT, a::CHANGE_PASSWORD, a::SET_LOOK] {
+            assert!(!may("desktop", o), "the desktop: {o}");
+        }
+        assert!(may("login", a::LOGIN) && !may("login", a::CREATE) && !may("login", a::REMOVE));
+        assert!(may("welcome", a::CREATE) && may("welcome", a::IMPORT) && may("welcome", a::PREVIEW));
+        assert!(!may("welcome", a::REMOVE) && !may("welcome", a::EXPORT) && !may("welcome", a::CHANGE_PASSWORD));
+        assert!(may("settings", a::REMOVE) && may("settings", a::SET_LOOK) && may("settings", a::EXPORT));
+        assert!(!may("settings", a::LOGIN) && !may("settings", a::LOGOUT));
+        assert!(may("conductor", a::LOGOUT));
+        assert!(!may("terminal", a::LIST) && !may("files", a::SESSION), "anyone else: nothing");
     }
 
     #[test]

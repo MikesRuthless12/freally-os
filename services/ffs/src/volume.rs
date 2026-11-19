@@ -257,6 +257,25 @@ impl<S: Store> Volume<S> {
         Ok(())
     }
 
+    /// The volume's size in blocks.
+    pub fn blocks(&self) -> u64 {
+        self.sb.block_count
+    }
+
+    /// The volume grown to `blocks` (its partition grew: TASK-114), and
+    /// committed: the new blocks free, the superblock's count with them.
+    /// `false` when there's nothing to grow into.
+    pub fn grow(&mut self, blocks: u64) -> Result<bool, FsError> {
+        let old = self.sb.block_count;
+        if blocks <= old || blocks > self.store.blocks() {
+            return Ok(false);
+        }
+        self.space.grow(old, blocks);
+        self.sb.block_count = blocks;
+        self.commit()?;
+        Ok(true)
+    }
+
     /// Commits this generation (§ 13).
     pub fn commit(&mut self) -> Result<(), FsError> {
         self.commit_with(0)

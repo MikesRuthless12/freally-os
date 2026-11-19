@@ -61,6 +61,19 @@ fn words(e: CallError) -> String {
     }
 }
 
+/// The foot of the screen (TASK-116): the licence needs nothing accepted.
+fn licence(s: &mut Window) {
+    let t = s.theme;
+    let words = "Freally OS is open source under the Apache License 2.0: there's nothing to accept. Settings ▸ About has the licences.";
+    let (w, h) = s.measure(TextStyle::Small, words);
+    let (x, y) = ((s.w as i32 - w as i32) / 2, s.h as i32 - h as i32 - t.px(24) as i32);
+    s.say((x, y), TextStyle::Small, words, Tok::Text2);
+    let mut n = fstd::ax::node(fwire::proto::ax::ROOT, fwire::proto::ax::TEXT, words, 0, (x, y, w, h));
+    n.testid = String::from("welcome-licence");
+    n.value = String::from(words);
+    s.nodes.push(n);
+}
+
 impl Welcome {
     fn draw(&mut self) {
         if self.import.is_some() {
@@ -107,6 +120,7 @@ impl Welcome {
             s.key(self.keys[IMPORT], "Import an account…", false, self.looks[IMPORT], "welcome-import");
             s.key(self.keys[CREATE], "Create account", true, self.looks[CREATE], "welcome-create");
         }
+        licence(s);
         s.present();
     }
 

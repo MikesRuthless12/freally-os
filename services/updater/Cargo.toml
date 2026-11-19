@@ -1,11 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 [package]
 name = "svc-updater"
-description = "updater: signed offline (and later online) updates."
+description = "updater: signed offline updates (.fup), written to the slot not running."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+
+[[bin]]
+name = "updater"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fcrypto.workspace = true
+fsi.workspace = true
+fstd.workspace = true
+fwire.workspace = true
+
+[dev-dependencies]
+fsi = { workspace = true, features = ["build"] }
 
 [lints]
 workspace = true

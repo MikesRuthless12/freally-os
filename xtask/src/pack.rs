@@ -95,17 +95,25 @@ pub fn pack(
     without: &[&str],
     extra: &[(String, String)],
 ) -> Result<(), String> {
+    pack_as(flavour, out, kernel, user, without, extra, fcore_abi::VERSION)
+}
+
+/// `pack`, the image naming `version` (an update's, TASK-110).
+pub fn pack_as(
+    flavour: Flavour,
+    out: &Path,
+    kernel: &Path,
+    user: &[(String, Kind, PathBuf)],
+    without: &[&str],
+    extra: &[(String, String)],
+    version: &str,
+) -> Result<(), String> {
     let (build_id, created) = build_facts()?;
     let public = keys::committed_public(signing_key(flavour))?;
     let root = util::repo_root();
     let notice = std::fs::read(root.join("NOTICE")).map_err(|e| format!("NOTICE: {e}"))?;
-    let mut b = ImageBuilder::new(flavour as u16, fcore_abi::VERSION, build_id, created);
-    b.add(
-        "/system/version",
-        Kind::Data,
-        0,
-        format!("Freally OS {} ({})\n", fcore_abi::VERSION, flavour.name()).into_bytes(),
-    );
+    let mut b = ImageBuilder::new(flavour as u16, version, build_id, created);
+    b.add("/system/version", Kind::Data, 0, format!("Freally OS {version} ({})\n", flavour.name()).into_bytes());
     b.add("/system/NOTICE", Kind::Data, 0, notice);
     for (file, kind) in FONTS {
         let bytes = std::fs::read(root.join("assets/fonts/noto").join(file)).map_err(|e| format!("{file}: {e}"))?;
@@ -234,17 +242,9 @@ pub fn sign_cmd(args: &[String]) -> Result<(), String> {
     let key = match args.iter().position(|a| a == "--key").and_then(|i| args.get(i + 1)).map(String::as_str) {
         Some("dev") => KeyName::Dev,
         Some("staging") => KeyName::Staging,
-        // The release key, from its drive, opened with its passphrase (TASK-109).
-        Some("release") => {
-            let mut seed = crate::ceremony::load(args)?;
-            let mut image = std::fs::read(path).map_err(|e| format!("can't read {path}: {e}"))?;
-            let signed = fsi::sign(&mut image, &seed).map_err(|e| format!("can't sign {path}: {}", e.describe()));
-            seed.fill(0);
-            signed?;
-            std::fs::write(path, &image).map_err(|e| e.to_string())?;
-            println!("sign: {path} signed with the release key");
-            return Ok(());
-        }
+        // The release key, from its drive, opened with its passphrase
+        // (TASK-109, FR-051).
+        Some("release") => return crate::ceremony::sign_release(args),
         _ => return Err("--key dev|staging|release".into()),
     };
     sign(Path::new(path), key)?;

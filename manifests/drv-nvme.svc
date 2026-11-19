@@ -7,5 +7,5 @@ after       = logger, devmgr
 restart     = on-failure
 class       = background
 grants      = dma
-# Storage is QEMU-only in Phase 6 (the phase prompt): no release image carries it yet.
-flavours    = dev, e2e
+# Storage in every flavour from the tester build (TASK-114): a release build's devmgr gives drv-nvme a virtual machine's controller only.
+flavours    = release, dev, e2e

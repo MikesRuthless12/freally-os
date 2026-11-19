@@ -120,6 +120,12 @@ pub(crate) fn waits_for_log(ctx: &Ctx, text: &str, more_than: usize) -> Result<D
 pub fn welcome_form(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("welcome: shown")?;
     ctx.expect_log("desktop: locked: welcome is up")?;
+    // The licence needs nothing accepted (TASK-116).
+    expect_value(
+        ctx,
+        "welcome-licence",
+        "Freally OS is open source under the Apache License 2.0: there's nothing to accept. Settings ▸ About has the licences.",
+    )?;
     expect_focus(ctx, "welcome-name")?;
     for id in ["welcome-username", "welcome-password", "welcome-again"] {
         press(ctx, "Enter")?;
@@ -177,11 +183,12 @@ pub fn welcome_form(ctx: &mut Ctx) -> Result<(), String> {
 
 /// Logs out (the door, until Settings has the key) and waits for Login.
 fn to_login(ctx: &mut Ctx) -> Result<(), String> {
-    let shown = ctx.log_count("login: shown");
-    if ctx.door("accounts logout")? != ["ok"] {
+    // Already there when an earlier spec logged out last; either way the
+    // screen itself is waited for, not a line (it may have been said already).
+    if ctx.door("accounts who")? != ["(no one)"] && ctx.door("accounts logout")? != ["ok"] {
         return Err("accounts logout didn't".into());
     }
-    waits_for_log(ctx, "login: shown", shown)?;
+    until_q(ctx, &sel("login-password"))?;
     expect_focus(ctx, "login-password")
 }
 

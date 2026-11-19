@@ -13,6 +13,14 @@ pub trait Store {
     /// The volume's size in blocks.
     fn blocks(&self) -> u64;
     fn read(&mut self, block: u64, buf: &mut [u8; BLOCK]) -> Result<(), FsError>;
+    /// Blocks `first`, `first + 1` … read into `bufs`, in one go where the
+    /// store can (the same runs as `write_run`).
+    fn read_run(&mut self, first: u64, bufs: &mut [Box<[u8; BLOCK]>]) -> Result<(), FsError> {
+        for (i, b) in bufs.iter_mut().enumerate() {
+            self.read(first + i as u64, b)?;
+        }
+        Ok(())
+    }
     fn write(&mut self, block: u64, buf: &[u8; BLOCK]) -> Result<(), FsError>;
     /// Blocks `first`, `first + 1` … written from `bufs`, in one go where
     /// the store can (TASK-105A: drv-nvme takes `RUN_BLOCKS` a message).
@@ -47,6 +55,13 @@ impl MemStore {
             pending: BTreeMap::new(),
             writes: 0,
             fail_after: None,
+        }
+    }
+
+    /// The disk made bigger (zeros at the end), as a tester grows a virtual disk.
+    pub fn grow(&mut self, blocks: u64) {
+        while (self.durable.len() as u64) < blocks {
+            self.durable.push(Box::new([0u8; BLOCK]));
         }
     }
 
@@ -104,4 +119,3 @@ impl Store for MemStore {
         Ok(())
     }
 }
-

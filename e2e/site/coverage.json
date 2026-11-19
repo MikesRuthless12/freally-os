@@ -7,6 +7,7 @@
     { "id": "site.no_downloads", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "Nothing to download before 1.0: no download link, installer or image anywhere." },
     { "id": "site.no_private", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "No private document is served or quoted: no Markdown, the planning documents answer 404, no task ids." },
     { "id": "site.cursor", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "The fleet cursor: the ring and its dot replace the arrow, the dot sits on the pointer, the ring grows over a link and shrinks while pressed." },
+    { "id": "site.documents", "task": "TASK-116", "spec": "e2e/site/specs/site.rs", "what": "The Documentation page for testers: Privacy (it collects nothing), the Network (none yet, and how to check), and checking an official image (the hashes command, equal sums), each a heading its contents link to, in all 18 languages." },
     { "id": "site.toggles", "task": "TASK-032", "spec": "e2e/site/specs/site.rs", "what": "Every toggle wears the fleet's looks (off gray, on Freally green); the site has none today." }
   ]
 }

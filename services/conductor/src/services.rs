@@ -367,6 +367,9 @@ impl Conductor {
             c::MANIFEST => self.manifest(payload).map(|b| (b, Vec::new())),
             c::DATA => self.data_file(&caller, payload),
             c::POWER => self.power(&caller, payload),
+            c::BOOT_STATE => self.boot_state(&caller),
+            c::BOOT_TRIAL => self.boot_trial(&caller, payload),
+            c::BOOT_SWITCH => self.boot_switch(&caller),
             #[cfg(feature = "flavour-dev")]
             c::SWAP => self.swap(&caller, payload, &mut handles),
             #[cfg(feature = "flavour-dev")]
@@ -386,13 +389,58 @@ impl Conductor {
         }
     }
 
+    /// The A/B record, for the updater and Settings (TASK-110).
+    fn boot_state(&mut self, caller: &str) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
+        if !matches!(caller, "updater" | "settings") {
+            return Err((FErr::AccessDenied, alloc::format!("{caller} may not read the A/B record")));
+        }
+        let ctl = self.boot.ctl.ok_or((FErr::NotFound, String::from("there's no A/B record")))?;
+        let slots = ctl
+            .slot
+            .iter()
+            .map(|s| c::BootSlot { state: s.state as u8, tries: s.tries_left, version: String::from(s.version()) })
+            .collect();
+        Ok((fwire::to_payload(&c::BootState { slots, active: ctl.active, booted: self.boot.slot }), Vec::new()))
+    }
+
+    /// An update in the slot not running, on trial from the next boot: the
+    /// updater's alone, after it wrote and checked the image (TASK-110).
+    fn boot_trial(&mut self, caller: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
+        if caller != "updater" {
+            return Err((FErr::AccessDenied, alloc::format!("{caller} may not start an update")));
+        }
+        let t: c::BootTrial =
+            fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        if t.slot > 1 || t.slot == self.boot.slot || t.version.is_empty() || t.version.len() > 8 {
+            return Err((
+                FErr::InvalidArgs,
+                String::from("a trial goes in the other slot, its version at most 8 bytes"),
+            ));
+        }
+        self.boot
+            .start_trial(t.slot, &t.version)
+            .map_err(|e| (e, String::from("the firmware refused the A/B record")))?;
+        Ok((fwire::to_payload(&()), Vec::new()))
+    }
+
+    /// Switch back to the other slot's system (the updater's alone).
+    fn boot_switch(&mut self, caller: &str) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
+        if caller != "updater" {
+            return Err((FErr::AccessDenied, alloc::format!("{caller} may not switch the system")));
+        }
+        self.boot.switch_to_other().map_err(|e| (FErr::BadState, e))?;
+        fstd::info!("conductor: the next boot is from slot {}", fbootctl::slot_name(1 - self.boot.slot));
+        Ok((fwire::to_payload(&()), Vec::new()))
+    }
+
     /// Shut down or Restart (the login screen, the desktop): in a third of a
     /// second, so the answer leaves first.
     fn power(&mut self, caller: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
-        if !matches!(caller, "login" | "desktop") {
+        let p: c::Power = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        // The updater restarts to finish an update; it never shuts down.
+        if !(matches!(caller, "login" | "desktop") || (caller == "updater" && !p.off)) {
             return Err((FErr::AccessDenied, alloc::format!("{caller} may not shut the machine down")));
         }
-        let p: c::Power = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
         fstd::info!("conductor: {} ({caller} asked)", if p.off { "shutting down" } else { "restarting" });
         self.power_at = Some((p.off, Instant::now().as_ns() + 300_000_000));
         Ok((fwire::to_payload(&()), Vec::new()))
@@ -432,6 +480,8 @@ impl Conductor {
             // accounts checks each request itself. Not `after`: a release
             // image has no accounts, and Settings is a guest's there.
             || (caller == "settings" && want.name == "accounts")
+            // Settings ▸ Updates (TASK-110); the updater serves Settings alone.
+            || (caller == "settings" && want.name == "updater")
             || caller_m.is_some_and(|m| m.after.contains(&want.name))
             || (cfg!(feature = "flavour-e2e") && caller == "cdpd");
         if !allowed {

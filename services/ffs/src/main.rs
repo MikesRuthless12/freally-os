@@ -10,6 +10,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fcore_abi::{FErr, signal};
@@ -65,6 +66,20 @@ impl Store for BlockStore {
         self.call::<_, ()>(blk::WRITE, &blk::Write { partition: String::from(PARTITION), block, bytes: buf.to_vec() })
     }
 
+    /// One message for the run (drv-nvme reads up to 15 blocks at once).
+    fn read_run(&mut self, first: u64, bufs: &mut [Box<[u8; BLOCK]>]) -> Result<(), FsError> {
+        let count = bufs.len() as u32;
+        let d: blk::Data =
+            self.call(blk::READ, &blk::Read { partition: String::from(PARTITION), block: first, count })?;
+        if d.bytes.len() != bufs.len() * BLOCK {
+            return Err(FsError::Io);
+        }
+        for (b, chunk) in bufs.iter_mut().zip(d.bytes.as_chunks::<BLOCK>().0) {
+            **b = *chunk;
+        }
+        Ok(())
+    }
+
     /// One message for the run (drv-nvme takes up to 15 blocks a write).
     fn write_run(&mut self, first: u64, bufs: &[&[u8; BLOCK]]) -> Result<(), FsError> {
         let mut bytes = Vec::with_capacity(bufs.len() * BLOCK);
@@ -103,7 +118,7 @@ fn open() -> Result<Volume<BlockStore>, String> {
         fstd::info!("ffs: formatted FREALLY_DATA ({} MiB) on {}", part.blocks * 4 / 1024, info.model);
         return Ok(v);
     }
-    match Volume::mount_checked(store) {
+    let mut v = match Volume::mount_checked(store) {
         Ok((v, None)) => {
             fstd::info!(
                 "ffs: mounted generation {} ({} MiB, {} MiB free)",
@@ -111,7 +126,7 @@ fn open() -> Result<Volume<BlockStore>, String> {
                 part.blocks * 4 / 1024,
                 v.free_blocks() * 4 / 1024
             );
-            Ok(v)
+            v
         }
         Ok((v, Some(r))) => {
             fstd::warn!("ffs: generation {} wasn't unmounted: ffsck ran", v.generation());
@@ -121,13 +136,21 @@ fn open() -> Result<Volume<BlockStore>, String> {
             if r.is_clean() {
                 fstd::info!("ffs: ffsck: clean ({} nodes, {} data blocks)", r.nodes, r.data);
             }
-            Ok(v)
+            v
         }
         Err(FsError::NotFreallyFs) => {
-            Err(String::from("FREALLY_DATA holds something that isn't FreallyFS: left as it is"))
+            return Err(String::from("FREALLY_DATA holds something that isn't FreallyFS: left as it is"));
         }
-        Err(e) => Err(alloc::format!("mounting: {e:?}")),
+        Err(e) => return Err(alloc::format!("mounting: {e:?}")),
+    };
+    // The partition grew (a tester's disk made bigger, TASK-114): so does the volume.
+    let was = v.blocks();
+    match v.grow(part.blocks) {
+        Ok(true) => fstd::info!("ffs: grown from {} MiB to {} MiB", was * 4 / 1024, part.blocks * 4 / 1024),
+        Ok(false) => {}
+        Err(e) => fstd::error!("ffs: growing into the bigger partition: {e:?}"),
     }
+    Ok(v)
 }
 
 /// A FreallyFS error as the protocol carries it.

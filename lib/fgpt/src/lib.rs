@@ -287,3 +287,66 @@ pub fn freally_layout(blocks: u64, block: u32) -> Option<[Planned; 4]> {
         (PART_TYPE_FREALLY_DATA, "FREALLY_DATA", data_first, data_last),
     ])
 }
+
+/// A Freally disk made bigger (TASK-114: a tester's virtual disk grown
+/// before its first boot): what to write so FREALLY_DATA, its last
+/// partition, takes the new room (up to a whole MiB).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grown {
+    /// The primary header (LBA 1) and the backup (at `backup_lba`).
+    pub primary: [u8; HEADER_SIZE as usize],
+    pub backup: [u8; HEADER_SIZE as usize],
+    pub backup_lba: u64,
+    /// Where the backup's copy of the entries goes.
+    pub backup_entries_lba: u64,
+    /// FREALLY_DATA's new last LBA.
+    pub data_last: u64,
+}
+
+/// The table in `header` (LBA 1's block) and `entries` grown to a disk of
+/// `blocks` blocks of `block` bytes: `entries` changed in place (the data
+/// partition's last LBA). `None` when there's nothing to grow (the backup
+/// header is already at the disk's end) or it isn't Freally OS's to grow
+/// (no valid table, or its last partition isn't a FREALLY_DATA that
+/// reached the old end).
+pub fn grow(header: &[u8], entries: &mut [u8], blocks: u64, block: u32) -> Option<Grown> {
+    let last = blocks.checked_sub(1)?;
+    let h = Header::parse(header, 1, last).ok()?;
+    if h.alternate_lba >= last || u32_at(header, 12) != HEADER_SIZE {
+        return None;
+    }
+    Table::new(h, entries).ok()?;
+    let size = h.entry_size as usize;
+    let (at, old_last) = (0..h.entry_count as usize)
+        .filter(|i| guid_at(entries, i * size) != Guid::new(0, 0, 0, [0; 8]))
+        .map(|i| (i, u64_at(entries, i * size + 40)))
+        .max_by_key(|&(_, l)| l)?;
+    let mib = (1u64 << 20) / block as u64;
+    if guid_at(entries, at * size) != PART_TYPE_FREALLY_DATA || old_last + mib <= h.last_usable {
+        return None;
+    }
+    let table_blocks = (h.entry_count * h.entry_size).div_ceil(block) as u64;
+    let last_usable = last.checked_sub(1 + table_blocks)?;
+    let data_last = (last_usable + 1) / mib * mib - 1;
+    if data_last <= old_last {
+        return None;
+    }
+    entries[at * size + 40..at * size + 48].copy_from_slice(&data_last.to_le_bytes());
+    let entries_crc = crc32(&entries[..h.entries_len()]);
+    let mut primary = [0u8; HEADER_SIZE as usize];
+    primary.copy_from_slice(&header[..HEADER_SIZE as usize]);
+    primary[32..40].copy_from_slice(&last.to_le_bytes());
+    primary[48..56].copy_from_slice(&last_usable.to_le_bytes());
+    primary[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+    let mut backup = primary;
+    backup[24..32].copy_from_slice(&last.to_le_bytes());
+    backup[32..40].copy_from_slice(&1u64.to_le_bytes());
+    let backup_entries_lba = last - table_blocks;
+    backup[72..80].copy_from_slice(&backup_entries_lba.to_le_bytes());
+    for hd in [&mut primary, &mut backup] {
+        hd[16..20].fill(0);
+        let crc = crc32(&hd[..]);
+        hd[16..20].copy_from_slice(&crc.to_le_bytes());
+    }
+    Some(Grown { primary, backup, backup_lba: last, backup_entries_lba, data_last })
+}

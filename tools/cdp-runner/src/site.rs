@@ -16,7 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Every page the site builds, and every language it speaks.
-pub const PAGES: &[&str] = &["index", "features", "changelog"];
+pub const PAGES: &[&str] = &["index", "features", "documentation", "changelog"];
 pub const LANGS: &[&str] =
     &["en", "ar", "de", "es", "fr", "hi", "id", "it", "ja", "ko", "nl", "pl", "pt-BR", "ru", "tr", "uk", "vi", "zh-CN"];
 

@@ -41,11 +41,33 @@ pub mod conductor {
     /// desktop): ffs commits clean, then the machine powers off or resets
     /// (TASK-102).
     pub const POWER: u32 = 16;
+    /// The A/B record (`()` → `BootState`; the updater and Settings, TASK-110).
+    pub const BOOT_STATE: u32 = 17;
+    /// An update written to slot `slot` (not the one running): a trial of
+    /// `version`, active from the next boot (`BootTrial` → `()`; the updater).
+    pub const BOOT_TRIAL: u32 = 18;
+    /// Switch back: the other slot, if it started cleanly, active from the
+    /// next boot (`()` → `()`; the updater).
+    pub const BOOT_SWITCH: u32 = 19;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
         /// 2 e2e), and the handles its manifest's grants carry, by name.
         pub struct Start { pub name: String, pub flavour: u8, pub handles: Vec<(String, HandleRef)> }
+    }
+
+    wire_struct! {
+        /// Each slot's state (0 Empty, 1 Good, 2 Trial, 3 Bad: `fbootctl::State`),
+        /// tries left and version; the slot active and the one this boot came from.
+        pub struct BootState { pub slots: Vec<BootSlot>, pub active: u8, pub booted: u8 }
+    }
+
+    wire_struct! {
+        pub struct BootSlot { pub state: u8, pub tries: u8, pub version: String }
+    }
+
+    wire_struct! {
+        pub struct BootTrial { pub slot: u8, pub version: String }
     }
 
     wire_struct! {
@@ -430,6 +452,9 @@ pub mod stage {
     /// `ById` → `ClipText`: what's on the clipboard (Paste); only to the
     /// focused window, so nothing in the background reads it.
     pub const CLIPBOARD: u32 = 23;
+    /// `()` → `()`: the clipboard emptied, from accounts alone, as a
+    /// session starts and ends: nothing one person copied reaches the next.
+    pub const CLEAR_CLIPBOARD: u32 = 24;
     /// The clipboard's most text.
     pub const CLIP_MAX: usize = 64 * 1024;
     /// The e2e door's read-backs (e2e images only; conductor's door only).
@@ -1285,6 +1310,57 @@ pub mod accounts {
 /// process answers `ASK` itself (fstd, never passed to the service) with how
 /// often each request ordinal reached it. `SERVICES` lists what each
 /// service serves; a full run must touch every one, or accept it.
+/// The updater (TASK-110, FR-050): Settings ▸ Updates sends it a `.fup`
+/// a piece at a time; it writes the slot not running and asks conductor for
+/// the trial. Only Settings is served.
+pub mod updater {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `Bytes` (the package's first 256 bytes and its notes) → `Info`.
+    pub const INSPECT: u32 = 1;
+    /// `Bytes` (the same) → `()`: checked, the slot's first block cleared.
+    pub const BEGIN: u32 = 2;
+    /// `Piece` → `()`: the image's bytes from `at`, in order (60 KiB at most).
+    pub const PIECE: u32 = 3;
+    /// `()` → `Version`: checked whole, read back, the trial asked for.
+    pub const FINISH: u32 = 4;
+    /// `()` → `()`: the install given up (the slot holds no image).
+    pub const CANCEL: u32 = 5;
+    /// `()` → `State`.
+    pub const STATE: u32 = 6;
+    /// `()` → `()`: the other slot's system from the next boot.
+    pub const SWITCH_BACK: u32 = 7;
+    /// `()` → `()`: restart now (to finish an update or a switch back).
+    pub const RESTART: u32 = 8;
+
+    wire_struct! {
+        pub struct Bytes { pub data: Vec<u8> }
+    }
+
+    wire_struct! {
+        /// What a package is: the version it brings, the oldest it updates,
+        /// its notes, its size in bytes, and the key that signed it.
+        pub struct Info { pub version: String, pub oldest: String, pub notes: String, pub size: u64, pub key: String }
+    }
+
+    wire_struct! {
+        pub struct Piece { pub at: u64, pub data: Vec<u8> }
+    }
+
+    wire_struct! {
+        pub struct Version { pub version: String }
+    }
+
+    wire_struct! {
+        /// The running version and slot; the other slot's state (0 Empty,
+        /// 1 Good, 2 Trial, 3 Bad) and version; and whether it's the next
+        /// boot's (an update waiting for a restart, or a switch back).
+        pub struct State { pub running: String, pub slot: u8, pub other_state: u8, pub other_version: String, pub other_next: bool }
+    }
+}
+
 pub mod inventory {
     use crate::wire_struct;
     use alloc::vec::Vec;
@@ -1296,7 +1372,7 @@ pub mod inventory {
         pub struct Served { pub ordinals: Vec<(u32, u32)> }
     }
 
-    use super::{accounts as acc, block as blk, ffs as fs, vfs as vf};
+    use super::{accounts as acc, block as blk, ffs as fs, updater as up, vfs as vf};
     use super::{
         cdpd as cd, conductor as c, devmgr as d, display as disp, input as inp, logger as l, monitor as mon,
         serial as s, stage as st, terminal as term,
@@ -1315,6 +1391,9 @@ pub mod inventory {
                 (c::MANIFEST, "manifest"),
                 (c::DATA, "data"),
                 (c::POWER, "power"),
+                (c::BOOT_STATE, "boot_state"),
+                (c::BOOT_TRIAL, "boot_trial"),
+                (c::BOOT_SWITCH, "boot_switch"),
             ],
         ),
         ("logger", &[(l::WRITE, "write"), (l::READ, "read")]),
@@ -1356,6 +1435,7 @@ pub mod inventory {
                 (st::CARRY, "carry"),
                 (st::SET_CLIPBOARD, "set_clipboard"),
                 (st::CLIPBOARD, "clipboard"),
+                (st::CLEAR_CLIPBOARD, "clear_clipboard"),
                 (st::LIST_WINDOWS, "list_windows"),
                 (st::POINTER, "pointer"),
                 (st::AX_TREE, "ax_tree"),
@@ -1365,6 +1445,19 @@ pub mod inventory {
         ("terminal", &[(term::FEED, "feed"), (term::TYPE, "type"), (term::SCREEN, "screen")]),
         ("cdpd", &[(cd::CALL, "call")]),
         ("drv-nvme", &[(blk::INFO, "info"), (blk::READ, "read"), (blk::WRITE, "write"), (blk::FLUSH, "flush")]),
+        (
+            "updater",
+            &[
+                (up::INSPECT, "inspect"),
+                (up::BEGIN, "begin"),
+                (up::PIECE, "piece"),
+                (up::FINISH, "finish"),
+                (up::CANCEL, "cancel"),
+                (up::STATE, "state"),
+                (up::SWITCH_BACK, "switch_back"),
+                (up::RESTART, "restart"),
+            ],
+        ),
         (
             "ffs",
             &[

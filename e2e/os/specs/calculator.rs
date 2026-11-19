@@ -10,7 +10,6 @@ use crate::Ctx;
 use crate::session::{expect_value, press, sel};
 use crate::stage::key;
 use crate::sweep::{click, q, until_attr, until_gone, until_q};
-use fjson::Value;
 
 const SEARCH: &str = "[data-testid=\"launcher-search\"]";
 
@@ -63,14 +62,6 @@ fn type_sum(ctx: &mut Ctx, text: &str) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn clipboard(ctx: &mut Ctx) -> Result<String, String> {
-    let v = ctx
-        .cdp
-        .call("Freally.readBack", Value::obj([("service", "stage".into()), ("query", "clipboard".into())]))
-        .map_err(|e| format!("Freally.readBack: {e}"))?;
-    Ok(v.get("value").and_then(Value::as_str).unwrap_or("").to_string())
 }
 
 /// The Calculator, from the launcher's row.
@@ -148,7 +139,7 @@ pub fn calculator(ctx: &mut Ctx) -> Result<(), String> {
     // Copy: the answer on stage's clipboard; Paste types it back.
     held(ctx, "ControlLeft", "KeyC")?;
     ctx.expect_log("calculator: copied")?;
-    let c = clipboard(ctx)?;
+    let c = crate::settings::clipboard(ctx)?;
     if c != "1024" {
         return Err(format!("the clipboard holds {c:?}, not \"1024\""));
     }

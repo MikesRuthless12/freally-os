@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use app_settings::accounts::{Dialog, Kind as DKind, Outcome as DOut};
 use app_settings::personalisation::{Kind, ROWS, Row, WALLPAPER_NAMES};
 use app_settings::shell::{BAR, Bar, Focus, Outcome, PANELS, Panel, Shell};
+use app_settings::updates::{self, Act as UpAct, View as UpView};
 use app_settings::{about, hardware, key};
 use fapp::{Look as KeyLook, Window, inside};
 use fcore_abi::signal;
@@ -27,6 +28,7 @@ use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
 use fwire::proto::stage as st;
+use fwire::proto::updater as up;
 
 fstd::program!(run);
 
@@ -88,8 +90,13 @@ struct App {
     thumbs: Option<Thumbs>,
     /// A word on the bar: a save that failed.
     note: Option<String>,
-    /// What the hardware report's last key did (About).
+    /// What the hardware report's last key did (Hardware report).
     report_note: Option<String>,
+    /// Settings ▸ Update: what's shown, the updater, and an install going
+    /// (the package, how far, how much).
+    updates: UpView,
+    updater: Option<Client>,
+    install: Option<(fstd::fs::File, u64, u64)>,
     /// Shown while accounts works (checking a password takes a moment).
     busy: Option<&'static str>,
 }
@@ -574,9 +581,12 @@ impl App {
             self.win.nodes.push(n);
             y += t.px(14) as i32;
         }
-        // The hardware report (TASK-111): Copy, Save, and how it begins.
-        self.win.say((x, y), TextStyle::Small, "Hardware report", Tok::Text2);
-        y += t.px(20) as i32;
+    }
+
+    /// Settings ▸ Hardware report (TASK-111): Copy, Save.
+    fn draw_hardware(&mut self, x: i32, y: i32) {
+        let t = self.win.theme;
+        let mut y = y;
         self.win.say(
             (x, y),
             TextStyle::Body,
@@ -602,6 +612,250 @@ impl App {
             n.value = note;
             self.win.nodes.push(n);
         }
+    }
+
+    /// Settings ▸ Update (TASK-110): what this computer runs, an update
+    /// waiting, *Switch back*, and the packages found, one chosen and
+    /// inspected, its *Install* key and meter.
+    fn draw_update(&mut self, x: i32, y: i32, w: u32) {
+        if self.updates.state.is_none() {
+            self.read_updates();
+        }
+        let t = self.win.theme;
+        let mut y = y;
+        for (i, line) in self.updates.lines().into_iter().enumerate() {
+            let top = y;
+            for l in wrap(&mut self.win, TextStyle::Body, &line, w) {
+                self.win.say((x, y), TextStyle::Body, &l, Tok::Text);
+                y += t.px(22) as i32;
+            }
+            let mut n = node(
+                ax::TEXT,
+                &line,
+                0,
+                Rect::new(x, top, w, (y - top) as u32),
+                &alloc::format!("settings-update-line-{i}"),
+            );
+            n.value = line;
+            self.win.nodes.push(n);
+            y += t.px(4) as i32;
+        }
+        if let Some((sent, total)) = self.updates.installing {
+            y += t.px(6) as i32;
+            let label = alloc::format!("Installing: {} of {} MB", sent / 1_000_000, total.max(1) / 1_000_000);
+            self.win.meter(Rect::new(x, y, w, t.px(6)), &label, "settings-update-meter");
+            y += t.px(40) as i32;
+        }
+        y += t.px(10) as i32;
+        let key_h = t.px(34);
+        let keys = self.updates.keys();
+        self.shell.updates = keys.len();
+        let has_files = keys.iter().any(|k| matches!(k.2, UpAct::File(_)));
+        if matches!(self.updates.state, Some(Ok(_))) && !has_files && self.updates.installing.is_none() {
+            self.win.say(
+                (x, y),
+                TextStyle::Small,
+                "No update packages found (in /system/updates or Home ▸ Downloads).",
+                Tok::Text2,
+            );
+            y += t.px(24) as i32;
+        }
+        for (k, (label, id, act)) in keys.iter().enumerate() {
+            if *act == UpAct::File(0) {
+                self.win.say((x, y), TextStyle::Small, "Install from a file", Tok::Text2);
+                y += t.px(20) as i32;
+            }
+            let (lw, _) = self.win.measure(TextStyle::Body, label);
+            let r = Rect::new(x, y, lw + t.px(32), key_h);
+            let look = self.look(Hit::Action(k), self.shell.focus == Focus::Control(k) && self.dialog.is_none());
+            self.win.key(r, label, *act == UpAct::Install, look, id);
+            self.hits.push((r, Hit::Action(k)));
+            y += (key_h + t.px(8)) as i32;
+            // The chosen package: what it is (or why not), and its notes.
+            if matches!(act, UpAct::File(i) if Some(*i) == self.updates.chosen)
+                && let Some(words) = self.updates.chosen_words()
+            {
+                let (ww, wh) = self.win.measure(TextStyle::Small, &words);
+                self.win.say((x + t.px(12) as i32, y), TextStyle::Small, &words, Tok::Text2);
+                let mut n = node(ax::TEXT, &words, 0, Rect::new(x, y, ww, wh), "settings-update-chosen");
+                n.value = words;
+                self.win.nodes.push(n);
+                y += t.px(20) as i32;
+                let notes = match &self.updates.info {
+                    Some(Ok(i)) => i.notes.clone(),
+                    _ => String::new(),
+                };
+                for l in notes.lines().filter(|l| !l.trim().is_empty()).take(4) {
+                    self.win.say(
+                        (x + t.px(12) as i32, y),
+                        TextStyle::Small,
+                        l.trim_start_matches('#').trim(),
+                        Tok::Text2,
+                    );
+                    y += t.px(18) as i32;
+                }
+                y += t.px(6) as i32;
+            }
+        }
+        if let Some(note) = self.updates.note.clone() {
+            let (nw, nh) = self.win.measure(TextStyle::Small, &note);
+            self.win.say((x, y), TextStyle::Small, &note, Tok::Text2);
+            let mut n = node(ax::TEXT, &note, 0, Rect::new(x, y, nw, nh), "settings-update-note");
+            n.value = note;
+            self.win.nodes.push(n);
+        }
+    }
+
+    /// The updater's state and the packages found.
+    fn read_updates(&mut self) {
+        if self.updater.is_none() {
+            self.updater = fstd::service::connect("updater").ok().map(Client::new);
+        }
+        self.updates.state = Some(match self.updater.as_mut() {
+            None => Err(String::from("Updates install onto the disk, which this build doesn't have yet.")),
+            Some(u) => call::<_, up::State>(u, up::STATE, &()),
+        });
+        let home = self.me.as_ref().map(|m| alloc::format!("/home/{}", m.username));
+        let mut files = Vec::new();
+        for folder in updates::FOLDERS {
+            let folder = match (&home, folder.strip_prefix("{home}")) {
+                (Some(h), Some(rest)) => alloc::format!("{h}{rest}"),
+                (None, Some(_)) => continue,
+                (_, None) => String::from(folder),
+            };
+            for (name, dir) in fstd::fs::read_dir(&folder).unwrap_or_default() {
+                if !dir && name.ends_with(".fup") {
+                    files.push(alloc::format!("{folder}/{name}"));
+                }
+            }
+        }
+        files.sort();
+        if files != self.updates.files {
+            self.updates.chosen = None;
+            self.updates.info = None;
+        }
+        self.updates.files = files;
+    }
+
+    /// A package's first 256 bytes and its notes, and the file there.
+    fn package_head(path: &str) -> Result<(Vec<u8>, fstd::fs::File), String> {
+        let mut f = fstd::fs::File::open(path).map_err(|e| e.describe())?;
+        let mut head = f.read(256).map_err(|e| e.describe())?;
+        if head.len() < 16 {
+            return Err(String::from("This file isn't a Freally OS update."));
+        }
+        let notes = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
+        if notes > 16 * 1024 {
+            return Err(String::from("This update is damaged: its parts don't add up."));
+        }
+        head.extend(f.read(notes).map_err(|e| e.describe())?);
+        Ok((head, f))
+    }
+
+    /// The Update panel's key `i` pressed.
+    fn update_key(&mut self, i: usize) {
+        let Some((_, _, act)) = self.updates.keys().into_iter().nth(i) else { return };
+        let Some(u) = self.updater.as_mut() else { return };
+        self.updates.note = None;
+        match act {
+            UpAct::Restart => {
+                fstd::info!("settings: restarting to finish the update");
+                if let Err(e) = call::<_, ()>(u, up::RESTART, &()) {
+                    self.updates.note = Some(e);
+                }
+            }
+            UpAct::SwitchBack => {
+                self.updates.note = Some(match call::<_, ()>(u, up::SWITCH_BACK, &()) {
+                    Ok(()) => String::from("Done: restart to switch back."),
+                    Err(e) => e,
+                });
+                self.updates.state = None;
+            }
+            UpAct::File(j) => {
+                self.updates.chosen = Some(j);
+                let path = self.updates.files[j].clone();
+                self.updates.info = Some(Self::package_head(&path).and_then(|(head, _)| {
+                    let u = self.updater.as_mut().ok_or_else(String::new)?;
+                    call::<_, up::Info>(u, up::INSPECT, &up::Bytes { data: head })
+                }));
+                if let Some(Ok(info)) = &self.updates.info {
+                    fstd::info!(
+                        "settings: {} is Freally OS {} ({} key)",
+                        updates::file_name(&path),
+                        info.version,
+                        info.key
+                    );
+                }
+            }
+            UpAct::Install => {
+                let (Some(j), Some(Ok(info))) = (self.updates.chosen, self.updates.info.clone()) else { return };
+                let path = self.updates.files[j].clone();
+                let started = Self::package_head(&path).and_then(|(head, f)| {
+                    let image = info.size.saturating_sub(head.len() as u64);
+                    let u = self.updater.as_mut().ok_or_else(String::new)?;
+                    call::<_, ()>(u, up::BEGIN, &up::Bytes { data: head })?;
+                    Ok((f, image))
+                });
+                match started {
+                    Ok((f, image)) => {
+                        fstd::info!("settings: installing Freally OS {}", info.version);
+                        self.updates.installing = Some((0, image));
+                        self.install = Some((f, 0, image));
+                    }
+                    Err(e) => self.updates.note = Some(e),
+                }
+            }
+        }
+        self.draw();
+    }
+
+    /// An install going on: the next pieces sent (2 MiB a turn, so the
+    /// window stays drawn), and the end.
+    fn install_step(&mut self) {
+        let Some((mut f, mut at, total)) = self.install.take() else { return };
+        let Some(u) = self.updater.as_mut() else { return };
+        let mut failed = None;
+        for _ in 0..32 {
+            if at >= total {
+                break;
+            }
+            let piece = match f.read(60 * 1024) {
+                Ok(p) if !p.is_empty() => p,
+                Ok(_) => {
+                    failed = Some(String::from("The update file ended early."));
+                    break;
+                }
+                Err(e) => {
+                    failed = Some(e.describe());
+                    break;
+                }
+            };
+            let n = piece.len() as u64;
+            if let Err(e) = call::<_, ()>(u, up::PIECE, &up::Piece { at, data: piece }) {
+                failed = Some(e);
+                break;
+            }
+            at += n;
+        }
+        if let Some(e) = failed {
+            let _ = call::<_, ()>(u, up::CANCEL, &());
+            self.updates.installing = None;
+            self.updates.note = Some(e);
+        } else if at >= total {
+            self.updates.installing = None;
+            self.updates.note = Some(match call::<_, up::Version>(u, up::FINISH, &()) {
+                Ok(v) => {
+                    fstd::info!("settings: Freally OS {} installed", v.version);
+                    alloc::format!("Freally OS {} is installed: it starts when you restart.", v.version)
+                }
+                Err(e) => e,
+            });
+            self.updates.state = None;
+        } else {
+            self.updates.installing = Some((at, total));
+            self.install = Some((f, at, total));
+        }
+        self.draw();
     }
 
     /// The report from what the kernel, devmgr and conductor say now.
@@ -927,6 +1181,8 @@ impl App {
         match self.shell.panel {
             Panel::Personalisation => self.draw_personalisation(x, y, pw),
             Panel::Accounts => self.draw_accounts(x, y, pw),
+            Panel::Update => self.draw_update(x, y, pw),
+            Panel::Hardware => self.draw_hardware(x, y),
             Panel::About => self.draw_about(x, y, pw),
         }
         // The bar.
@@ -982,7 +1238,8 @@ impl App {
                 self.cancel();
                 return true;
             }
-            Outcome::Action(i) if self.shell.panel == Panel::About => self.report_key(i),
+            Outcome::Action(i) if self.shell.panel == Panel::Hardware => self.report_key(i),
+            Outcome::Action(i) if self.shell.panel == Panel::Update => self.update_key(i),
             Outcome::Action(i) => self.open_dialog(i),
             Outcome::Nothing => {}
         }
@@ -1288,6 +1545,9 @@ fn run(_bootstrap: u32) -> i64 {
         thumbs: None,
         note: None,
         report_note: None,
+        updates: UpView::default(),
+        updater: None,
+        install: None,
         busy: None,
     };
     app.read_users();
@@ -1300,7 +1560,10 @@ fn run(_bootstrap: u32) -> i64 {
         }
     );
     loop {
-        let _ = app.win.events.0.wait(signal::READABLE | signal::PEER_CLOSED, Instant::after(Duration::from_secs(5)));
+        // An install going on: its next pieces between the events.
+        let wait = if app.install.is_some() { Instant::now().as_ns() } else { Instant::after(Duration::from_secs(5)) };
+        let _ = app.win.events.0.wait(signal::READABLE | signal::PEER_CLOSED, wait);
+        app.install_step();
         let Ok(events) = app.win.events() else { return 0 };
         for (ordinal, p) in events {
             if app.event(ordinal, &p) {

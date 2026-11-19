@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: Apache-2.0
+//! `cargo xtask soak [--hours N]` (TASK-118): the CDP OS leg, round after
+//! round, for N hours (24): every spec but the ones whose setups crash, cut
+//! power or tamper on purpose. Each round's VMs boot fresh, on ports of
+//! their own (so the CDP leg can run beside it). A round's result
+//! and any kernel panic its VMs logged go to `target/soak/soak.log` as it
+//! goes; at the end, the summary: rounds, specs run, every failure by spec,
+//! panics. Green only with zero failures and zero panics.
+//!
+//! A file `target/soak/pause` holds it between rounds (another session's
+//! heavy build needs the memory): the round going on finishes, the soak
+//! says it's paused, and the time paused doesn't count toward the N hours.
+
+use crate::{cdp, util};
+use std::io::Write;
+use std::time::{Duration, Instant};
+
+/// Setups that crash, reset, fall back or tamper on purpose: their panics
+/// are the point, so they stay out of the soak.
+const PLANTED: [&str; 9] = [
+    "e2e-crash-ud2",
+    "e2e-ab",
+    "e2e-ab-good",
+    "e2e-gpt-ab",
+    "e2e-tampered",
+    "release-with-dev-image",
+    "e2e-gpt-update",
+    "e2e-gpt-power",
+    "e2e-gpt-carry",
+];
+
+fn line(log: &mut std::fs::File, text: &str) {
+    println!("{text}");
+    let _ = writeln!(log, "{text}");
+}
+
+/// The panics in the soak's own VMs' COM1 logs after a round (`setups`: theirs).
+fn panics(setups: &[String]) -> usize {
+    let vms = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".freally-vms");
+    let mut n = 0;
+    for e in std::fs::read_dir(vms).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.strip_prefix("soak-").is_some_and(|s| setups.iter().any(|x| x == s)) {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&std::fs::read(e.path().join("com1.log")).unwrap_or_default()).to_string();
+        n += text.matches("freally-core: ERROR").count() + text.matches("PANIC").count();
+    }
+    n
+}
+
+pub fn soak_cmd(args: &[String]) -> Result<(), String> {
+    let hours: f64 = args
+        .iter()
+        .position(|a| a == "--hours")
+        .and_then(|i| args.get(i + 1))
+        .map(|h| h.parse().map_err(|_| "--hours takes a number"))
+        .transpose()?
+        .unwrap_or(24.0);
+    let kept: Vec<(String, String)> =
+        cdp::features()?.into_iter().filter(|(_, setup)| !PLANTED.contains(&setup.as_str())).collect();
+    let ids: Vec<String> = kept.iter().map(|(id, _)| id.clone()).collect();
+    let mut setups: Vec<String> = kept.into_iter().map(|(_, s)| s).collect();
+    setups.sort();
+    setups.dedup();
+    let dir = util::target_dir().join("soak");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut log =
+        std::fs::OpenOptions::new().create(true).append(true).open(dir.join("soak.log")).map_err(|e| e.to_string())?;
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    let mut paused = Duration::ZERO;
+    let until = Duration::from_secs_f64(hours * 3600.0);
+    line(&mut log, &format!("soak: {} specs a round, for {hours} h", ids.len()));
+    let (mut rounds, mut run, mut failed, mut panicked) = (0usize, 0usize, Vec::<String>::new(), 0usize);
+    while start.elapsed() - paused < until {
+        if dir.join("pause").exists() {
+            line(&mut log, &format!("soak: paused after round {rounds} (target/soak/pause)"));
+            let t = Instant::now();
+            while dir.join("pause").exists() {
+                std::thread::sleep(Duration::from_secs(10));
+            }
+            paused += t.elapsed();
+            line(&mut log, &format!("soak: going on after {:.0} min paused", t.elapsed().as_secs_f64() / 60.0));
+        }
+        rounds += 1;
+        let t = Instant::now();
+        let out = std::process::Command::new(&me)
+            .args(["cdp", "--os", &format!("--only={}", ids.join(","))])
+            .env(cdp::SOAK, "1")
+            .output()
+            .map_err(|e| format!("the CDP leg: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let _ = std::fs::write(dir.join(format!("round-{rounds}.txt")), &text);
+        let fails: Vec<String> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("▶ @").filter(|l| l.contains("… fail")))
+            .map(|l| l.split(' ').next().unwrap_or("").to_string())
+            .collect();
+        let passed = text.lines().filter(|l| l.starts_with("▶ @") && l.contains("… pass")).count();
+        let p = panics(&setups);
+        run += passed + fails.len();
+        panicked += p;
+        line(
+            &mut log,
+            &format!(
+                "round {rounds}: {passed} of {} green in {:.1} min; panics {p}{}",
+                passed + fails.len(),
+                t.elapsed().as_secs_f64() / 60.0,
+                if fails.is_empty() { String::new() } else { format!("; red: {}", fails.join(", ")) }
+            ),
+        );
+        failed.extend(fails);
+    }
+    let mut by: Vec<(String, usize)> = Vec::new();
+    for f in &failed {
+        match by.iter_mut().find(|(s, _)| s == f) {
+            Some(e) => e.1 += 1,
+            None => by.push((f.clone(), 1)),
+        }
+    }
+    line(
+        &mut log,
+        &format!(
+            "soak: {rounds} rounds in {:.1} h, {run} specs run, {} failed, {panicked} kernel panics{}",
+            (start.elapsed() - paused).as_secs_f64() / 3600.0,
+            failed.len(),
+            if by.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", by.iter().map(|(s, n)| format!("{s} ×{n}")).collect::<Vec<_>>().join(", "))
+            }
+        ),
+    );
+    if failed.is_empty() && panicked == 0 { Ok(()) } else { Err("the soak saw failures or panics".into()) }
+}

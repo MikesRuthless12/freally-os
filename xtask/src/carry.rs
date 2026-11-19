@@ -18,7 +18,7 @@ use svc_ffs::volume::Volume;
 use svc_ffs::{BLOCK, FIRST_FREE, FsError};
 
 /// FREALLY_DATA in a GPT disk image, read and written in place.
-struct Disk {
+pub struct Disk {
     file: File,
     base: u64,
     blocks: u64,
@@ -96,6 +96,24 @@ pub fn take(from: &Path, user: &str) -> Result<Vec<u8>, String> {
 /// `bundle` put in `/system/imports/<user>.facct` on the disk `to` (its
 /// FREALLY_DATA formatted first if it's never been written).
 pub fn put(to: &Path, user: &str, bundle: &[u8]) -> Result<(), String> {
+    let name = format!("{user}.facct");
+    in_system(to, "imports", |v, imports| {
+        if v.lookup(SYSTEM, imports, &name)?.is_some() {
+            v.unlink(SYSTEM, imports, &name)?;
+        }
+        let f = v.create(SYSTEM, imports, &name, FileKind::File)?;
+        write_whole(v, f, bundle)
+    })
+}
+
+/// The data partition's volume on the disk `to` (formatted if it's fresh,
+/// as ffs would at its first boot), `/system/<folder>` made if missing,
+/// `work` done in it, and committed.
+pub fn in_system(
+    to: &Path,
+    folder: &str,
+    work: impl FnOnce(&mut Volume<Disk>, u64) -> Result<(), FsError>,
+) -> Result<(), String> {
     let mut disk = data(to)?;
     let mut fresh = true;
     let mut b = [0u8; BLOCK];
@@ -110,17 +128,25 @@ pub fn put(to: &Path, user: &str, bundle: &[u8]) -> Result<(), String> {
     } else {
         Volume::mount(disk).map_err(|e| said(to, "mounting", e))?
     };
-    let imports = match v.lookup(SYSTEM, ROOT_INO, "imports").map_err(|e| said(to, "imports", e))? {
+    let dir = match v.lookup(SYSTEM, ROOT_INO, folder).map_err(|e| said(to, folder, e))? {
         Some(e) => e.child,
-        None => v.create(SYSTEM, ROOT_INO, "imports", FileKind::Dir).map_err(|e| said(to, "imports", e))?,
+        None => v.create(SYSTEM, ROOT_INO, folder, FileKind::Dir).map_err(|e| said(to, folder, e))?,
     };
-    let name = format!("{user}.facct");
-    if v.lookup(SYSTEM, imports, &name).map_err(|e| said(to, &name, e))?.is_some() {
-        v.unlink(SYSTEM, imports, &name).map_err(|e| said(to, &name, e))?;
+    work(&mut v, dir).map_err(|e| said(to, folder, e))?;
+    // Unmounted clean, as ffs would: the OS mounts it without a full ffsck.
+    v.unmount().map(|_| ()).map_err(|e| said(to, "unmounting", e))
+}
+
+/// `bytes` into file `f` of the system subvolume, 16 MiB at a time (a
+/// commit whenever one is due, so a big file isn't held in RAM whole).
+pub fn write_whole(v: &mut Volume<Disk>, f: u64, bytes: &[u8]) -> Result<(), FsError> {
+    for (i, c) in bytes.chunks(16 << 20).enumerate() {
+        v.write(SYSTEM, f, (i as u64) << 24, c)?;
+        if v.should_commit(0) {
+            v.commit()?;
+        }
     }
-    let f = v.create(SYSTEM, imports, &name, FileKind::File).map_err(|e| said(to, &name, e))?;
-    v.write(SYSTEM, f, 0, bundle).map_err(|e| said(to, &name, e))?;
-    v.commit().map_err(|e| said(to, "committing", e))
+    Ok(())
 }
 
 /// The account carried: taken from `from`, put on `to`. The bundle's size.
@@ -129,4 +155,41 @@ pub fn carry(from: &Path, user: &str, to: &Path) -> Result<usize, String> {
     put(to, user, &bundle)?;
     println!("carry: {user}'s bundle ({} bytes) from {} to {}", bundle.len(), from.display(), to.display());
     Ok(bundle.len())
+}
+
+/// After a first boot on a grown disk (TASK-114's check): the table's
+/// backup at the disk's last block, FREALLY_DATA reaching the end (within a
+/// MiB and the backup table), and FreallyFS on it at the partition's whole
+/// size, ffsck clean after the power cut. FREALLY_DATA's last block, and its
+/// size in MiB.
+pub fn grown_data(path: &Path) -> Result<(u64, u64), String> {
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let last = file.metadata().map_err(|e| e.to_string())?.len() / 512 - 1;
+    let mut head = vec![0u8; 34 * 512];
+    file.read_exact(&mut head).map_err(|e| format!("{}: {e}", path.display()))?;
+    let h = fgpt::Header::parse(&head[512..1024], 1, last).map_err(|e| format!("{}: {e:?}", path.display()))?;
+    if h.alternate_lba != last {
+        return Err(format!(
+            "the table wasn't grown: its backup is at block {}, the disk ends at {last}",
+            h.alternate_lba
+        ));
+    }
+    let t = fgpt::Table::new(h, &head[1024..]).map_err(|e| format!("{}: {e:?}", path.display()))?;
+    let p = t.partitions().find(|p| p.type_guid == fgpt::PART_TYPE_FREALLY_DATA).ok_or("no FREALLY_DATA partition")?;
+    if p.last_lba + 2048 + 34 < last {
+        return Err(format!("FREALLY_DATA ends at block {}, short of the disk's {last}", p.last_lba));
+    }
+    drop(file);
+    let disk = data(path)?;
+    let blocks = disk.blocks;
+    let (v, report) = Volume::mount_checked(disk).map_err(|e| said(path, "mounting", e))?;
+    if let Some(r) = report
+        && !r.is_clean()
+    {
+        return Err(format!("ffsck after the first boot: {:?}", r.findings));
+    }
+    if v.blocks() != blocks {
+        return Err(format!("FreallyFS holds {} blocks; FREALLY_DATA has {blocks}", v.blocks()));
+    }
+    Ok((p.last_lba, (p.blocks() * 512) >> 20))
 }

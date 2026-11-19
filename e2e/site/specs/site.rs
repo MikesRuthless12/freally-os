@@ -204,3 +204,36 @@ pub fn toggles(ctx: &mut SiteCtx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `@site.documents` (TASK-116): the Documentation page's three sections for
+/// testers, Privacy, the Network and checking an official image, each a
+/// heading the contents rail links to, in every language; the privacy one
+/// says it collects nothing, the network one that there's no network yet,
+/// the verify one names the command that prints the hashes.
+pub fn documents(ctx: &mut SiteCtx) -> Result<(), String> {
+    for lang in LANGS {
+        ctx.load("documentation", lang)?;
+        for id in ["privacy", "network", "verify"] {
+            let found = ctx.eval_str(&format!(
+                "(function () {{ var h = document.getElementById('{id}'); \
+                 var a = document.querySelector('.manual-toc a[href=\"#{id}\"]'); \
+                 return (h && h.tagName === 'H2' && a) ? 'yes' : 'no'; }})()"
+            ))?;
+            if found != "yes" {
+                return Err(format!("documentation.html in {lang} has no #{id} heading linked from its contents"));
+            }
+        }
+        let text = ctx.eval_str("document.querySelector('.manual-body').textContent")?;
+        if !text.contains("cargo xtask hashes --unsigned") || !text.contains("SHA-256") {
+            return Err(format!("documentation.html in {lang} doesn't name the hashes command"));
+        }
+    }
+    ctx.load("documentation", "en")?;
+    let text = ctx.eval_str("document.querySelector('.manual-body').textContent")?;
+    for want in ["Freally OS collects nothing", "can't make network connections yet", "They must be equal"] {
+        if !text.contains(want) {
+            return Err(format!("documentation.html doesn't say {want:?}"));
+        }
+    }
+    Ok(())
+}

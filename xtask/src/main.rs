@@ -16,6 +16,7 @@ mod ci_linux;
 mod crash_test;
 mod doctor;
 mod fat;
+mod fup;
 mod gates;
 mod image;
 mod keys;
@@ -27,10 +28,12 @@ mod run;
 mod screen;
 mod showcase;
 mod site;
+mod soak;
 mod specimen;
 mod sync_hardware;
 mod sync_kit;
 mod sync_os;
+mod tester_image;
 mod util;
 mod validate;
 mod version;
@@ -43,6 +46,9 @@ cargo xtask <command>
   doctor                         is this machine ready? (KVM, QEMU, OVMF, toolchain, keys)
   keygen --dev --staging         make the signing keys in ~/.freally-keys/
   keygen --release --to <drive>  the key ceremony (K2): offline, onto a USB drive, sealed
+  fup --version V [--flavour F]  an update package (--oldest V, --notes FILE, --crash, --out PATH)
+  tester-image [--out P] [--check]  the release build for testers' VMs (--check: its first boot)
+  soak [--hours N]               the CDP leg round after round for N hours (24); every failure and panic
   build --flavour F              the bootloader and the signed image for release, dev or e2e
   build --probe                  the probe image (dev, no desktop): what a new machine has, on screen
   run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe; --gpt: a GPT disk on NVMe)
@@ -101,6 +107,9 @@ fn main() -> ExitCode {
         Some("image") => image::image_cmd(rest),
         Some("pack") => pack::pack_cmd(rest),
         Some("sign") => pack::sign_cmd(rest),
+        Some("fup") => fup::fup_cmd(rest),
+        Some("tester-image") => tester_image::tester_image_cmd(rest),
+        Some("soak") => soak::soak_cmd(rest),
         Some("verify") => verify_cmd(rest),
         Some("atlas") => atlas::atlas_cmd(rest),
         Some("screen") => screen::screen_cmd(rest),

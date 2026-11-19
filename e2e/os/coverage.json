@@ -18,6 +18,7 @@
     "e2e-gpt-carry": { "flavour": "e2e", "gpt": true, "carry": { "from": "e2e-gpt-session", "user": "carol" } },
     "e2e-gpt-power": { "flavour": "e2e", "gpt": true },
     "e2e-gpt-ab": { "flavour": "e2e", "gpt": true, "slot_b": "crash-test" },
+    "e2e-gpt-update": { "flavour": "e2e", "gpt": true, "updates": true },
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
     "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" }
@@ -147,7 +148,7 @@
       "task": "TASK-059",
       "setup": "e2e",
       "spec": "e2e/os/specs/desktop.rs",
-      "what": "The Rack along the foot, stamped S4: the launcher, Terminal and Monitor keys from the hardware set (apps not in the image at 40 %), their LEDs, the 12-hour clock in its well; a key's tooltip after 600 ms, gone when the pointer leaves; the launcher key opens the launcher."
+      "what": "The Rack along the foot, stamped S4: the launcher, Terminal and Monitor keys from the hardware set (apps not in the image at 40 %), their LEDs, the 12-hour clock in its well; with no disk (this setup), that nothing made is kept; a key's tooltip after 600 ms, gone when the pointer leaves; the launcher key opens the launcher."
     },
     {
       "id": "desktop.launcher",
@@ -385,7 +386,7 @@
       "task": "TASK-100",
       "setup": "e2e-gpt",
       "spec": "e2e/os/specs/terminal.rs",
-      "what": "Another account's home is AccessDenied and not listed in /home; /system is read-only; with no session, no home."
+      "what": "Another account's home is AccessDenied and not listed in /home; /system is read-only and its account records unreadable; with no session, no home."
     },
     {
       "id": "fs.persists",
@@ -471,11 +472,46 @@
       "what": "A folder pasted where its files are: each taken name asks; Skip; Let me decide for each file (both boxes: Keep both; only the one there: Skip); again with Do this for all conflicts and Replace."
     },
     {
+      "id": "settings.about.licences",
+      "task": "TASK-116",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "Settings ▸ About: the code's licence (Apache-2.0), the name and mark's terms (TRADEMARKS.md), the third parties' notices, the version and the slot."
+    },
+    {
       "id": "settings.hardware",
       "task": "TASK-111",
       "setup": "e2e-gpt-session",
       "spec": "e2e/os/specs/settings.rs",
-      "what": "Settings ▸ About's hardware report: Copy puts it on stage's clipboard (read back: every section, the NVMe disk's driver, the memory, the processor's features); Save writes it to Home ▸ Exports ▸ hardware-report.txt (read back through the Terminal)."
+      "what": "Settings ▸ Hardware report: Copy puts it on stage's clipboard (read back: every section, the NVMe disk's driver, the memory, the processor's features); Save writes it to Home ▸ Exports ▸ hardware-report.txt (read back through the Terminal)."
+    },
+    {
+      "id": "update.bad-signature",
+      "task": "TASK-110",
+      "setup": "e2e-gpt-update",
+      "spec": "e2e/os/specs/update.rs",
+      "what": "Settings ▸ Update: a package signed by no trusted key refused when chosen; one with a byte of its image changed refused when installed, slot B left Empty and slot A active."
+    },
+    {
+      "id": "update.install",
+      "task": "TASK-110",
+      "setup": "e2e-gpt-update",
+      "spec": "e2e/os/specs/update.rs",
+      "what": "The next version chosen (its version, key and size), installed with the meter, on trial from Restart now, started from slot B, and marked Good."
+    },
+    {
+      "id": "update.switch-back",
+      "task": "TASK-110",
+      "setup": "e2e-gpt-update",
+      "spec": "e2e/os/specs/update.rs",
+      "what": "On the update: Switch back to the version before, Restart now, slot A runs again."
+    },
+    {
+      "id": "update.fallback",
+      "task": "TASK-110",
+      "setup": "e2e-gpt-update",
+      "spec": "e2e/os/specs/update.rs",
+      "what": "A version whose system never starts, installed: three trial boots crash, the fourth lands on slot A, and the log says the update didn't start; slot B Bad."
     },
     {
       "id": "apps.calculator",

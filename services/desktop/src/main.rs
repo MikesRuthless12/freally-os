@@ -89,6 +89,9 @@ impl Win {
     }
 }
 
+/// What the rack says in a guest session.
+const NO_DISK: &str = "Nothing you make here is kept: Freally OS found no disk of its own.";
+
 /// Who the desktop is for (TASK-102).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Session {
@@ -501,6 +504,20 @@ impl Desktop {
             &text,
             Tok::PrimaryInk,
         );
+        // A guest session has no disk of its own, so the rack says nothing
+        // is kept (PRD § edge cases), between the keys and the clock, where
+        // it fits.
+        let mut notice = None;
+        if self.session == Session::Guest {
+            let (nw, nl) = self.fonts.measure(t, TextStyle::Small, NO_DISK);
+            let left = places.last().map_or(0, |p| p.x + p.size as i32) + pad;
+            let room = well.x - pad - left;
+            if room >= nw as i32 {
+                let at = Rect::new(left + (room - nw as i32) / 2, (h as i32 - nl as i32) / 2, nw, nl);
+                words(&mut s, &mut self.fonts, t, TextStyle::Small, (at.x, at.y), NO_DISK, Tok::Text2);
+                notice = Some(at);
+            }
+        }
         present(&mut self.stage, &mut self.rack);
         // Its tree: each key a button (dimmed where the app isn't here, its
         // value "running" while it runs), and the clock.
@@ -530,6 +547,11 @@ impl Desktop {
         let mut c = fstd::ax::node(ax::ROOT, ax::TEXT, &text, 0, (well.x, well.y, well.w, well.h));
         c.testid = String::from("rack-clock");
         nodes.push(c);
+        if let Some(r) = notice {
+            let mut n = fstd::ax::node(ax::ROOT, ax::TEXT, NO_DISK, 0, (r.x, r.y, r.w, r.h));
+            n.testid = String::from("rack-no-disk");
+            nodes.push(n);
+        }
         self.rack_ax.publish(&mut self.stage, self.rack.id, &ax::Tree { nodes });
         if !self.stamped {
             self.stamped = true;

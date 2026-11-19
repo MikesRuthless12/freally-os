@@ -113,12 +113,42 @@ impl<S: Store> Volume<S> {
         }
         let mut b = Box::new([0u8; BLOCK]);
         self.store.read(block, &mut b)?;
+        self.open_data(sv, block, check, &mut b)?;
+        Ok(b)
+    }
+
+    /// A data block as read from the store, checked against `check` (and
+    /// opened, in an encrypted subvolume).
+    fn open_data(&mut self, sv: u64, block: u64, check: &Check, b: &mut [u8; BLOCK]) -> Result<(), FsError> {
         match self.sealer(sv)? {
-            Some(s) => s.open(block, check.1, &mut b, &check.0)?,
-            None if BlockPtr::plain_check(&b) != check.0 => return Err(FsError::Integrity(block)),
+            Some(s) => s.open(block, check.1, b, &check.0)?,
+            None if BlockPtr::plain_check(b) != check.0 => return Err(FsError::Integrity(block)),
             None => {}
         }
-        Ok(b)
+        Ok(())
+    }
+
+    /// The blocks of `need` not held in this generation, read from the
+    /// store in runs of consecutive blocks (one disk command each), checked.
+    fn read_runs(&mut self, sv: u64, need: &[(u64, Check)]) -> Result<BTreeMap<u64, Box<[u8; BLOCK]>>, FsError> {
+        let need: Vec<(u64, Check)> = need.iter().copied().filter(|(b, _)| !self.data.contains_key(b)).collect();
+        let mut out = BTreeMap::new();
+        let mut i = 0;
+        while i < need.len() {
+            let mut j = i + 1;
+            while j < need.len() && j - i < crate::store::RUN_BLOCKS && need[j].0 == need[j - 1].0 + 1 {
+                j += 1;
+            }
+            let mut bufs: Vec<Box<[u8; BLOCK]>> = (i..j).map(|_| Box::new([0u8; BLOCK])).collect();
+            self.store.read_run(need[i].0, &mut bufs)?;
+            for (k, mut b) in bufs.into_iter().enumerate() {
+                let (block, check) = need[i + k];
+                self.open_data(sv, block, &check, &mut b)?;
+                out.insert(block, b);
+            }
+            i = j;
+        }
+        Ok(out)
     }
 
     /// The check of this generation's data block `buf` at `block` of
@@ -275,12 +305,17 @@ impl<S: Store> Volume<S> {
         }
         let (first, last) = (offset / B, (end - 1) / B);
         let (map, _) = self.mapped(sv, ino, first, last)?;
+        let need: Vec<(u64, Check)> = (first..=last).filter_map(|fb| map.get(&fb).copied()).collect();
+        let mut fetched = self.read_runs(sv, &need)?;
         let mut out = Vec::with_capacity((end - offset) as usize);
         for fb in first..=last {
             let (a, b) = ((fb * B).max(offset), ((fb + 1) * B).min(end));
             match map.get(&fb) {
                 Some(&(block, check)) => {
-                    let buf = self.read_data(sv, block, &check)?;
+                    let buf = match fetched.remove(&block) {
+                        Some(buf) => buf,
+                        None => self.read_data(sv, block, &check)?,
+                    };
                     out.extend_from_slice(&buf[(a - fb * B) as usize..(b - fb * B) as usize]);
                 }
                 None => out.resize(out.len() + (b - a) as usize, 0),

@@ -9,6 +9,7 @@ extern crate alloc;
 
 #[cfg(feature = "build")]
 mod build;
+pub mod fup;
 mod merkle;
 mod toc;
 

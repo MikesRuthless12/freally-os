@@ -23,6 +23,9 @@ use std::time::Instant;
 
 pub(crate) const HOST_PORT: u16 = 9433;
 const PORT_OFFSET: u16 = 200;
+/// Set by `cargo xtask soak` for its rounds, which take these ports instead.
+pub const SOAK: &str = "FREALLY_SOAK";
+const SOAK_PORT_OFFSET: u16 = 600;
 
 struct Feature {
     id: String,
@@ -126,10 +129,12 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         }
         let s = cov.get("setups").and_then(|s| s.get(setup)).ok_or("no setup")?;
         let flavour = crate::pack::parse_flavour(s.get("flavour").and_then(Value::as_str).unwrap_or("e2e"))?;
-        let mut o = VmOptions::new(flavour, &format!("cdp-{setup}"));
+        // The soak's rounds have VMs and ports of their own, beside this leg (TASK-118).
+        let soak = std::env::var_os(SOAK).is_some();
+        let mut o = VmOptions::new(flavour, &format!("{}-{setup}", if soak { "soak" } else { "cdp" }));
         o.headless = true;
         o.tcg = !std::path::Path::new("/dev/kvm").exists();
-        o.port_offset = PORT_OFFSET;
+        o.port_offset = if soak { SOAK_PORT_OFFSET } else { PORT_OFFSET };
         o.tamper_byte = s.get("tamper").and_then(Value::as_i64).map(|b| b as usize);
         o.no_ps2 = s.get("no_ps2").and_then(Value::as_bool).unwrap_or(false);
         o.gpt = s.get("gpt").and_then(Value::as_bool).unwrap_or(false);
@@ -160,9 +165,13 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         if let Some(c) = s.get("carry") {
             let from = c.get("from").and_then(Value::as_str).ok_or(format!("setup {setup}: carry needs from"))?;
             let user = c.get("user").and_then(Value::as_str).ok_or(format!("setup {setup}: carry needs user"))?;
-            let disk = VmOptions::new(flavour, &format!("cdp-{from}")).dir().join("disk.img");
+            let disk = VmOptions::new(flavour, &format!("{}-{from}", if soak { "soak" } else { "cdp" }))
+                .dir()
+                .join("disk.img");
             o.carry = Some((disk, String::from(user)));
         }
+        // The update packages (TASK-110), in /system/updates before it boots.
+        o.updates = s.get("updates").and_then(Value::as_bool).unwrap_or(false);
         if let Some(from) = s.get("image_from").and_then(Value::as_str) {
             o.image_override = Some(build::build(crate::pack::parse_flavour(from)?)?.image);
         }
@@ -264,6 +273,8 @@ fn run_setup(
     inventory_out: Option<&std::path::Path>,
 ) -> Result<(usize, usize), String> {
     let mut vm = run::start_booted(o, built)?;
+    // The host's port moves with the VM's (the soak's rounds, beside this leg).
+    let host_port = HOST_PORT + o.port_offset - PORT_OFFSET;
     // An e2e image's test door (COM3): cdp-host reaches cdpd through it.
     let com3: Vec<String> = if o.flavour == Flavour::E2e {
         vec![String::from("--com3"), format!("127.0.0.1:{}", o.port(3))]
@@ -271,7 +282,7 @@ fn run_setup(
         Vec::new()
     };
     let mut host = Command::new(tool("cdp-host"))
-        .args(["--qmp", &o.qmp_socket().display().to_string(), "--port", &HOST_PORT.to_string()])
+        .args(["--qmp", &o.qmp_socket().display().to_string(), "--port", &host_port.to_string()])
         .args(&com3)
         .stdout(Stdio::null())
         .spawn()
@@ -282,7 +293,7 @@ fn run_setup(
         .env("FREALLY_CDP_SLOW", if slow { "1" } else { "0" })
         .args([
             "--endpoint",
-            &format!("127.0.0.1:{HOST_PORT}"),
+            &format!("127.0.0.1:{host_port}"),
             "--com1-log",
             &o.com1_log().display().to_string(),
             "--specs",
@@ -379,4 +390,9 @@ fn site_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
     }
     let _ = r.wait();
     Ok((green, run.len()))
+}
+
+/// Every feature's id and setup, as coverage.json lists them (the soak's list).
+pub fn features() -> Result<Vec<(String, String)>, String> {
+    Ok(coverage()?.1.into_iter().map(|f| (f.id, f.setup)).collect())
 }

@@ -258,9 +258,30 @@ pub fn identify_namespace(page: &[u8]) -> Option<(u64, u32)> {
     (size > 0 && (9..=12).contains(&shift)).then_some((size, 1 << shift))
 }
 
+/// Which partitions a client may read and write (TASK-110): ffs the data
+/// partition, the updater the two system partitions (the slot not running,
+/// as conductor's A/B record says); no other program any.
+pub fn may_use(who: &str, partition: &str) -> bool {
+    match who {
+        "ffs" => partition == "FREALLY_DATA",
+        "updater" => matches!(partition, "FREALLY_SYSTEM_A" | "FREALLY_SYSTEM_B"),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_client_only_its_own_partitions() {
+        assert!(may_use("ffs", "FREALLY_DATA"));
+        assert!(!may_use("ffs", "FREALLY_SYSTEM_A"), "ffs never the system");
+        assert!(may_use("updater", "FREALLY_SYSTEM_A") && may_use("updater", "FREALLY_SYSTEM_B"));
+        assert!(!may_use("updater", "FREALLY_DATA"), "the updater never the files");
+        assert!(!may_use("updater", "EFI system partition"));
+        assert!(!may_use("vfs", "FREALLY_DATA"), "nobody else");
+    }
 
     #[test]
     fn an_interrupting_completion_queue_says_its_vector() {

@@ -29,6 +29,19 @@ fn git(args: &[&str]) -> Result<String, String> {
     util::capture(Command::new("git").current_dir(util::repo_root()).args(args)).map(|s| s.trim().to_string())
 }
 
+/// The tree committed and HEAD tagged with this version: release-local and
+/// the release key's signing (FR-051) take nothing else.
+pub fn committed_and_tagged() -> Result<(), String> {
+    let tag = format!("v{}", fcore_abi::VERSION);
+    if !git(&["status", "--porcelain"])?.is_empty() {
+        return Err("the tree isn't clean: only a committed, tagged tree is released".into());
+    }
+    if !git(&["tag", "--points-at", "HEAD"])?.lines().any(|t| t.trim() == tag) {
+        return Err(format!("HEAD isn't tagged {tag}; tag the rung first (closeout step 8)"));
+    }
+    Ok(())
+}
+
 /// Boots the exact files once; the wall time to the title, or why not.
 fn boot_once(o: &VmOptions, b: &build::Built) -> Result<f64, String> {
     let start = Instant::now();
@@ -61,13 +74,7 @@ pub fn release_local_cmd(args: &[String]) -> Result<(), String> {
     let tag = format!("v{version}");
     let head = git(&["rev-parse", "HEAD"])?;
     if !rehearsal {
-        if !git(&["status", "--porcelain"])?.is_empty() {
-            return Err("the tree isn't clean; release-local builds only committed, tagged trees".into());
-        }
-        let tagged = git(&["tag", "--points-at", "HEAD"])?;
-        if !tagged.lines().any(|t| t.trim() == tag) {
-            return Err(format!("HEAD isn't tagged {tag}; tag the rung first (closeout step 8)"));
-        }
+        committed_and_tagged()?;
     }
 
     // 1–2. Build and sign the release flavour.

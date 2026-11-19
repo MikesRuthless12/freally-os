@@ -336,6 +336,8 @@ pub fn fs_permissions(ctx: &mut Ctx) -> Result<(), String> {
         return Err(format!("/home lists another account's home:\n{homes}"));
     }
     expect(ctx, "write /system/x hi", &["AccessDenied"])?;
+    // The account records (salts and wrapped keys) are accounts' alone.
+    expect(ctx, "ls /system/accounts", &["AccessDenied"])?;
     expect(ctx, "write /home/sam/x hi", &["AccessDenied"])?;
     session(ctx, "")?;
     expect(ctx, "whoami", &["No one"])?;
