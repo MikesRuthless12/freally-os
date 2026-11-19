@@ -29,6 +29,23 @@ const PLANTED: [&str; 9] = [
     "e2e-gpt-carry",
 ];
 
+/// A round's red: each spec that failed, and `LEG` when the leg ended badly
+/// with no spec to blame (a build that broke, a VM that never came up).
+fn red(stdout: &str, ok: bool) -> Vec<String> {
+    let mut fails: Vec<String> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("▶ @").filter(|l| l.contains("… fail")))
+        .map(|l| l.split(' ').next().unwrap_or("").to_string())
+        .collect();
+    if !ok && fails.is_empty() {
+        fails.push(String::from(LEG));
+    }
+    fails
+}
+
+/// What a broken leg is counted as.
+const LEG: &str = "the leg";
+
 fn line(log: &mut std::fs::File, text: &str) {
     println!("{text}");
     let _ = writeln!(log, "{text}");
@@ -67,6 +84,7 @@ pub fn soak_cmd(args: &[String]) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
     let start = Instant::now();
     let mut paused = Duration::ZERO;
+    let mut legs_broken = 0;
     let until = Duration::from_secs_f64(hours * 3600.0);
     line(&mut log, &format!("soak: {} specs a round, for {hours} h", ids.len()));
     let (mut rounds, mut run, mut failed, mut panicked) = (0usize, 0usize, Vec::<String>::new(), 0usize);
@@ -88,12 +106,23 @@ pub fn soak_cmd(args: &[String]) -> Result<(), String> {
             .output()
             .map_err(|e| format!("the CDP leg: {e}"))?;
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let _ = std::fs::write(dir.join(format!("round-{rounds}.txt")), &text);
-        let fails: Vec<String> = text
-            .lines()
-            .filter_map(|l| l.strip_prefix("▶ @").filter(|l| l.contains("… fail")))
-            .map(|l| l.split(' ').next().unwrap_or("").to_string())
-            .collect();
+        let errs = String::from_utf8_lossy(&out.stderr).to_string();
+        let _ = std::fs::write(
+            dir.join(format!("round-{rounds}.txt")),
+            format!(
+                "{text}
+--- stderr
+{errs}"
+            ),
+        );
+        let fails = red(&text, out.status.success());
+        // Why a leg broke, in the log: its last words.
+        let broke = fails.iter().any(|f| f == LEG);
+        if broke {
+            let why = errs.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it stopped");
+            line(&mut log, &format!("round {rounds}: the leg broke: {}", why.trim()));
+        }
+        legs_broken = if broke { legs_broken + 1 } else { 0 };
         let passed = text.lines().filter(|l| l.starts_with("▶ @") && l.contains("… pass")).count();
         let p = panics(&setups);
         run += passed + fails.len();
@@ -108,6 +137,11 @@ pub fn soak_cmd(args: &[String]) -> Result<(), String> {
             ),
         );
         failed.extend(fails);
+        // A build that's broken breaks every round: stop rather than spin.
+        if legs_broken == 3 {
+            line(&mut log, "soak: the leg broke three rounds in a row: stopped");
+            break;
+        }
     }
     let mut by = std::collections::BTreeMap::<&str, usize>::new();
     for f in &failed {
@@ -127,4 +161,22 @@ pub fn soak_cmd(args: &[String]) -> Result<(), String> {
         ),
     );
     if failed.is_empty() && panicked == 0 { Ok(()) } else { Err("the soak saw failures or panics".into()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_leg_that_breaks_with_no_failed_spec_is_red() {
+        let one = "▶ @boot.title … pass (0.1s)
+";
+        assert_eq!(red(one, false), [LEG], "the build broke after the first setup");
+        assert!(red(one, true).is_empty());
+        let failed = "▶ @a.b … fail (1.0s)
+    why
+▶ @c.d … pass (1.0s)
+";
+        assert_eq!(red(failed, false), ["a.b"], "a failed spec says it");
+    }
 }

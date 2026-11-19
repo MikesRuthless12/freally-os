@@ -48,9 +48,11 @@ node_modules/
 *[Bb]uild-*[Pp]rompts*
 *[Hh]andoff*
 *HANDOFF*
-# Not the private handoff: the bootloader's own source (the patterns above
-# match it on a case-blind filesystem, which kept it out of the repo).
+# Not the private handoff: the bootloader's and the desktop's own sources
+# (the patterns above match them on a case-blind filesystem, which kept them
+# out of the repo; `ci`'s "sources committed" gate now catches any other).
 !boot/src/handoff.rs
+!services/desktop/src/handoff.rs
 *[Ff]eature-[Rr]oadmap*
 *[Cc]ompetition-[Gg]uide*
 *PROGRESS*

@@ -33,12 +33,41 @@ fn cargo(args: &[&str]) -> Command {
     c
 }
 
+/// The files git ignores that the build reads: none may be (the private
+/// files' patterns, `*[Hh]andoff*` among them, once hid
+/// `services/desktop/src/handoff.rs`, so the public repository didn't build).
+fn hidden_sources(ignored: &str) -> Vec<&str> {
+    const SOURCE: [&str; 6] = [".rs", ".toml", ".svc", ".ron", ".txt", ".py"];
+    ignored
+        .lines()
+        .filter(|p| !p.starts_with("target/") && !p.starts_with(".claude/") && !p.starts_with("site/"))
+        .filter(|p| SOURCE.iter().any(|x| p.ends_with(x)))
+        .collect()
+}
+
+fn sources_committed() -> Result<String, String> {
+    let ignored = util::capture(Command::new("git").current_dir(util::repo_root()).args([
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+    ]))?;
+    match hidden_sources(&ignored).as_slice() {
+        [] => Ok("no source file hidden by .gitignore".into()),
+        hidden => Err(format!("git ignores files the build reads: {}", hidden.join(", "))),
+    }
+}
+
 pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
     let mut g: Vec<Gate> = Vec::new();
     g.push((
         "fmt",
         Box::new(|| quiet(cargo(&["fmt", "--all", "--", "--check"])).map(|_| "every file formatted".into())),
     ));
+    // The container has the files, not the repository's history.
+    if !container {
+        g.push(("sources committed", Box::new(sources_committed)));
+    }
     if !fast {
         g.push((
             "clippy host",
@@ -324,5 +353,15 @@ pub fn ci_cmd(args: &[String]) -> Result<(), String> {
     } else {
         println!("ci:local: {green} of {total} gates green; red: {} ({mins:.1} min)", red.join(", "));
         Err(format!("{} gate(s) red", red.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_hidden_source_is_found_and_the_private_files_are_not() {
+        let ignored = "target/debug/x.rs\n.claude/skills/a.json\nvision.json\nHANDOFF.md\nLive-To-Do.md\n\
+                       services/desktop/src/handoff.rs\nsite/i18n/en.json\ndocs/prd.md\n";
+        assert_eq!(super::hidden_sources(ignored), ["services/desktop/src/handoff.rs"]);
     }
 }
