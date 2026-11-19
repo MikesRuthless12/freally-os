@@ -359,3 +359,48 @@ pub fn early(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Each pixel of a screenshot as (r, g, b).
+fn rgb(shot: &fimage::png::Decoded) -> impl Iterator<Item = (usize, (u8, u8, u8))> + '_ {
+    let n = shot.channels as usize;
+    shot.pixels.chunks_exact(n).enumerate().map(|(i, p)| (i, (p[0], p[1], p[2])))
+}
+
+/// `@log.screen`: a dev image booted with `log=screen` (`\FREALLY\CMDLINE.TXT`)
+/// and nothing to take the screen (no stage) shows the log on its own
+/// screen: the heading in Freally green, the lines under it (TASK-074: a
+/// machine with no serial port that stops before the desktop says why).
+pub fn log_screen(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("freally-boot: boot options: log=screen")?;
+    ctx.expect_log("logger: the log is on the screen until stage begins (log=screen)")?;
+    ctx.expect_log("[devmgr] devmgr: ")?;
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let shot = ctx.screenshot()?;
+    let w = shot.w as usize;
+    let (mut green_top, mut text_rows) = (0, std::collections::BTreeSet::new());
+    let bg = rgb(&shot).next().map(|(_, p)| p).unwrap_or_default();
+    for (i, (r, g, b)) in rgb(&shot) {
+        let y = i / w;
+        if y < 40 && crate::greenish(r, g, b) {
+            green_top += 1;
+        }
+        if y >= 40 && (r, g, b) != bg {
+            text_rows.insert(y / 20);
+        }
+    }
+    if green_top < 50 {
+        return Err(format!("no green heading at the top ({green_top} green pixels)"));
+    }
+    if text_rows.len() < 10 {
+        return Err(format!("hardly any log lines on the screen ({} rows with ink)", text_rows.len()));
+    }
+    ctx.keep_shot("log-screen")
+}
+
+/// `@log.screen_hands_over`: with stage in the image, the logger draws the
+/// log only until stage begins, says so, and the desktop is what shows.
+pub fn log_screen_hands_over(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("logger: the log is on the screen until stage begins (log=screen)")?;
+    ctx.expect_log("logger: stage has the screen now; Monitor's Log tab has every line")?;
+    ctx.expect_screen(Expect::Desktop)
+}

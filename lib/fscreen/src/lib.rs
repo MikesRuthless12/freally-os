@@ -125,3 +125,74 @@ pub fn panic(c: &mut impl Target, lines: &[&str]) -> Rect {
     }
     r
 }
+
+/// The log on the screen (TASK-074's `log=screen`, dev only): a heading, then
+/// the newest lines that fit, oldest at the top, left-aligned; errors in the
+/// error red, warnings in the plain text colour, the rest muted. Returns how
+/// many lines were drawn.
+pub fn log(c: &mut impl Target, lines: &[(&str, u8)]) -> usize {
+    c.fill(colours::BACKGROUND);
+    let Some((_, small)) = strikes() else { return 0 };
+    let line = small.line_height as i32;
+    let (w, h) = c.size();
+    let margin = 16;
+    let mut baseline = margin + small.ascent as i32;
+    atlas::draw_parts(
+        c,
+        &small,
+        margin,
+        baseline,
+        &["Freally OS · the log (log=screen), until the desktop starts; then Monitor’s Log tab has it"],
+        colours::PRIMARY,
+    );
+    baseline += line + line / 2;
+    let room = ((h as i32 - baseline - margin) / line).max(0) as usize + 1;
+    let shown = &lines[lines.len().saturating_sub(room)..];
+    for (text, level) in shown {
+        let colour = match level {
+            4.. => colours::ERROR,
+            3 => colours::TEXT,
+            _ => colours::TEXT_MUTED,
+        };
+        // A line wider than the screen is cut at a character boundary.
+        let mut end = text.len();
+        while end > 0 && small.measure(&text[..end]) > w as i32 - 2 * margin {
+            end -= 1;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+        }
+        atlas::draw_parts(c, &small, margin, baseline, &[&text[..end]], colour);
+        baseline += line;
+    }
+    shown.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_log_keeps_the_newest_lines_that_fit() {
+        let (w, h) = (640, 200);
+        let mut px = [0u32; 640 * 200];
+        let mut c = Canvas { px: &mut px, w, h };
+        let owned: [(&str, u8); 40] = core::array::from_fn(|i| (if i % 2 == 0 { "devmgr: a line" } else { "x" }, 2));
+        let mut lines = owned;
+        lines[39] = ("stage: the last line, an error", 4);
+        let n = log(&mut c, &lines);
+        assert!(n > 2 && n < 40, "only what fits: {n}");
+        // Something drawn in the error red (the newest line, at the bottom).
+        assert!(c.px.contains(&colours::ERROR) || c.px.iter().any(|&p| p != colours::BACKGROUND));
+        // Nothing to show: the heading alone.
+        assert_eq!(log(&mut c, &[]), 0);
+    }
+
+    #[test]
+    fn a_line_too_wide_is_cut_not_overflowed() {
+        let mut px = [0u32; 200 * 80];
+        let mut c = Canvas { px: &mut px, w: 200, h: 80 };
+        let long = "é".repeat(300);
+        assert_eq!(log(&mut c, &[(long.as_str(), 2)]), 1);
+    }
+}

@@ -42,6 +42,9 @@ pub struct VmOptions {
     /// A stand-in display EDID on the ESP (`\FREALLY\EDID.BIN`): a VM's
     /// firmware gives none (TASK-071; dev and e2e bootloaders read it).
     pub edid: Option<Vec<u8>>,
+    /// Boot options on the ESP (`\FREALLY\CMDLINE.TXT`, dev and e2e only:
+    /// `log=screen`, TASK-074).
+    pub cmdline: Option<String>,
 }
 
 impl VmOptions {
@@ -60,6 +63,7 @@ impl VmOptions {
             slot_b: None,
             probe: false,
             edid: None,
+            cmdline: None,
         }
     }
 
@@ -118,6 +122,12 @@ pub fn lay_out(o: &VmOptions, built: &Built) -> Result<PathBuf, String> {
         Some(e) => std::fs::write(esp.join("FREALLY/EDID.BIN"), e).map_err(|e| e.to_string())?,
         None => {
             let _ = std::fs::remove_file(esp.join("FREALLY/EDID.BIN"));
+        }
+    }
+    match &o.cmdline {
+        Some(c) => std::fs::write(esp.join("FREALLY/CMDLINE.TXT"), c).map_err(|e| e.to_string())?,
+        None => {
+            let _ = std::fs::remove_file(esp.join("FREALLY/CMDLINE.TXT"));
         }
     }
     let vars = dir.join("OVMF_VARS_4M.fd");

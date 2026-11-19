@@ -193,6 +193,31 @@ impl Conductor {
             {
                 out.push((String::from("bootinfo"), b));
             }
+            // `log=screen` (TASK-074): the logger draws the log on the
+            // framebuffer until stage begins. A dev image only, and only when
+            // the boot options ask (the bootloader reads them in dev and e2e).
+            if g == "framebuffer"
+                && self.image.flavour == 1
+                && fcore_abi::cmdline::has(&self.image.cmdline, "log=screen")
+                && self.image.framebuffer.1 > 0
+            {
+                let (base, size) = self.image.framebuffer;
+                let fb = fstd::sys::resource_create(
+                    well_known::ROOT_RESOURCE,
+                    fcore_abi::resource::MMIO,
+                    base,
+                    size.next_multiple_of(4096),
+                )
+                .ok()
+                .and_then(Handle::from_raw);
+                if let (Some(fb), Some(b)) =
+                    (fb, dup(well_known::BOOTINFO_VMO, rights::READ | rights::MAP | rights::TRANSFER))
+                {
+                    out.push((String::from("framebuffer"), fb));
+                    out.push((String::from("bootinfo"), b));
+                }
+                continue;
+            }
             let h = match g.as_str() {
                 "devices" => dup(well_known::ROOT_RESOURCE, rights::MANAGE | rights::DUPLICATE | rights::TRANSFER),
                 // COM1, for the log's mirror: never in a release image.

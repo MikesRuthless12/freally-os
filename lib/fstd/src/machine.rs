@@ -21,6 +21,8 @@ pub struct Cpus {
     pub x2apic: bool,
     pub tsc_deadline: bool,
     pub hybrid: bool,
+    /// Where the kernel found the TSC's frequency (`fcore_abi::tsc_from`).
+    pub tsc_from: u8,
     pub cpus: Vec<Cpu>,
 }
 
@@ -37,6 +39,20 @@ impl Cpus {
             alloc::format!("{n} CPU{}", if n == 1 { "" } else { "s" })
         }
     }
+}
+
+/// The clock in words (Monitor → Boot, TASK-073): "TSC 2,416 MHz, from
+/// CPUID 0x15 (the HPET agrees)".
+pub fn clock_line(tsc_hz: u64, from: u8) -> alloc::string::String {
+    use fcore_abi::tsc_from::{CPUID, CPUID_HPET_AGREES, HPET};
+    let how = match from {
+        CPUID_HPET_AGREES => "from CPUID 0x15 (the HPET agrees)",
+        CPUID => "from CPUID 0x15 (no HPET to check it)",
+        HPET => "measured against the HPET",
+        _ => "measured against the PIT",
+    };
+    let mhz = tsc_hz / 1_000_000;
+    alloc::format!("TSC {},{:03} MHz, {how}", mhz / 1000, mhz % 1000).replacen("TSC 0,", "TSC ", 1)
 }
 
 /// A core type in words.
@@ -99,6 +115,7 @@ pub fn parse_cpus(b: &[u8]) -> Option<Cpus> {
         x2apic: b[0] != 0,
         tsc_deadline: b[1] != 0,
         hybrid: b[2] != 0,
+        tsc_from: b[3],
         cpus: recs
             .chunks_exact(8)
             .map(|r| Cpu { apic_id: u32::from_le_bytes([r[0], r[1], r[2], r[3]]), core_type: r[4], online: r[5] != 0 })
@@ -165,6 +182,16 @@ mod tests {
         assert!(!c.cpus[3].online);
         assert_eq!(c.layout(), "2 performance + 2 efficiency cores");
         assert_eq!(core_type_name(P), "performance");
+    }
+
+    #[test]
+    fn the_clock_says_where_its_frequency_came_from() {
+        use fcore_abi::tsc_from::{CPUID_HPET_AGREES, PIT};
+        assert_eq!(clock_line(2_416_000_000, CPUID_HPET_AGREES), "TSC 2,416 MHz, from CPUID 0x15 (the HPET agrees)");
+        assert_eq!(clock_line(800_000_000, PIT), "TSC 800 MHz, measured against the PIT");
+        let mut b = bytes(1, 0, &[(0, 0, 1)]);
+        b[3] = CPUID_HPET_AGREES;
+        assert_eq!(parse_cpus(&b).map(|c| c.tsc_from), Some(CPUID_HPET_AGREES));
     }
 
     #[test]

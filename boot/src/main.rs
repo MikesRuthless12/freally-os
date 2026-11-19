@@ -141,6 +141,16 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
         say!("freally-boot: no EDID from the firmware; using the stand-in EDID.BIN ({} bytes)", b.len());
         edid_bytes = Some((b.as_ptr(), b.len()));
     }
+    // Boot options (dev and e2e only, compiled out of release: TASK-074).
+    #[allow(unused_mut)]
+    let mut cmdline = [0u8; 256];
+    #[cfg(not(feature = "flavour-release"))]
+    // SAFETY: boot services are running; `image_handle` is ours.
+    if let Ok(b) = unsafe { read::read_image(bs, image_handle, read::CMDLINE) } {
+        cmdline = fcore_abi::cmdline::from_text(b);
+        let n = cmdline.iter().position(|&c| c == 0).unwrap_or(256);
+        say!("freally-boot: boot options: {}", core::str::from_utf8(&cmdline[..n]).unwrap_or("?"));
+    }
     // SAFETY: the firmware's EDID bytes, `n` of them, while boot services run.
     let preferred = edid_bytes
         .and_then(|(p, n)| fedid::parse(unsafe { core::slice::from_raw_parts(p, n) }).ok())
@@ -284,6 +294,7 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
             slot,
             bootctl: ctl.encode(),
             gop_modes,
+            cmdline,
             // SAFETY: the system table's own vendor string.
             firmware_vendor: unsafe { handoff::vendor_ascii(st.firmware_vendor) },
         };

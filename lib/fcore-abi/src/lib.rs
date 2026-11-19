@@ -273,8 +273,11 @@ pub mod syscall {
     pub const RESOURCE_CREATE: u64 = 36;
     /// `resource_h, phys, len, cache` → vmo_h: device memory as a VMO (MMIO in the resource).
     pub const VMO_CREATE_PHYSICAL: u64 = 37;
+    /// `()` → never returns: the kernel panics on purpose (e2e kernels only,
+    /// conductor only: the test door's `kernel panic`, TASK-074).
+    pub const TEST_PANIC: u64 = 38;
     /// One past the highest number.
-    pub const COUNT: u64 = 38;
+    pub const COUNT: u64 = 39;
 }
 
 #[cfg(test)]
@@ -393,7 +396,7 @@ pub mod topic {
     pub const KERNEL_LOG: u64 = 4;
     pub const FAULTS: u64 = 5;
     /// Every CPU (TASK-070): a header (x2APIC u8, TSC-deadline u8, hybrid
-    /// u8, 0 u8, count u32), then per CPU: APIC ID u32, core type u8
+    /// u8, where the TSC's frequency came from u8 ([`super::tsc_from`]), count u32), then per CPU: APIC ID u32, core type u8
     /// ([`super::core_type`]), online u8, 0 u16.
     pub const CPUS: u64 = 6;
     /// The display's EDID as the firmware gave it (empty: none).
@@ -401,6 +404,19 @@ pub mod topic {
     /// The GOP's modes (BootInfo's `gop_modes`, u32 each, 0 after the last)
     /// and, last, the one in use (`width << 16 | height`).
     pub const GOP_MODES: u64 = 8;
+}
+
+/// Where the kernel found the TSC's frequency (TASK-073): `system_info(CPUS)`'s
+/// fourth byte.
+pub mod tsc_from {
+    /// Measured against the PIT (no CPUID answer, no HPET).
+    pub const PIT: u8 = 0;
+    /// Measured against the HPET (no CPUID answer, or one the HPET disproved).
+    pub const HPET: u8 = 1;
+    /// CPUID leaf 0x15 (or 0x16), with no HPET to check it.
+    pub const CPUID: u8 = 2;
+    /// CPUID, and the HPET agrees within 1 %.
+    pub const CPUID_HPET_AGREES: u8 = 3;
 }
 
 /// CPUID leaf 0x1A's core types (TASK-070, FR-009).
@@ -480,5 +496,44 @@ impl FErr {
 impl From<FErr> for &'static str {
     fn from(e: FErr) -> &'static str {
         e.describe()
+    }
+}
+
+/// Boot options (BootInfo's `cmdline`, TASK-074): a dev or e2e bootloader
+/// reads them from `\FREALLY\CMDLINE.TXT`; a release one never does.
+pub mod cmdline {
+    /// The first line of a boot-options file, NUL-padded: printable ASCII
+    /// only (anything else ends it), at most 255 bytes.
+    pub fn from_text(text: &[u8]) -> [u8; 256] {
+        let mut out = [0u8; 256];
+        for (slot, &b) in out.iter_mut().zip(text.iter().take(255).take_while(|b| (0x20..0x7F).contains(*b))) {
+            *slot = b;
+        }
+        out
+    }
+
+    /// Whether the options hold `opt` as one whole word (`log=screen`).
+    pub fn has(cmdline: &[u8; 256], opt: &str) -> bool {
+        let end = cmdline.iter().position(|&b| b == 0).unwrap_or(256);
+        core::str::from_utf8(&cmdline[..end]).is_ok_and(|s| s.split(' ').any(|w| w == opt))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_first_line_is_read_and_words_are_whole() {
+            let c = from_text(b"log=screen quiet\r\nsecond line");
+            assert!(has(&c, "log=screen"));
+            assert!(has(&c, "quiet"));
+            assert!(!has(&c, "second"));
+            assert!(!has(&c, "log"));
+            // Anything past printable ASCII ends it; too long is cut at 255.
+            assert!(!has(&from_text(b"\xFFlog=screen"), "log=screen"));
+            let long = [b'a'; 400];
+            assert_eq!(from_text(&long).iter().filter(|&&b| b == b'a').count(), 255);
+            assert!(!has(&[0; 256], "log=screen"));
+        }
     }
 }

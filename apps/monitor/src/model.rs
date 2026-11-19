@@ -257,12 +257,18 @@ pub struct FaultRow {
     pub rip: u64,
     pub addr: u64,
     pub frames: Vec<u64>,
+    /// Filed at boot from the last-panic page: the last boot stopped here (TASK-074).
+    pub last_boot: bool,
 }
 
 /// What a fault row says expanded.
 pub fn fault_details(f: &FaultRow) -> Vec<String> {
     let mut out = alloc::vec![
-        alloc::format!("{} in {} (#{})", f.kind, f.service, f.seq),
+        if f.last_boot {
+            alloc::format!("{} in {} (#{}): the last boot stopped here", f.kind, f.service, f.seq)
+        } else {
+            alloc::format!("{} in {} (#{})", f.kind, f.service, f.seq)
+        },
         f.message.clone(),
         alloc::format!("at {:#x}, touching {:#x}", f.rip, f.addr),
     ];

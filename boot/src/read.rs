@@ -17,6 +17,11 @@ pub const SYSTEM_B: &[u16] = &utf16::<22>("\\FREALLY\\SYSTEM_B.FSI");
 /// starting scale (TASK-071), never what's trusted.
 #[cfg(not(feature = "flavour-release"))]
 pub const TEST_EDID: &[u16] = &utf16::<18>("\\FREALLY\\EDID.BIN");
+/// Boot options (dev and e2e bootloaders only: `log=screen`, TASK-074), one
+/// line of printable ASCII into BootInfo's `cmdline`. A release bootloader
+/// never reads it: nothing on the stick changes how a release image runs.
+#[cfg(not(feature = "flavour-release"))]
+pub const CMDLINE: &[u16] = &utf16::<21>("\\FREALLY\\CMDLINE.TXT");
 
 /// The image isn't on the drive (the A/B rules then try the other slot).
 pub const MISSING: &str = "There’s no Freally OS system image on this drive.";

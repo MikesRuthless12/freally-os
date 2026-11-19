@@ -213,6 +213,12 @@ impl Door {
     fn run(&mut self, c: &mut Conductor, cmd: &str) {
         let (verb, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
         match verb {
+            // The kernel panics on purpose (`kernel panic`, TASK-074): the
+            // next boot must show it in Monitor → Faults. Never answered.
+            "kernel" if arg == "panic" => {
+                let _ = fstd::sys::call1(fcore_abi::syscall::TEST_PANIC, [0; 6]);
+                self.send("error: the kernel didn't panic");
+            }
             "kill" => match c.services.iter_mut().find(|s| s.m.name == arg) {
                 Some(s) if s.child.is_some() => {
                     s.killed_at = Some(Instant::now().as_ns());

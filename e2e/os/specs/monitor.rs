@@ -110,6 +110,11 @@ pub fn tabs(ctx: &mut Ctx) -> Result<(), String> {
         s.tab == "Boot"
             && s.lines.iter().any(|l| l.starts_with("S4 "))
             && s.lines.iter().any(|l| l.contains("Freally OS"))
+            // The firmware's maker (BootInfo v3: Ubuntu's OVMF says "Ubuntu
+            // distribution of EDK II", with no
+            // FPDT) and the clock's source (TASK-073).
+            && s.lines.iter().any(|l| l.contains("EDK II firmware doesn't report its own time"))
+            && s.lines.iter().any(|l| l.starts_with("TSC ") && l.contains(" MHz, "))
     })?;
     // Faults.
     click(ctx, f, 16 + 280 + 30, 20)?;
@@ -289,6 +294,49 @@ pub fn devices(ctx: &mut Ctx) -> Result<(), String> {
     }
     ctx.keep_shot("monitor-devices")?;
     // Closed (Alt+F4), so the next spec finds Monitor as it starts.
+    key(ctx, "AltLeft", true)?;
+    key(ctx, "F4", true)?;
+    key(ctx, "F4", false)?;
+    key(ctx, "AltLeft", false)?;
+    ctx.expect_log("monitor: closed")
+}
+
+/// `@monitor.last_panic`: the kernel panics (the e2e door's `kernel panic`,
+/// syscall 38, e2e kernels only); after a warm reboot Monitor → Faults lists
+/// it from the last-panic page: freally-core, Panic, the last boot, with
+/// what the panic said (TASK-074).
+pub fn last_panic(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.allow_errors(&["a test panic, asked for through the e2e test door"]);
+    ctx.allow_faults();
+    ctx.expect_log("desktop: the Rack is up")?;
+    // No answer: the machine stops.
+    let _ = ctx.door("kernel panic");
+    ctx.expect_log("Freally Core panicked: a test panic")?;
+    ctx.reset()?;
+    ctx.expect_log("freally-core: the last boot stopped: Freally Core panicked: a test panic")?;
+    ctx.expect_log_count("desktop: the Rack is up", 2)?;
+    ctx.door("monitor open")?;
+    ctx.expect_log("monitor: open")?;
+    let start = Instant::now();
+    let f = loop {
+        match frame(ctx) {
+            Ok(f) => break f,
+            Err(e) if start.elapsed() > Duration::from_secs(10) => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    click(ctx, f, 16 + 280 + 30, 20)?;
+    let s = until(ctx, "the last boot's panic in Faults", |s| {
+        s.tab == "Faults" && s.lines.iter().any(|l| l.contains("freally-core Panic (the last boot)"))
+    })?;
+    // Opened: what it said, and that the last boot stopped there.
+    click(ctx, f, 40, 66)?;
+    until(ctx, "the panic's details", |s| {
+        s.lines.iter().any(|l| l.contains("the last boot stopped here"))
+            && s.lines.iter().any(|l| l.contains("a test panic, asked for through the e2e test door"))
+    })?;
+    let _ = s;
+    ctx.keep_shot("monitor-last-panic")?;
     key(ctx, "AltLeft", true)?;
     key(ctx, "F4", true)?;
     key(ctx, "F4", false)?;

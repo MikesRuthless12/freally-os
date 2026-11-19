@@ -3,7 +3,7 @@
   "about": "Every feature of Freally OS, one tagged spec each, driven over CDP by tools/cdp-runner. A feature without a spec, or a spec without a feature, fails the run.",
   "setups": {
     "e2e": { "flavour": "e2e" },
-    "e2e-no-stage": { "flavour": "e2e", "without": ["stage"] },
+    "e2e-no-stage": { "flavour": "e2e", "without": ["stage", "desktop", "monitor", "terminal", "cdpd"] },
     "dev": { "flavour": "dev" },
     "e2e-tampered": { "flavour": "e2e", "tamper": 9000 },
     "release": { "flavour": "release" },
@@ -13,7 +13,9 @@
     "e2e-ab": { "flavour": "e2e", "slot_b": "crash-test" },
     "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" },
     "e2e-panel-16": { "flavour": "e2e", "edid": "panel-16" },
-    "e2e-8cpu": { "flavour": "e2e", "cpus": 8 }
+    "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
+    "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
+    "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" }
   },
   "features": [
     {
@@ -267,6 +269,27 @@
       "setup": "e2e-8cpu",
       "spec": "e2e/os/specs/monitor.rs",
       "what": "Monitor → Devices: every CPU with its core type (TASK-070), the framebuffer and display controller to drv-gop-fb, the PS/2 controller to drv-i8042, COM2 and COM3 to drv-uart16550, an unclaimed device with —; the wheel and keys scroll it, never past either end."
+    },
+    {
+      "id": "monitor.last_panic",
+      "task": "TASK-074",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/monitor.rs",
+      "what": "The kernel panics (the e2e door's kernel panic, syscall 38, e2e kernels only); after a warm reboot Monitor → Faults lists it from the last-panic page as freally-core's Panic in the last boot, with what it said."
+    },
+    {
+      "id": "log.screen",
+      "task": "TASK-074",
+      "setup": "dev-log-screen",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "A dev image booted with log=screen (CMDLINE.TXT on the stick) and no stage shows the log on its own screen, the kernel's early lines included: the green heading and the lines under it."
+    },
+    {
+      "id": "log.screen_hands_over",
+      "task": "TASK-074",
+      "setup": "dev-log-screen-desktop",
+      "spec": "e2e/os/specs/services.rs",
+      "what": "With stage in the image, the logger draws the log only until stage begins, says so, and the desktop is what shows."
     }
   ]
 }

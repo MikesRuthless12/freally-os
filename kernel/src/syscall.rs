@@ -544,6 +544,16 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let aspace = proc::aspace_of(&p).ok_or(FErr::BadState)?;
             one(aspace.map(&Vmo::wrap(phys, len), 0, len, 0, perms)?)
         }
+        // e2e kernels only, conductor only: a panic on purpose, so a spec can
+        // prove the last-panic page reaches Monitor on the next boot (TASK-074).
+        #[cfg(feature = "flavour-e2e")]
+        nr::TEST_PANIC => {
+            let pid = proc::current().and_then(|p| proc::as_process(&p).ok().map(|x| x.pid)).unwrap_or(0);
+            if !crate::init::is_conductor(pid) {
+                return Err(FErr::AccessDenied);
+            }
+            panic!("a test panic, asked for through the e2e test door")
+        }
         nr::VMO_CREATE_PHYSICAL => {
             let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
             let (phys, len) = (a1, a2);
@@ -674,7 +684,7 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
                 crate::arch::apic::x2apic() as u8,
                 crate::arch::apic::tsc_deadline_supported() as u8,
                 crate::smp::hybrid() as u8,
-                0,
+                crate::time::tsc_from(),
             ]);
             out.extend_from_slice(&(n as u32).to_le_bytes());
             for c in (0..n).filter_map(crate::smp::cpu) {

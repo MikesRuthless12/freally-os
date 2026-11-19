@@ -5,5 +5,5 @@ description = Keeps the system's log, so you can see what every service said and
 start       = boot
 restart     = always
 class       = normal
-grants      = kernel-log, serial
+grants      = kernel-log, serial, framebuffer
 flavours    = release, dev, e2e

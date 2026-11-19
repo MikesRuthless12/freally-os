@@ -12,6 +12,8 @@
 extern crate alloc;
 
 mod ring;
+#[cfg(feature = "flavour-dev")]
+mod screen;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -33,6 +35,9 @@ struct Logger {
     mirror: Option<Handle>,
     kernel_seen: u64,
     kernel_partial: Vec<u8>,
+    /// `log=screen` (dev only, TASK-074).
+    #[cfg(feature = "flavour-dev")]
+    screen: Option<screen::Screen>,
 }
 
 impl Logger {
@@ -48,8 +53,17 @@ impl Logger {
     }
 
     fn write(&mut self, svc: &str, level: u8, msg: &str) {
-        self.ring.push(Instant::now().as_ns(), level, svc, msg);
+        self.record(svc, level, msg);
         self.mirror_line(svc, msg);
+    }
+
+    /// Into the ring (and onto the screen, with `log=screen`).
+    fn record(&mut self, svc: &str, level: u8, msg: &str) {
+        self.ring.push(Instant::now().as_ns(), level, svc, msg);
+        #[cfg(feature = "flavour-dev")]
+        if let Some(s) = self.screen.as_mut() {
+            s.line(svc, level, msg);
+        }
     }
 
     /// The kernel's lines since the last drain, as records from `kernel`.
@@ -75,7 +89,7 @@ impl Logger {
             } else {
                 l::INFO
             };
-            self.ring.push(Instant::now().as_ns(), level, "kernel", text.trim_end());
+            self.record("kernel", level, text.trim_end());
         }
     }
 }
@@ -85,7 +99,14 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     let mirror = fstd::service::take_handle("serial").filter(|h| fstd::sys::ioport_grant(h.raw(), COM1, 8).is_ok());
-    let mut lg = Logger { ring: Ring::new(BUDGET), mirror, kernel_seen: 0, kernel_partial: Vec::new() };
+    let mut lg = Logger {
+        ring: Ring::new(BUDGET),
+        mirror,
+        kernel_seen: 0,
+        kernel_partial: Vec::new(),
+        #[cfg(feature = "flavour-dev")]
+        screen: screen::Screen::open(),
+    };
     lg.drain_kernel();
     let Ok((listen, give)) = Channel::pair() else { return 1 };
     if fstd::service::register(give).is_err() {
@@ -93,6 +114,10 @@ fn run(_bootstrap: u32) -> i64 {
     }
     let mirrored = if lg.mirror.is_some() { "COM1" } else { "nowhere" };
     lg.write("logger", l::INFO, &alloc::format!("logger: ready (mirroring to {mirrored})"));
+    #[cfg(feature = "flavour-dev")]
+    if lg.screen.is_some() {
+        lg.write("logger", l::INFO, "logger: the log is on the screen until stage begins (log=screen)");
+    }
     let mut clients: Vec<(String, Channel)> = Vec::new();
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
@@ -118,6 +143,14 @@ fn run(_bootstrap: u32) -> i64 {
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),
         }
         lg.drain_kernel();
+        #[cfg(feature = "flavour-dev")]
+        if let Some(s) = lg.screen.as_mut() {
+            s.flush();
+            if s.done {
+                lg.screen = None;
+                lg.write("logger", l::INFO, "logger: stage has the screen now; Monitor's Log tab has every line");
+            }
+        }
     }
 }
 

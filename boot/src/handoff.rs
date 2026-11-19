@@ -291,6 +291,8 @@ pub struct Facts {
     pub gop_modes: [u32; fcore_abi::GOP_MODES_MAX],
     /// The firmware's vendor, in ASCII (BootInfo v3).
     pub firmware_vendor: [u8; 32],
+    /// Boot options (dev and e2e: `\FREALLY\CMDLINE.TXT`; release: none).
+    pub cmdline: [u8; 256],
 }
 
 /// The system table's vendor string (UCS-2) as ASCII, NUL-padded: anything
@@ -506,7 +508,7 @@ unsafe fn prepare_and_go(
         },
         kernel: k.loc,
         tsc: stamps,
-        cmdline: [0; 256],
+        cmdline: f.cmdline,
         bootctl: f.bootctl,
         gop_modes: f.gop_modes,
         firmware_vendor: f.firmware_vendor,

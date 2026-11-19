@@ -128,9 +128,13 @@ fn a_fault_expands() {
         rip: 0x1000,
         addr: 0,
         frames: vec![0x2000],
+        last_boot: false,
     };
     let d = fault_details(&f);
     assert_eq!(d[0], "PageFault in drv-x (#3)");
     assert_eq!(d[2], "at 0x1000, touching 0x0");
     assert!(d[3].contains("0x0000000000002000"));
+    // The last boot's panic, filed at this boot from the last-panic page (TASK-074).
+    let last = FaultRow { service: "freally-core".into(), kind: "Panic".into(), last_boot: true, ..f };
+    assert_eq!(fault_details(&last)[0], "Panic in freally-core (#3): the last boot stopped here");
 }

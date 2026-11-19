@@ -89,6 +89,9 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("theme.both", theme::both),
     ("display.native", display::native),
     ("monitor.devices", monitor::devices),
+    ("monitor.last_panic", monitor::last_panic),
+    ("log.screen", services::log_screen),
+    ("log.screen_hands_over", services::log_screen_hands_over),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

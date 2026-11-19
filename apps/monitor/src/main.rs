@@ -106,6 +106,8 @@ struct Monitor {
     devmgr: Option<Client>,
     /// Devices: the CPUs' line, the rows, and the first row shown.
     cpus_line: String,
+    /// Boot: the clock, and where its frequency came from (TASK-073).
+    clock: String,
     devices: Vec<DeviceRow>,
     devices_top: usize,
     /// Conductor didn't answer three refreshes running: the banner (one
@@ -198,6 +200,7 @@ impl Monitor {
             logger: None,
             devmgr: None,
             cpus_line: String::new(),
+            clock: String::new(),
             devices: Vec::new(),
             devices_top: 0,
             unreachable: false,
@@ -253,6 +256,8 @@ impl Monitor {
                 .reports
                 .into_iter()
                 .map(|r| FaultRow {
+                    // Filed at boot from the last-panic page: no time, no pid.
+                    last_boot: r.service == "freally-core" && r.ts_ns == 0 && r.pid == 0,
                     seq: r.seq,
                     service: r.service,
                     kind: alloc::format!("{:?}", r.kind),
@@ -274,6 +279,10 @@ impl Monitor {
     fn read_devices(&mut self) -> String {
         let mut rows = Vec::new();
         if let Some(cpus) = fstd::machine::cpus() {
+            let mut b = [0u8; 16];
+            let hz = fstd::sys::system_info(fcore_abi::topic::CPU, &mut b)
+                .map_or(0, |_| u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]));
+            self.clock = fstd::machine::clock_line(hz, cpus.tsc_from);
             self.cpus_line = alloc::format!(
                 "{} · {} · TSC-deadline timer {}",
                 cpus.layout(),
@@ -378,6 +387,7 @@ impl Monitor {
         let shown: Vec<Line> = self.log.shown().into_iter().cloned().collect();
         let (svc, lvl) = (self.log.service.clone(), self.log.min_level);
         let cpus_line = self.cpus_line.clone();
+        let clock = self.clock.clone();
         let devices: Vec<DeviceRow> =
             self.devices.iter().skip(self.devices_top).take(self.device_rows_shown()).cloned().collect();
         let (dev_top, dev_total) = (self.devices_top, self.devices.len());
@@ -512,10 +522,11 @@ impl Monitor {
                                 &b.summary(),
                                 Tok::Text2,
                             );
+                            words(&mut s, fonts, t, TextStyle::Small, (px(PAD), top + px(60)), &clock, Tok::Text2);
                             let bar_x = px(80);
                             let bar_w = (w as i32 - bar_x - px(140)).max(1);
                             for (i, (name, ms, span)) in b.stages.iter().enumerate() {
-                                let y = top + px(76) + i as i32 * px(26);
+                                let y = top + px(92) + i as i32 * px(26);
                                 words(&mut s, fonts, t, TextStyle::Small, (px(PAD), y), name, Tok::Text2);
                                 let r = Rect::new(bar_x, y + px(4), bar_w as u32, t.px(10));
                                 draw::round_rect(&mut s, r, 3.0, t.colour(Tok::MeterOff));
@@ -558,7 +569,13 @@ impl Monitor {
                                 t,
                                 TextStyle::Body,
                                 (px(PAD), y),
-                                &alloc::format!("#{}  {}  {}", f.seq, f.service, f.kind),
+                                &alloc::format!(
+                                    "#{}  {}  {}{}",
+                                    f.seq,
+                                    f.service,
+                                    f.kind,
+                                    if f.last_boot { "  · the last boot stopped here" } else { "" }
+                                ),
                                 Tok::Text,
                             );
                             y += px(ROW_H);
@@ -1010,11 +1027,23 @@ impl Monitor {
             1 => self.boot.as_ref().map_or(Vec::new(), |b| {
                 let mut v: Vec<String> = b.stages.iter().map(|(n, ms, _)| alloc::format!("{n} {ms:.1}")).collect();
                 v.push(b.summary());
+                v.push(self.clock.clone());
                 v
             }),
             2 => {
-                let mut v: Vec<String> =
-                    self.faults.iter().map(|f| alloc::format!("#{} {} {}", f.seq, f.service, f.kind)).collect();
+                let mut v: Vec<String> = self
+                    .faults
+                    .iter()
+                    .map(|f| {
+                        alloc::format!(
+                            "#{} {} {}{}",
+                            f.seq,
+                            f.service,
+                            f.kind,
+                            if f.last_boot { " (the last boot)" } else { "" }
+                        )
+                    })
+                    .collect();
                 if let Some(f) = self.open_fault.and_then(|i| self.faults.get(i)) {
                     v.extend(model::fault_details(f));
                 }

@@ -17,9 +17,16 @@ static TSC_ZERO: AtomicU64 = AtomicU64::new(0);
 static B0: AtomicU64 = AtomicU64::new(0);
 static RTC_UNIX: AtomicU64 = AtomicU64::new(0);
 static HPET: AtomicU64 = AtomicU64::new(0);
+/// Where the TSC's frequency came from (`fcore_abi::tsc_from`).
+static TSC_FROM: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 pub fn tsc_hz() -> u64 {
     TSC_HZ.load(Ordering::Relaxed)
+}
+
+/// Where the TSC's frequency came from (Monitor → Boot says, TASK-073).
+pub fn tsc_from() -> u8 {
+    TSC_FROM.load(Ordering::Relaxed)
 }
 
 /// TSC ticks to nanoseconds.
@@ -119,6 +126,15 @@ pub fn init(hpet: Option<u64>, b0: u64) -> Source {
         (None, None) => (measure_with_pit(), "PIT", None),
     };
     TSC_HZ.store(hz, Ordering::Relaxed);
+    TSC_FROM.store(
+        match (how, check) {
+            ("CPUID", Some(_)) => fcore_abi::tsc_from::CPUID_HPET_AGREES,
+            ("CPUID", None) => fcore_abi::tsc_from::CPUID,
+            ("PIT", _) => fcore_abi::tsc_from::PIT,
+            _ => fcore_abi::tsc_from::HPET,
+        },
+        Ordering::Relaxed,
+    );
     TSC_ZERO.store(cpu::rdtsc(), Ordering::Relaxed);
     B0.store(b0, Ordering::Relaxed);
     RTC_UNIX.store(crate::arch::rtc::read_unix().unwrap_or(0), Ordering::Relaxed);

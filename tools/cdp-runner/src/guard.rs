@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The guard (TASK-063, FR-040): one shared fixture around every spec.
 //!
-//! - COM1: any `ERROR` line the spec printed (and didn't expect) fails it.
+//! - COM1: any `ERROR` line the spec printed (and didn't expect) fails it,
+//!   and any error a service logged before the logger was up (it reaches
+//!   COM1 through `debug_log` as `debug_log [pid N] error: …`, dev images).
 //! - Through cdpd (e2e images, once the test door is open): any record
 //!   logged at error level during the spec, any kernel warning, any new
 //!   fault report, any service restarted, unless the spec said it would.
@@ -12,7 +14,7 @@ use fjson::Value;
 pub fn check(log: &str, allowed: &[String]) -> Result<(), String> {
     let unexpected: Vec<&str> = log
         .lines()
-        .filter(|l| l.contains("ERROR"))
+        .filter(|l| l.contains("ERROR") || (l.starts_with("debug_log [pid ") && l.contains("] error: ")))
         .filter(|l| !allowed.iter().any(|a| l.contains(a.as_str())))
         .collect();
     if unexpected.is_empty() { Ok(()) } else { Err(format!("the guard: COM1 reported {}", unexpected.join(" | "))) }

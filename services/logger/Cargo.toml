@@ -20,6 +20,7 @@ flavour-e2e = []
 fcore-abi.workspace = true
 fstd.workspace = true
 fwire.workspace = true
+fscreen.workspace = true
 
 [lints]
 workspace = true

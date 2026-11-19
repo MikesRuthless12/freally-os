@@ -14,6 +14,10 @@ pub struct Image {
     /// The slot booted (0 = A, 1 = B) and the A/B record as the bootloader left it.
     pub slot: u8,
     pub bootctl: [u8; 32],
+    /// The boot options (dev and e2e bootloaders read them: TASK-074).
+    pub cmdline: [u8; 256],
+    /// The firmware's framebuffer: physical base and size.
+    pub framebuffer: (u64, u64),
 }
 
 /// Maps `len` bytes of `vmo` read-only into conductor.
@@ -41,6 +45,8 @@ impl Image {
             version: String::from_utf8_lossy(&info.image.version[..end]).into_owned(),
             slot: info.image.slot as u8,
             bootctl: info.bootctl,
+            cmdline: info.cmdline,
+            framebuffer: (info.framebuffer.base, info.framebuffer.size),
         })
     }
 
