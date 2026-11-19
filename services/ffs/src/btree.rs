@@ -88,7 +88,10 @@ impl<S: Store> Volume<S> {
             Some(p) if p.generation == self.generation && self.dirty.contains_key(&p.block) => p.block,
             Some(p) => {
                 let b = self.space.alloc(self.generation)?;
-                self.space.free(p.block, self.generation);
+                // A shared node's old block stays: another tree holds it.
+                if !self.shared_copied.remove(&p.block) {
+                    self.space.free(p.block, self.generation);
+                }
                 b
             }
             None => self.space.alloc(self.generation)?,
@@ -104,7 +107,7 @@ impl<S: Store> Volume<S> {
         if p.generation == self.generation && self.dirty.remove(&p.block).is_some() {
             // Never written: free to use again at once.
             self.space.free(p.block, 0);
-        } else {
+        } else if !self.shared_copied.remove(&p.block) {
             self.space.free(p.block, self.generation);
         }
     }
@@ -145,6 +148,8 @@ impl<S: Store> Volume<S> {
 
     fn insert_at(&mut self, p: &BlockPtr, tree: u64, key: Key, value: &[u8]) -> Result<Vec<(Key, BlockPtr)>, FsError> {
         let mut n = self.load(p, tree)?;
+        // Owned before anything below it changes (§ 9).
+        self.own(p, &n, tree)?;
         match &mut n.body {
             Body::Leaf(items) => match items.binary_search_by(|(k, _)| k.cmp(&key)) {
                 Ok(i) => items[i].1 = value.to_vec(),
@@ -190,17 +195,21 @@ impl<S: Store> Volume<S> {
         tree: u64,
         key: &Key,
     ) -> Result<(BlockPtr, Option<Vec<u8>>), FsError> {
+        // Not there: nothing changes, nothing is copied or owned.
+        if self.tree_get(root, tree, key)?.is_none() {
+            return Ok((*root, None));
+        }
         let (entry, old) = self.delete_at(root, tree, key)?;
         let mut root = match entry {
             Some((_, p)) => p,
             // The tree emptied: an empty leaf is its root.
             None => self.cow(None, Node::leaf(tree))?,
         };
-        // A root with one child steps down.
+        // A root with one child steps down (unless it's shared: § 9).
         loop {
             let n = self.load(&root, tree)?;
             match n.body {
-                Body::Internal(children) if children.len() == 1 => {
+                Body::Internal(children) if children.len() == 1 && !self.is_shared(&root, tree)? => {
                     self.discard(&root);
                     root = children[0].1;
                 }
@@ -209,21 +218,19 @@ impl<S: Store> Volume<S> {
         }
     }
 
+    /// Takes `key` (known to be there) out of the subtree under `p`.
     fn delete_at(&mut self, p: &BlockPtr, tree: u64, key: &Key) -> Result<Deleted, FsError> {
         let mut n = self.load(p, tree)?;
+        self.own(p, &n, tree)?;
         let old = match &mut n.body {
             Body::Leaf(items) => match items.binary_search_by(|(k, _)| k.cmp(key)) {
                 Ok(i) => Some(items.remove(i).1),
-                // Not here: nothing changes, nothing is copied.
-                Err(_) => return Ok((Some((n.first_key().unwrap_or_default(), *p)), None)),
+                Err(_) => return Err(FsError::Corrupt("a key found, then not")),
             },
             Body::Internal(children) => {
                 let i = child_index(children, key);
                 let child = children[i].1;
                 let (entry, old) = self.delete_at(&child, tree, key)?;
-                if old.is_none() {
-                    return Ok((Some((n.first_key().unwrap_or_default(), *p)), None));
-                }
                 match entry {
                     Some(e) => children[i] = e,
                     None => {
@@ -254,6 +261,10 @@ impl<S: Store> Volume<S> {
         let i = child_index(children, key);
         let (l, r) = if i + 1 < children.len() { (i, i + 1) } else { (i - 1, i) };
         let (lp, rp) = (children[l].1, children[r].1);
+        // Shared siblings stay apart (§ 9).
+        if self.is_shared(&lp, tree)? || self.is_shared(&rp, tree)? {
+            return Ok(());
+        }
         let (mut left, right) = (self.load(&lp, tree)?, self.load(&rp, tree)?);
         if left.used().min(right.used()) > BLOCK / 4 {
             return Ok(());

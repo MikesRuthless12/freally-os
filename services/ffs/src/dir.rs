@@ -74,6 +74,7 @@ impl<S: Store> Volume<S> {
 
     /// Makes a file or directory called `name` in `dir`: its new inode.
     pub fn create(&mut self, sv: u64, dir: u64, name: &str, k: FileKind) -> Result<u64, FsError> {
+        self.writable(sv)?;
         if !valid_name(name) {
             return Err(FsError::BadName);
         }
@@ -125,6 +126,7 @@ impl<S: Store> Volume<S> {
     /// Takes `name` out of `dir`. A directory must be empty; a file's last
     /// link takes its data and inode with it.
     pub fn unlink(&mut self, sv: u64, dir: u64, name: &str) -> Result<(), FsError> {
+        self.writable(sv)?;
         let mut parent = self.dir_inode(sv, dir)?;
         let key = Key::new(dir, kind::DIR, name_hash(name));
         let mut list = match self.sv_get(sv, &key)? {

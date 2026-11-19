@@ -8,6 +8,8 @@
 //! nodes, the copy-on-write B+tree, and the free-space tree with its
 //! allocator (a freed block waits two generations). Part 2 (TASK-095):
 //! inodes, directories, extents and file data, and the transaction policy.
+//! Part 3 (TASK-096): subvolumes, snapshots and reference counts, and
+//! `ffsck`.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -16,9 +18,11 @@ pub mod btree;
 pub mod crc32c;
 pub mod dir;
 pub mod extent;
+pub mod fsck;
 pub mod inode;
 pub mod node;
 pub mod ptr;
+pub mod snapshot;
 pub mod space;
 pub mod store;
 pub mod subvol;
@@ -59,6 +63,8 @@ pub enum FsError {
     NotADirectory,
     /// A directory where a file must be.
     IsADirectory,
+    /// A read-only subvolume (a snapshot), or one that can't go (the system's).
+    ReadOnly,
 }
 
 /// A key: `(object, kind, offset)`, compared in that order (§ 5).

@@ -131,7 +131,18 @@ impl<S: Store> Volume<S> {
         self.tree_get(&root, id, key)
     }
 
+    /// Refuses a change to a read-only subvolume (a snapshot). Every
+    /// operation that changes a subvolume asks first, before it takes a
+    /// block or an inode number.
+    pub(crate) fn writable(&mut self, id: u64) -> Result<(), FsError> {
+        if self.subvol(id)?.rec.flags & crate::snapshot::READ_ONLY != 0 {
+            return Err(FsError::ReadOnly);
+        }
+        Ok(())
+    }
+
     pub(crate) fn sv_insert(&mut self, id: u64, key: Key, value: &[u8]) -> Result<(), FsError> {
+        self.writable(id)?;
         let root = self.sv_root(id)?;
         let r = self.tree_insert(&root, id, key, value)?;
         let s = self.subvol(id)?;
@@ -140,11 +151,77 @@ impl<S: Store> Volume<S> {
     }
 
     pub(crate) fn sv_delete(&mut self, id: u64, key: &Key) -> Result<Option<alloc::vec::Vec<u8>>, FsError> {
+        self.writable(id)?;
         let root = self.sv_root(id)?;
         let (r, old) = self.tree_delete(&root, id, key)?;
         let s = self.subvol(id)?;
         (s.rec.root, s.changed) = (r, true);
         Ok(old)
+    }
+
+    /// The next subvolume id, taken (the superblock keeps the counter).
+    pub(crate) fn next_subvol_id(&mut self) -> u64 {
+        let id = self.sb.next_subvol.max(SYSTEM + 1);
+        self.sb.next_subvol = id + 1;
+        id
+    }
+
+    /// A new subvolume called `name` (owned by `owner`, an account's id),
+    /// with its root directory (inode 256). Its id.
+    pub fn create_subvol(&mut self, name: &str, owner: [u8; 16]) -> Result<u64, FsError> {
+        let id = self.next_subvol_id();
+        self.make_subvol(id, name)?;
+        let ino = self.take_ino(id)?;
+        let mut root_dir = crate::inode::Inode::new(crate::inode::FileKind::Dir, ino, self.now);
+        root_dir.nlink = 2;
+        self.put_inode(id, ino, &root_dir)?;
+        let created = self.now / 1_000_000_000;
+        let s = self.subvol(id)?;
+        s.rec.owner = owner;
+        s.rec.created_unix = created;
+        Ok(id)
+    }
+
+    /// Every subvolume: its id and record.
+    pub fn subvols(&mut self) -> Result<alloc::vec::Vec<(u64, SubvolRecord)>, FsError> {
+        let root = self.root;
+        let mut raw = alloc::vec::Vec::new();
+        self.tree_scan(&root, tree::ROOT, &Key::new(0, kind::SUBVOL, 0), &mut |k, v| {
+            if k.kind == kind::SUBVOL {
+                raw.push((k.object, v.to_vec()));
+            }
+            true
+        })?;
+        let mut out = alloc::vec::Vec::new();
+        for (id, v) in raw {
+            // This generation's state when it changed.
+            let rec = match self.subvols.get(&id) {
+                Some(o) => o.rec.clone(),
+                None => SubvolRecord::decode(&v)?,
+            };
+            out.push((id, rec));
+        }
+        for (&id, o) in &self.subvols {
+            if !out.iter().any(|(i, _)| *i == id) {
+                out.push((id, o.rec.clone()));
+            }
+        }
+        out.sort_by_key(|(id, _)| *id);
+        Ok(out)
+    }
+
+    /// Deletes subvolume `id` (never the system's): its tree loses its
+    /// reference (what a snapshot still shares stays), its record goes.
+    pub fn delete_subvol(&mut self, id: u64) -> Result<(), FsError> {
+        if id == SYSTEM {
+            return Err(FsError::ReadOnly);
+        }
+        let root = self.subvol(id)?.rec.root;
+        self.release_tree(&root, id)?;
+        self.subvols.remove(&id);
+        let r = self.root;
+        self.root = self.tree_delete(&r, tree::ROOT, &Key::new(id, kind::SUBVOL, 0))?.0;
+        Ok(())
     }
 
     /// Writes each changed subvolume's tree and then its record into the

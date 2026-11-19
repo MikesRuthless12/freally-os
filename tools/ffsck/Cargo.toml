@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "ffsck"
+description = "ffsck: checks a FreallyFS volume (a raw volume, or a GPT disk image's FREALLY_DATA), read-only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fgpt.workspace = true
+svc-ffs = { path = "../../services/ffs" }
+
+[lints]
+workspace = true

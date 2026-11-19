@@ -46,6 +46,13 @@ impl Store for FileStore {
     }
 }
 
+/// `ffsck`'s findings but the one these tests cause on purpose: they keep
+/// their random items in the root tree, which otherwise holds only
+/// subvolume records.
+fn findings(r: &svc_ffs::fsck::Report) -> Vec<&svc_ffs::fsck::Finding> {
+    r.findings.iter().filter(|f| !f.what.contains("which isn't a subvolume")).collect()
+}
+
 /// xorshift64*: the same run every time.
 struct Rng(u64);
 impl Rng {
@@ -111,7 +118,8 @@ fn random_inserts_and_deletes_match_a_model() {
         if step % 97 == 96 {
             v.commit().unwrap();
             commits += 1;
-            let report = v.check().unwrap_or_else(|e| panic!("step {step}: the check: {e:?}"));
+            let report = v.fsck().unwrap();
+            assert!(findings(&report).is_empty(), "step {step}: {:?}", findings(&report));
             assert!(report.nodes >= 3);
             if commits % 7 == 0 {
                 let store = v.into_store();
@@ -122,16 +130,18 @@ fn random_inserts_and_deletes_match_a_model() {
         }
     }
     v.commit().unwrap();
-    v.check().unwrap();
+    let report = v.fsck().unwrap();
+    assert!(findings(&report).is_empty(), "{:?}", findings(&report));
     same(&mut v, &model, "at the end");
     // Delete everything: the tree empties back to one leaf, nothing leaks.
     for k in model.keys().copied().collect::<Vec<_>>() {
         assert!(v.delete(&k).unwrap().is_some());
     }
     v.commit().unwrap();
-    let r = v.check().unwrap();
+    let r = v.fsck().unwrap();
+    assert!(findings(&r).is_empty(), "{:?}", findings(&r));
     let v2 = Volume::mount(v.into_store()).unwrap();
-    assert_eq!(r.nodes, 3 + (v2.superblock().used_blocks - 3), "only the trees' nodes remain");
+    assert_eq!(r.nodes + r.data, v2.superblock().used_blocks, "every used block reached");
     assert!(commits > 50 && remounts > 5, "{commits} commits, {remounts} remounts");
 }
 
@@ -197,7 +207,8 @@ fn a_crash_at_any_write_of_a_commit_leaves_the_last_generation() {
             }
             g => panic!("crash at step {n}: generation {g}"),
         }
-        m.check().unwrap_or_else(|e| panic!("crash at write {n}: {e:?}"));
+        let report = m.fsck().unwrap();
+        assert!(findings(&report).is_empty(), "crash at write {n}: {:?}", findings(&report));
     }
 }
 

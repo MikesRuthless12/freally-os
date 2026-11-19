@@ -143,7 +143,8 @@ fn files_and_directories_match_a_model() {
         step(&mut v, &mut m, &mut dirs, &mut files, &mut r);
         if i % 150 == 149 {
             v.commit().unwrap();
-            v.check().unwrap_or_else(|e| panic!("step {i}: {e:?}"));
+            let report = v.fsck().unwrap();
+            assert!(report.is_clean(), "step {i}: {:?}", report.findings);
             if i % 600 == 599 {
                 let store = v.unmount().unwrap();
                 v = Volume::mount(store).unwrap();
@@ -164,10 +165,16 @@ fn files_and_directories_match_a_model() {
     assert_eq!(v.create(SYSTEM, ROOT_INO, "a/b", FileKind::File), Err(FsError::BadName));
     assert_eq!(v.write(SYSTEM, accounts, 0, b"x"), Err(FsError::IsADirectory));
     v.commit().unwrap();
-    v.check().unwrap();
-    // Not unmounted: found not clean.
-    let v = Volume::mount(v.into_store()).unwrap();
+    let report = v.fsck().unwrap();
+    assert!(report.is_clean(), "{:?}", report.findings);
+    // Not unmounted: found not clean, and checked as it mounts.
+    let (v, report) = Volume::mount_checked(v.into_store()).unwrap();
     assert!(!v.was_clean());
+    let report = report.expect("ffsck runs at an unclean mount");
+    assert!(report.is_clean(), "{:?}", report.findings);
+    // Unmounted: no check needed.
+    let (_, report) = Volume::mount_checked(v.unmount().unwrap()).unwrap();
+    assert!(report.is_none());
 }
 
 #[test]
@@ -214,6 +221,7 @@ fn a_crash_at_any_write_of_a_file_commit_leaves_one_whole_generation() {
             3 => assert_eq!(got, after, "crash at step {n}, mode {mode}"),
             g => panic!("generation {g}"),
         }
-        m.check().unwrap_or_else(|e| panic!("crash at step {n}, mode {mode}: {e:?}"));
+        let report = m.fsck().unwrap();
+        assert!(report.is_clean(), "crash at step {n}, mode {mode}: {:?}", report.findings);
     }
 }

@@ -5,13 +5,12 @@
 //! dirty node written after its children, a flush, the superblock into its
 //! slot, a flush.
 
-use crate::extent::Extent;
 use crate::inode::{FileKind, Inode, ROOT_INO};
 use crate::node::{Body, Node};
 use crate::ptr::BlockPtr;
 use crate::space::Space;
 use crate::store::Store;
-use crate::subvol::{Open, SYSTEM, SubvolRecord};
+use crate::subvol::{Open, SYSTEM};
 use crate::superblock::Superblock;
 use crate::{BLOCK, FIRST_FREE, FsError, Key, kind, tree};
 use alloc::boxed::Box;
@@ -44,6 +43,8 @@ pub struct Volume<S: Store> {
     pub(crate) now: u64,
     /// When this generation's first change was made (the 5 s commit timer).
     pub(crate) first_change: Option<u64>,
+    /// Shared nodes this generation copied: their old blocks aren't freed.
+    pub(crate) shared_copied: BTreeSet<u64>,
 }
 
 impl<S: Store> Volume<S> {
@@ -73,6 +74,7 @@ impl<S: Store> Volume<S> {
             subvols: BTreeMap::new(),
             now: 0,
             first_change: None,
+            shared_copied: BTreeSet::new(),
         };
         v.root = v.cow(None, Node::leaf(tree::ROOT))?;
         v.free_root = v.cow(None, Node::leaf(tree::FREE))?;
@@ -111,6 +113,7 @@ impl<S: Store> Volume<S> {
             subvols: BTreeMap::new(),
             now: 0,
             first_change: None,
+            shared_copied: BTreeSet::new(),
         };
         let mut items = FreeItems::new();
         let mut bad = false;
@@ -268,123 +271,7 @@ impl<S: Store> Volume<S> {
         self.generation += 1;
         self.space.settle(self.generation);
         self.first_change = None;
+        self.shared_copied.clear();
         Ok(())
     }
-
-    /// Checks the committed volume's structure (the start of `ffsck`, § 14):
-    /// every node of the three trees reached, read and checked against its
-    /// pointer; levels one less below each internal node; keys in order
-    /// within nodes and across them; no block reached twice; every block
-    /// either reached, free, or one of the first 16, never two of these.
-    pub fn check(&mut self) -> Result<CheckReport, FsError> {
-        if !self.dirty.is_empty() || !self.data.is_empty() {
-            return Err(FsError::Corrupt("check a committed volume"));
-        }
-        let mut reached = BTreeSet::new();
-        let mut items = 0u64;
-        for (p, t) in [(self.sb.root_tree, tree::ROOT), (self.sb.free_tree, tree::FREE), (self.sb.ref_tree, tree::REF)]
-        {
-            let mut last: Option<Key> = None;
-            self.walk(&p, t, None, &mut reached, &mut last, &mut items)?;
-        }
-        // Each subvolume's tree, and every data block its extents name.
-        let mut subvols = Vec::new();
-        let root = self.sb.root_tree;
-        let mut bad = false;
-        self.tree_scan(&root, tree::ROOT, &Key::default(), &mut |k, v| {
-            if k.kind == kind::SUBVOL {
-                match SubvolRecord::decode(v) {
-                    Ok(r) => subvols.push((k.object, r.root)),
-                    Err(_) => bad = true,
-                }
-            }
-            true
-        })?;
-        if bad {
-            return Err(FsError::Corrupt("a subvolume record"));
-        }
-        for (id, p) in subvols {
-            let mut last: Option<Key> = None;
-            self.walk(&p, id, None, &mut reached, &mut last, &mut items)?;
-            let mut extents = Vec::new();
-            self.tree_scan(&p, id, &Key::default(), &mut |k, v| {
-                if k.kind == kind::EXTENT {
-                    extents.push(v.to_vec());
-                }
-                true
-            })?;
-            for raw in extents {
-                let e = Extent::decode(&raw)?;
-                for (i, c) in e.checks.iter().enumerate() {
-                    let b = e.block + i as u64;
-                    if !reached.insert(b) {
-                        return Err(FsError::Corrupt("a data block named twice"));
-                    }
-                    let mut buf = [0u8; BLOCK];
-                    self.store.read(b, &mut buf)?;
-                    if BlockPtr::plain_check(&buf) != *c {
-                        return Err(FsError::Integrity(b));
-                    }
-                }
-            }
-        }
-        for &b in &reached {
-            if b < FIRST_FREE || self.space.is_free(b) {
-                return Err(FsError::Corrupt("a block both reached and free (or reserved)"));
-            }
-        }
-        let total = self.sb.block_count;
-        if reached.len() as u64 + self.space.free_blocks() + FIRST_FREE != total {
-            return Err(FsError::Corrupt("blocks neither reached nor free (a leak)"));
-        }
-        if self.sb.used_blocks != reached.len() as u64 {
-            return Err(FsError::Corrupt("the superblock's used count"));
-        }
-        Ok(CheckReport { nodes: reached.len() as u64, items })
-    }
-
-    fn walk(
-        &mut self,
-        p: &BlockPtr,
-        tree: u64,
-        level: Option<u8>,
-        reached: &mut BTreeSet<u64>,
-        last: &mut Option<Key>,
-        items: &mut u64,
-    ) -> Result<(), FsError> {
-        if !reached.insert(p.block) {
-            return Err(FsError::Corrupt("a block reached twice"));
-        }
-        let n = self.load(p, tree)?;
-        if level.is_some_and(|l| l != n.level) {
-            return Err(FsError::Corrupt("a child at the wrong level"));
-        }
-        match n.body {
-            Body::Leaf(list) => {
-                for (k, _) in list {
-                    if last.is_some_and(|l| l >= k) {
-                        return Err(FsError::Corrupt("keys out of order across nodes"));
-                    }
-                    *last = Some(k);
-                    *items += 1;
-                }
-            }
-            Body::Internal(children) => {
-                for (_, c) in &children {
-                    if c.generation > p.generation {
-                        return Err(FsError::Corrupt("a child newer than its parent"));
-                    }
-                    self.walk(c, tree, Some(n.level - 1), reached, last, items)?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-/// What [`Volume::check`] found: the nodes reached and the items in them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CheckReport {
-    pub nodes: u64,
-    pub items: u64,
 }

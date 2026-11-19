@@ -105,15 +105,6 @@ impl<S: Store> Volume<S> {
         Ok(b)
     }
 
-    /// A data block is gone: this generation's never reached the disk.
-    fn drop_data(&mut self, block: u64) {
-        if self.data.remove(&block).is_some() {
-            self.space.free(block, 0);
-        } else {
-            self.space.free(block, self.generation);
-        }
-    }
-
     /// Replaces the extents in `holding` with extents for `map` (file block
     /// → disk block and check), keeping whatever of them lies outside
     /// `range` (first and last file block): runs contiguous on disk join, up
@@ -165,6 +156,7 @@ impl<S: Store> Volume<S> {
 
     /// Writes `data` at byte `offset` of file `ino`.
     pub fn write(&mut self, sv: u64, ino: u64, offset: u64, data: &[u8]) -> Result<(), FsError> {
+        self.writable(sv)?;
         let mut inode = self.stat(sv, ino)?;
         if inode.kind != FileKind::File {
             return Err(FsError::IsADirectory);
@@ -178,6 +170,9 @@ impl<S: Store> Volume<S> {
         let old_tail = inode.size.div_ceil(B).saturating_sub(1);
         let (lo, hi) = (first.min(old_tail), last.max(old_tail));
         let (mut map, holding) = self.mapped(sv, ino, lo, hi)?;
+        // Blocks this write replaces: released once the extents have
+        // changed (a shared leaf's copy gives them a reference first).
+        let mut replaced = Vec::new();
         for fb in first..=last {
             let mut buf = match map.get(&fb) {
                 Some(&(block, check)) => self.read_data(block, &check)?,
@@ -190,9 +185,8 @@ impl<S: Store> Volume<S> {
             let block = match map.get(&fb) {
                 Some(&(old, _)) if self.data.contains_key(&old) => old,
                 Some(&(old, _)) => {
-                    let new = self.space.alloc(self.generation)?;
-                    self.drop_data(old);
-                    new
+                    replaced.push(old);
+                    self.space.alloc(self.generation)?
                 }
                 None => self.space.alloc(self.generation)?,
             };
@@ -201,6 +195,9 @@ impl<S: Store> Volume<S> {
         }
         inode.size = inode.size.max(end);
         self.rewrite_extents(sv, ino, holding, map, (lo, hi), inode.size)?;
+        for b in replaced {
+            self.release_data(b)?;
+        }
         (inode.modified_ns, inode.changed_ns) = (self.now, self.now);
         self.put_inode(sv, ino, &inode)
     }
@@ -234,6 +231,7 @@ impl<S: Store> Volume<S> {
     /// Sets file `ino`'s size: shrinking frees the blocks past the end and
     /// zeroes the rest of the new last block; growing leaves a hole.
     pub fn truncate(&mut self, sv: u64, ino: u64, size: u64) -> Result<(), FsError> {
+        self.writable(sv)?;
         let mut inode = self.stat(sv, ino)?;
         if inode.kind != FileKind::File {
             return Err(FsError::IsADirectory);
@@ -244,9 +242,10 @@ impl<S: Store> Volume<S> {
             let lo = keep.saturating_sub(1);
             let (map, holding) = self.mapped(sv, ino, lo, old_last)?;
             let mut kept = Mapped::new();
+            let mut gone = Vec::new();
             for (fb, (block, check)) in map {
                 if fb >= keep {
-                    self.drop_data(block);
+                    gone.push(block);
                 } else {
                     kept.insert(fb, (block, check));
                 }
@@ -260,9 +259,8 @@ impl<S: Store> Volume<S> {
                 let nb = if self.data.contains_key(&block) {
                     block
                 } else {
-                    let n = self.space.alloc(self.generation)?;
-                    self.drop_data(block);
-                    n
+                    gone.push(block);
+                    self.space.alloc(self.generation)?
                 };
                 let c = BlockPtr::plain_check(&buf);
                 self.data.insert(nb, buf);
@@ -270,6 +268,9 @@ impl<S: Store> Volume<S> {
             }
             // Holding past `lo`: rebuilt from what's kept (all at or before `lo`).
             self.rewrite_extents(sv, ino, holding, kept, (lo, old_last), size)?;
+            for b in gone {
+                self.release_data(b)?;
+            }
         } else if size > inode.size && inode.size > 0 {
             // The old tail's `len` becomes a whole block (or the new tail's, if the same).
             let old_last = inode.size.div_ceil(B) - 1;

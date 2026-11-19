@@ -115,7 +115,11 @@ impl Node {
             a.copy_from_slice(&b[o..o + 8]);
             u64::from_le_bytes(a)
         };
-        if b[..4] != MAGIC || u64_at(24) != block || u64_at(8) != tree || b[4] > MAX_LEVEL {
+        // A subvolume's nodes may be shared by its snapshots (§ 5, § 9):
+        // a subvolume tree reads any subvolume's; a plain tree only its own.
+        let written_by = u64_at(8);
+        let tree_ok = written_by == tree || (tree >= crate::subvol::SYSTEM && written_by >= crate::subvol::SYSTEM);
+        if b[..4] != MAGIC || u64_at(24) != block || !tree_ok || b[4] > MAX_LEVEL {
             return Err(FsError::Integrity(block));
         }
         let (level, count) = (b[4], u16::from_le_bytes([b[6], b[7]]) as usize);
@@ -147,7 +151,7 @@ impl Node {
             }
             Body::Leaf(items)
         };
-        let n = Node { level, tree, generation: u64_at(16), block, body };
+        let n = Node { level, tree: written_by, generation: u64_at(16), block, body };
         let sorted = match &n.body {
             Body::Leaf(items) => items.windows(2).all(|w| w[0].0 < w[1].0),
             Body::Internal(children) => children.windows(2).all(|w| w[0].0 < w[1].0),
