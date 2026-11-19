@@ -269,8 +269,8 @@ pub fn run() -> Result<String, String> {
     let t0 = Instant::now();
     let built = build::build(Flavour::Dev)?;
     // The builds the swaps hand over: the desktop as it is, and one made to crash.
-    let swap = brain_swap::arguments("desktop", false)?;
-    let crash = brain_swap::arguments("desktop", true)?;
+    let swap = brain_swap::arguments("desktop", None)?;
+    let crash = brain_swap::arguments("desktop", Some("swap-crash-test"))?;
     let mut o = VmOptions::new(Flavour::Dev, "brain-test");
     o.headless = true;
     o.port_offset = PORT_OFFSET;

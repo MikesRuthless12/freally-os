@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// The Brain (TASK-086, developer images only): the desktop replaced while
+// it runs, its clock going from 12-hour to 24-hour, with no restart.
+Tour(
+    name: "brain-swap",
+    flavour: "dev",
+    steps: [
+        Record(ms: 7000),
+        Swap(service: "desktop", feature: "swap-demo-24h"),
+        Record(ms: 5000),
+    ],
+)

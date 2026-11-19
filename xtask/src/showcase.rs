@@ -6,7 +6,10 @@
 //! `Record(ms: N)` films N ms, `Key(code: "KeyA")` presses a key (or a chord,
 //! `"MetaLeft+KeyM"`, pressed in order and let go in reverse), `Type(text:
 //! "ps\n")` types, filming each key as it lands, and `Wait(ms: N)` waits
-//! without filming. `stopwatch: true` burns a stopwatch from power on into the
+//! without filming; `Swap(service: "desktop")` swaps that service's other
+//! build in through the Brain (dev images; built before the VM starts, so the
+//! film doesn't stall). `gpt: true` gives the VM Freally OS's own disk
+//! (Welcome, accounts), fresh each time. `stopwatch: true` burns a stopwatch from power on into the
 //! film (a measurement on the real footage, in Noto Sans Mono). Frames are QMP screendumps on a 30 fps clock (a slow
 //! dump repeats the last frame, so the clock stays true); `ffmpeg` (a host tool)
 //! makes the MP4 in `target/showcase/`. From Phase 3 the fleet cursor is drawn
@@ -28,6 +31,8 @@ pub enum Step {
     Wait(u64),
     Key(String),
     Type(String),
+    /// A service, and the build feature its swapped-in build is made with.
+    Swap(String, Option<String>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -36,6 +41,7 @@ pub struct Tour {
     pub flavour: String,
     pub steps: Vec<Step>,
     pub stopwatch: bool,
+    pub gpt: bool,
 }
 
 /// Parses the small RON subset tours use: `Tour(name: "…", flavour: "…", steps: [Step(key: value), …])`.
@@ -44,7 +50,7 @@ pub fn parse(text: &str) -> Result<Tour, String> {
     let mut t = Tokens { s: src.as_bytes(), i: 0 };
     t.word("Tour")?;
     t.punct(b'(')?;
-    let (mut name, mut flavour, mut steps, mut stopwatch) = (None, None, Vec::new(), false);
+    let (mut name, mut flavour, mut steps, mut stopwatch, mut gpt) = (None, None, Vec::new(), false, false);
     while !t.peek(b')') {
         let key = t.ident()?;
         t.punct(b':')?;
@@ -52,6 +58,7 @@ pub fn parse(text: &str) -> Result<Tour, String> {
             "name" => name = Some(t.string()?),
             "flavour" => flavour = Some(t.string()?),
             "stopwatch" => stopwatch = t.ident()? == "true",
+            "gpt" => gpt = t.ident()? == "true",
             "steps" => {
                 t.punct(b'[')?;
                 while !t.peek(b']') {
@@ -64,6 +71,20 @@ pub fn parse(text: &str) -> Result<Tour, String> {
                         ("Wait", "ms") => Step::Wait(t.number()?),
                         ("Key", "code") => Step::Key(t.string()?),
                         ("Type", "text") => Step::Type(t.string()?),
+                        ("Swap", "service") => {
+                            let service = t.string()?;
+                            let feature = if t.peek(b',') {
+                                t.comma();
+                                if t.ident()? != "feature" {
+                                    return Err(String::from("Swap takes service and feature"));
+                                }
+                                t.punct(b':')?;
+                                Some(t.string()?)
+                            } else {
+                                None
+                            };
+                            Step::Swap(service, feature)
+                        }
                         _ => return Err(format!("unknown step {kind}({field}: …)")),
                     };
                     t.punct(b')')?;
@@ -82,6 +103,7 @@ pub fn parse(text: &str) -> Result<Tour, String> {
         flavour: flavour.unwrap_or_else(|| "dev".into()),
         steps,
         stopwatch,
+        gpt,
     })
 }
 
@@ -233,10 +255,18 @@ pub fn film(tour: &Tour) -> Result<std::path::PathBuf, String> {
     let _ = std::fs::remove_dir_all(&frames);
     std::fs::create_dir_all(&frames).map_err(|e| e.to_string())?;
     let built = build::build(flavour)?;
+    // Each swap's build, made before the VM starts.
+    let mut swaps = Vec::new();
+    for step in &tour.steps {
+        if let Step::Swap(service, feature) = step {
+            swaps.push((service.clone(), crate::brain_swap::arguments(service, feature.as_deref())?));
+        }
+    }
     let mut o = VmOptions::new(flavour, &format!("showcase-{}", tour.name));
     o.headless = true;
     o.port_offset = 400;
-    let mut vm = crate::run::start_built(&o, &built)?;
+    o.gpt = tour.gpt;
+    let mut vm = if tour.gpt { crate::run::start_booted(&o, &built)? } else { crate::run::start_built(&o, &built)? };
     let result = (|| {
         let mut q = Qmp::connect(&o.qmp_socket(), Duration::from_secs(20))?;
         let mut next = 0u32;
@@ -245,6 +275,11 @@ pub fn film(tour: &Tour) -> Result<std::path::PathBuf, String> {
                 Step::Record(ms) => record(&mut q, &frames, &mut next, *ms)?,
                 Step::Wait(ms) => std::thread::sleep(Duration::from_millis(*ms)),
                 Step::Key(code) => chord(&mut q, code)?,
+                Step::Swap(service, _) => {
+                    let args =
+                        swaps.iter().find(|(s, _)| s == service).map(|(_, a)| a.clone()).ok_or("no swap built")?;
+                    crate::brain_swap::send(service, args, o.port(2))?;
+                }
                 Step::Type(text) => {
                     for c in text.chars() {
                         chord(&mut q, &keys_for(c).ok_or_else(|| format!("can't type {c:?}"))?)?;

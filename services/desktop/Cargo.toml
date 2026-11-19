@@ -21,6 +21,9 @@ flavour-e2e = ["fimage/guard"]
 # `cargo xtask brain-swap desktop --crash`: a build that ends a second after it
 # starts, to prove a swap's automatic rollback (TASK-083). Never in an image.
 swap-crash-test = []
+# The Brain demo's film (TASK-086): a build whose clock starts in 24-hour
+# form, swapped in live. Never in an image.
+swap-demo-24h = []
 
 [dependencies]
 fcore-abi.workspace = true

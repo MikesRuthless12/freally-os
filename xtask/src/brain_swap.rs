@@ -18,18 +18,17 @@ use crate::keys::{self, KeyName};
 use fcore_abi::Flavour;
 
 /// The arguments for `swap_service`.
-pub fn arguments(service: &str, crash: bool) -> Result<fjson::Value, String> {
+pub fn arguments(service: &str, feature: Option<&str>) -> Result<fjson::Value, String> {
     let program = PROGRAMS
         .iter()
         .find(|p| p.bin == service || p.path.rsplit('/').next() == Some(service))
         .ok_or_else(|| format!("no service is called {service}"))?;
-    if crash && program.package != "svc-desktop" {
-        return Err(String::from("--crash: only the desktop has a build made to crash"));
+    if feature.is_some() && program.package != "svc-desktop" {
+        return Err(String::from("only the desktop has builds made to be swapped in (swap-crash-test, swap-demo-24h)"));
     }
-    let elf = if crash {
-        build::build_user_with(&[program], Flavour::Dev, &[&format!("{}/swap-crash-test", program.package)])?
-    } else {
-        build::build_user(&[program], Flavour::Dev)?
+    let elf = match feature {
+        Some(f) => build::build_user_with(&[program], Flavour::Dev, &[&format!("{}/{f}", program.package)])?,
+        None => build::build_user(&[program], Flavour::Dev)?,
     };
     let path = &elf.first().ok_or("nothing was built")?.2;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -107,7 +106,7 @@ pub fn brain_swap_cmd(args: &[String]) -> Result<(), String> {
         .filter(|a| !a.starts_with("--"))
         .ok_or("cargo xtask brain-swap <service> [--crash] [--send [--port N] | --out <file>]")?;
     let crash = args.iter().any(|a| a == "--crash");
-    let v = arguments(service, crash)?;
+    let v = arguments(service, crash.then_some("swap-crash-test"))?;
     if args.iter().any(|a| a == "--send") {
         let port = brain_bridge::port_arg(args)?;
         let said = send(service, v, port)?;

@@ -52,6 +52,17 @@ fn line(log: &mut std::fs::File, text: &str) {
 }
 
 /// The panics in the soak's own VMs' COM1 logs after a round (`setups`: theirs).
+/// What the e2e test door's planted kernel panic says (the spec that proves
+/// a panic reaches Monitor on the next boot asks for it).
+const PLANTED_PANIC: &str = "a test panic, asked for through the e2e test door";
+
+/// The kernel panics in one VM's log that nobody asked for.
+fn unplanned_panics(log: &str) -> usize {
+    log.lines()
+        .filter(|l| (l.contains("freally-core: ERROR") || l.contains("PANIC")) && !l.contains(PLANTED_PANIC))
+        .count()
+}
+
 fn panics(setups: &[String]) -> usize {
     let vms = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".freally-vms");
     let mut n = 0;
@@ -61,7 +72,7 @@ fn panics(setups: &[String]) -> usize {
             continue;
         }
         let text = String::from_utf8_lossy(&std::fs::read(e.path().join("com1.log")).unwrap_or_default()).to_string();
-        n += text.matches("freally-core: ERROR").count() + text.matches("PANIC").count();
+        n += unplanned_panics(&text);
     }
     n
 }
@@ -166,6 +177,30 @@ pub fn soak_cmd(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_planted_test_panic_is_not_counted() {
+        let planted = format!(
+            "[monitor] up
+freally-core: ERROR Freally Core panicked: {PLANTED_PANIC}. At kernel/src/syscall.rs:567.
+"
+        );
+        assert_eq!(unplanned_panics(&planted), 0, "asked for by a spec");
+        assert_eq!(
+            unplanned_panics(
+                "freally-core: ERROR Freally Core panicked: index out of bounds
+"
+            ),
+            1
+        );
+        assert_eq!(
+            unplanned_panics(
+                "PANIC: a double fault
+"
+            ),
+            1
+        );
+    }
 
     #[test]
     fn a_leg_that_breaks_with_no_failed_spec_is_red() {

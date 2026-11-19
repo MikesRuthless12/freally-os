@@ -229,3 +229,32 @@ fn every_key_has_a_label_and_a_name() {
     assert_eq!(names.len(), n, "names are unique");
     assert_eq!(n, 40);
 }
+
+#[test]
+fn a_third_typed_shows_thirty_two_digits() {
+    let mut c = Calc::new();
+    for ch in "1/3".chars() {
+        c.typed(ch);
+        let _ = c.preview();
+        let _ = c.shown();
+    }
+    c.press(Key::Equals);
+    assert_eq!(c.shown(), "0.33333333333333333333333333333333");
+}
+
+#[test]
+fn a_sum_typed_after_a_result_starts_afresh() {
+    let mut c = Calc::new();
+    for ch in "0.1+0.2".chars() {
+        c.typed(ch);
+    }
+    c.press(Key::Equals);
+    assert_eq!(c.shown(), "0.3");
+    for ch in "1/3".chars() {
+        c.typed(ch);
+        let _ = c.preview();
+    }
+    assert_eq!(c.shown(), "1÷3", "typed after a result");
+    c.press(Key::Equals);
+    assert_eq!(c.shown(), "0.33333333333333333333333333333333");
+}

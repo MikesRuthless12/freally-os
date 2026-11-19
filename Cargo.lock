@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "app-calculator"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fapp",
  "fcore-abi",
@@ -17,11 +17,11 @@ dependencies = [
 
 [[package]]
 name = "app-editor"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "app-files"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "app-session",
  "fapp",
@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "app-monitor"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "ffont",
@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "app-probe"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fedid",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "app-session"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fapp",
  "fcore-abi",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "app-settings"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "app-session",
  "fapp",
@@ -87,11 +87,11 @@ dependencies = [
 
 [[package]]
 name = "app-shell"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "app-terminal"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "app-shell",
  "fcore-abi",
@@ -103,11 +103,11 @@ dependencies = [
 
 [[package]]
 name = "brain-bridge"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "cdp-host"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "cdp-proto",
  "fimage",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "cdp-proto"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcrypto",
  "fjson",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "cdp-runner"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "app-terminal",
  "cdp-proto",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "drv-gop-fb"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fstd",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "drv-i8042"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "finput",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "drv-nvme"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fgpt",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "drv-uart16550"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fstd",
@@ -177,15 +177,15 @@ dependencies = [
 
 [[package]]
 name = "drv-xhci"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "facpi"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "fapp"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "ffont",
@@ -197,38 +197,38 @@ dependencies = [
 
 [[package]]
 name = "fbootctl"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcrypto",
 ]
 
 [[package]]
 name = "fcore-abi"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "fcrypto"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "fdecimal"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "fedid"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "felf"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "ffont"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "ffsck"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fgpt",
  "svc-ffs",
@@ -236,33 +236,33 @@ dependencies = [
 
 [[package]]
 name = "fgpt"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
 ]
 
 [[package]]
 name = "fimage"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "finput"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "fjson"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "frandom"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcrypto",
 ]
 
 [[package]]
 name = "freally-boot"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fbootctl",
  "fcore-abi",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "freally-core"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fbootctl",
  "fcore-abi",
@@ -289,14 +289,14 @@ dependencies = [
 
 [[package]]
 name = "frt"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
 ]
 
 [[package]]
 name = "fscreen"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "ffont",
  "fui",
@@ -304,14 +304,14 @@ dependencies = [
 
 [[package]]
 name = "fsi"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcrypto",
 ]
 
 [[package]]
 name = "fstd"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "frt",
@@ -320,11 +320,11 @@ dependencies = [
 
 [[package]]
 name = "fsvc"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "ftest"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fstd",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "fui"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "ffont",
  "fimage",
@@ -342,11 +342,11 @@ dependencies = [
 
 [[package]]
 name = "fwire"
-version = "0.4.0"
+version = "0.8.0"
 
 [[package]]
 name = "svc-accounts"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fcrypto",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "svc-brain"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fimage",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "svc-cdpd"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fjson",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "svc-conductor"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fbootctl",
  "fcore-abi",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "svc-desktop"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "ffont",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "svc-devmgr"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "facpi",
  "fcore-abi",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "svc-ffs"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fcrypto",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "svc-logger"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fscreen",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "svc-stage"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fedid",
@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "svc-updater"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fcrypto",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "svc-vfs"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fcrypto",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "brain-bridge",
  "cdp-proto",

@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+// The first start (TASK-102): Welcome makes the owner's account on Freally
+// OS's own disk, and the desktop opens as theirs.
+Tour(
+    name: "accounts",
+    flavour: "dev",
+    gpt: true,
+    steps: [
+        Record(ms: 6000),
+        Type(text: "Sam Rivera"),
+        Key(code: "Enter"),
+        Type(text: "sam"),
+        Key(code: "Enter"),
+        Type(text: "correct-horse-7"),
+        Key(code: "Enter"),
+        Type(text: "correct-horse-7"),
+        Record(ms: 600),
+        Key(code: "Enter"),
+        Record(ms: 6000),
+    ],
+)

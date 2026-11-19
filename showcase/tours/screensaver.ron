@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: Apache-2.0
+// A screensaver (TASK-077C): chosen in Settings, after a minute idle.
+Tour(
+    name: "screensaver",
+    flavour: "dev",
+    steps: [
+        Record(ms: 5000),
+        Key(code: "MetaLeft+KeyI"),
+        Record(ms: 1500),
+        // Theme, background, scale, motion, clock, then the screensaver.
+        Key(code: "Tab"),
+        Key(code: "Tab"),
+        Key(code: "Tab"),
+        Key(code: "Tab"),
+        Key(code: "Tab"),
+        Key(code: "Tab"),
+        Record(ms: 600),
+        // Bounce, the turning block, Swarm, Warp: Warp.
+        Key(code: "ArrowRight"),
+        Record(ms: 400),
+        Key(code: "ArrowRight"),
+        Record(ms: 400),
+        Key(code: "ArrowRight"),
+        Record(ms: 600),
+        // Its idle time, down to a minute.
+        Key(code: "Tab"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Key(code: "ArrowLeft"),
+        Record(ms: 1200),
+        // OK.
+        Key(code: "Tab"),
+        Key(code: "Enter"),
+        Record(ms: 1500),
+        Wait(ms: 61000),
+        Record(ms: 9000),
+    ],
+)

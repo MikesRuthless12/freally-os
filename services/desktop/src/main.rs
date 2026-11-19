@@ -444,7 +444,7 @@ impl Desktop {
         let (hovered, pressed) = (self.hovered, self.pressed);
         let avail: Vec<bool> = keys.iter().map(|k| self.key_available(*k)).collect();
         let lit: Vec<bool> = keys.iter().map(|k| matches!(k, Key::App(i) if self.running[*i])).collect();
-        self.clock = clock::words(fstd::time::utc_ns(), self.clock_24h);
+        self.clock = clock::words(fstd::time::utc_ns(), self.clock_24h || cfg!(feature = "swap-demo-24h"));
         let text = self.clock.clone();
         let (tw, line) = self.fonts.measure(t, TextStyle::Clock, &text);
         let plate = art(self.os.as_ref(), t, "rack_faceplate");
@@ -1301,7 +1301,7 @@ impl Desktop {
             {
                 self.show_tooltip(i);
             }
-            if clock::words(fstd::time::utc_ns(), self.clock_24h) != self.clock {
+            if clock::words(fstd::time::utc_ns(), self.clock_24h || cfg!(feature = "swap-demo-24h")) != self.clock {
                 self.services();
                 self.draw_rack();
             }
