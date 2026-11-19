@@ -12,9 +12,16 @@
 //! - what the client sends while the VM is away (a reboot) waits and goes
 //!   once it's back; when the client closes stdin, the replies still on
 //!   their way are delivered and it ends.
+//!
+//! **The side door** (`127.0.0.1:4562`, TASK-085): while Claude Code holds
+//! the line, QEMU's socket takes no one else, so `cargo xtask brain-swap
+//! <service> --send` reaches the Brain through the bridge: its lines go to
+//! the VM like the client's, and every answer whose id starts `side:` comes
+//! back to it, never to Claude Code. A build is megabytes of base64, far
+//! more than a model can carry in a tool call, so a swap goes this way.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -22,6 +29,14 @@ use std::time::{Duration, Instant};
 
 /// The dev VM's COM2 (PRD § 4).
 pub const DEFAULT_PORT: u16 = 4552;
+/// The side door is COM2's port plus this.
+pub const SIDE_OFFSET: u16 = 10;
+/// How every answer to the side door begins (the Brain writes `jsonrpc`,
+/// then `id`).
+pub const SIDE_ANSWER: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":\"side:";
+
+/// The side door's one client, if one is connected.
+type Side = Arc<Mutex<Option<TcpStream>>>;
 
 /// How long and how often it tries to reach the VM.
 #[derive(Clone, Copy, Debug)]
@@ -37,7 +52,7 @@ impl Default for Patience {
 }
 
 enum Event {
-    /// A line from the client (its newline included).
+    /// A line from the client or the side door (its newline included).
     In(Vec<u8>),
     /// The client closed stdin.
     InputClosed,
@@ -58,9 +73,9 @@ fn connect(addr: SocketAddr, p: Patience) -> Result<TcpStream, String> {
     }
 }
 
-/// Copies whole lines from the socket to `out` until the socket ends; a
-/// last, unfinished line is dropped.
-fn replies(sock: TcpStream, out: &Mutex<Box<dyn Write + Send>>) {
+/// Copies whole lines from the socket to `out` (the side door's answers to
+/// it) until the socket ends; a last, unfinished line is dropped.
+fn replies(sock: TcpStream, out: &Mutex<Box<dyn Write + Send>>, side: &Side) {
     let mut r = BufReader::new(sock);
     let mut line = Vec::new();
     loop {
@@ -68,6 +83,14 @@ fn replies(sock: TcpStream, out: &Mutex<Box<dyn Write + Send>>) {
         match r.read_until(b'\n', &mut line) {
             Ok(0) | Err(_) => return,
             Ok(_) if line.last() != Some(&b'\n') => return,
+            Ok(_) if line.starts_with(SIDE_ANSWER) => {
+                if let Ok(mut s) = side.lock()
+                    && let Some(c) = s.as_mut()
+                    && c.write_all(&line).is_err()
+                {
+                    *s = None;
+                }
+            }
             Ok(_) => {
                 let Ok(mut o) = out.lock() else { return };
                 if o.write_all(&line).and_then(|_| o.flush()).is_err() {
@@ -79,16 +102,36 @@ fn replies(sock: TcpStream, out: &Mutex<Box<dyn Write + Send>>) {
 }
 
 /// Runs the bridge: `input` (the client's stdin) to the VM, the VM's lines
-/// to `output`, what it's doing to `log`. Returns when the client closes its
-/// input, or with the error when the VM can't be reached.
+/// to `output`, what it's doing to `log`, and the side door's lines if it
+/// has one. Returns when the client closes its input, or with the error when
+/// the VM can't be reached.
 pub fn run(
     addr: SocketAddr,
     input: impl Read + Send + 'static,
     output: impl Write + Send + 'static,
     log: &mut dyn Write,
     patience: Patience,
+    side_door: Option<TcpListener>,
 ) -> Result<(), String> {
     let (tx, rx) = mpsc::channel::<Event>();
+    let side: Side = Arc::new(Mutex::new(None));
+    if let Some(l) = side_door {
+        let (side, to_vm) = (side.clone(), tx.clone());
+        thread::spawn(move || {
+            for c in l.incoming().map_while(Result::ok) {
+                let Ok(reader) = c.try_clone() else { continue };
+                if let Ok(mut s) = side.lock() {
+                    *s = Some(c);
+                }
+                for mut line in BufReader::new(reader).split(b'\n').map_while(Result::ok) {
+                    line.push(b'\n');
+                    if to_vm.send(Event::In(line)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+    }
     let to_vm = tx.clone();
     thread::spawn(move || {
         let mut r = BufReader::new(input);
@@ -116,9 +159,9 @@ pub fn run(
         let mut sock = connect(addr, patience)?;
         let _ = writeln!(log, "brain-bridge: connected to the Brain on {addr}");
         let reader = sock.try_clone().map_err(|e| e.to_string())?;
-        let (out, done) = (output.clone(), tx.clone());
+        let (out, done, side) = (output.clone(), tx.clone(), side.clone());
         let replies_thread = thread::spawn(move || {
-            replies(reader, &out);
+            replies(reader, &out, &side);
             let _ = done.send(Event::Dropped(n));
         });
         let mut ok = sock.write_all(b"\n").is_ok();
@@ -155,6 +198,22 @@ pub fn run(
 
 fn next(rx: &Receiver<Event>) -> Event {
     rx.recv().unwrap_or(Event::InputClosed)
+}
+
+/// The bridge as Claude Code runs it: stdio to COM2 on `--port` (default
+/// 4552), the side door on that plus [`SIDE_OFFSET`] when it's free.
+pub fn serve(args: &[String]) -> Result<(), String> {
+    use std::net::Ipv4Addr;
+    let port = port_arg(args)?;
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let side = TcpListener::bind((Ipv4Addr::LOCALHOST, port + SIDE_OFFSET));
+    if let Err(e) = &side {
+        eprintln!(
+            "brain-bridge: no side door on port {} ({e}); brain-swap --send won't reach this bridge",
+            port + SIDE_OFFSET
+        );
+    }
+    run(addr, std::io::stdin(), std::io::stdout(), &mut std::io::stderr(), Patience::default(), side.ok())
 }
 
 /// `--port N` (a VM started with a port offset), else [`DEFAULT_PORT`]. The
@@ -263,7 +322,7 @@ mod tests {
         let o = out.clone();
         let bridge = thread::spawn(move || {
             let mut log = Vec::new();
-            let r = run(addr, Pipe { rx, buf: Vec::new() }, o, &mut log, quick());
+            let r = run(addr, Pipe { rx, buf: Vec::new() }, o, &mut log, quick(), None);
             (r, String::from_utf8(log).unwrap())
         });
         tx.send(b"{\"id\":1}\n".to_vec()).unwrap();
@@ -284,11 +343,46 @@ mod tests {
     }
 
     #[test]
+    fn the_side_door_gets_its_own_answers_and_no_others() {
+        // A stand-in Brain that answers each line with itself.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut w = s.try_clone().unwrap();
+            for line in BufReader::new(s).lines().map_while(Result::ok) {
+                if !line.trim().is_empty() {
+                    w.write_all(format!("{line}\n").as_bytes()).unwrap();
+                }
+            }
+        });
+        let door = TcpListener::bind("127.0.0.1:0").unwrap();
+        let door_addr = door.local_addr().unwrap();
+        let out = Shared::default();
+        let (tx, rx) = mpsc::channel();
+        let o = out.clone();
+        let bridge =
+            thread::spawn(move || run(addr, Pipe { rx, buf: Vec::new() }, o, &mut Vec::new(), quick(), Some(door)));
+        let side = TcpStream::connect(door_addr).unwrap();
+        let mut side_w = side.try_clone().unwrap();
+        side_w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"side:1\",\"method\":\"x\"}\n").unwrap();
+        tx.send(b"{\"jsonrpc\":\"2.0\",\"id\":2}\n".to_vec()).unwrap();
+        let mut answer = String::new();
+        BufReader::new(side).read_line(&mut answer).unwrap();
+        assert_eq!(answer, "{\"jsonrpc\":\"2.0\",\"id\":\"side:1\",\"method\":\"x\"}\n");
+        wait_for(&out, "\"id\":2}\n");
+        drop(tx);
+        drop(side_w);
+        let _ = bridge.join();
+        assert_eq!(String::from_utf8(out.0.lock().unwrap().clone()).unwrap(), "{\"jsonrpc\":\"2.0\",\"id\":2}\n");
+    }
+
+    #[test]
     fn no_vm_is_said_plainly() {
         // A port nothing listens on: bind one, then let it go.
         let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let mut log = Vec::new();
-        let err = run(addr, std::io::empty(), Shared::default(), &mut log, quick()).unwrap_err();
+        let err = run(addr, std::io::empty(), Shared::default(), &mut log, quick(), None).unwrap_err();
         assert_eq!(err, format!("No Freally OS dev VM is listening on {addr}."));
     }
 }

@@ -144,7 +144,5 @@ pub fn cdp_chrome() -> String {
 /// `cargo xtask brain-bridge` (TASK-082): Claude Code's MCP server for the
 /// Brain, run in-process so stdout carries only MCP.
 fn brain_bridge_cmd(args: &[String]) -> Result<(), String> {
-    let port = brain_bridge::port_arg(args)?;
-    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
-    brain_bridge::run(addr, std::io::stdin(), std::io::stdout(), &mut std::io::stderr(), Default::default())
+    brain_bridge::serve(args)
 }
