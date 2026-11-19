@@ -322,7 +322,15 @@ impl Brain {
         // 0x00RRGGBB, little-endian: B, G, R, 0 in memory.
         let rgb: Vec<u8> = px.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0]]).collect();
         drop(px);
+        let t0 = Instant::now().as_ns();
         let png = fimage::png::encode_deflated(shot.w, shot.h, 3, &rgb);
+        fstd::info!(
+            "brain: screenshot {}x{}, {} KiB as PNG, encoded in {} ms",
+            shot.w,
+            shot.h,
+            png.len() / 1024,
+            Instant::now().as_ns().saturating_sub(t0) / 1_000_000
+        );
         Ok(ToolAnswer::png(fjson::base64::encode(&png)))
     }
 

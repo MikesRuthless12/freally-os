@@ -65,6 +65,57 @@ pub fn encode_deflated(w: u32, h: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
     encode_with(w, h, channels, pixels, true)
 }
 
+/// Each row with the PNG filter (none, Sub, Up, Average, Paeth) whose output
+/// is smallest by the sum of its bytes as signed values (the usual choice,
+/// ISO/IEC 15948 § 12.8): gradients and flat runs turn to near-zeros, which
+/// deflate takes far better.
+fn filtered(raw: &mut Vec<u8>, pixels: &[u8], row: usize, bpp: usize) {
+    let mut best = alloc::vec![0u8; row];
+    let mut cand = alloc::vec![0u8; row];
+    for (y, r) in pixels.chunks(row).enumerate() {
+        let up = if y > 0 { &pixels[(y - 1) * row..y * row] } else { &[][..] };
+        let mut best_cost = u64::MAX;
+        let mut best_f = 0u8;
+        for f in 0..5u8 {
+            let mut cost = 0u64;
+            for x in 0..row {
+                let a = if x >= bpp { r[x - bpp] } else { 0 };
+                let b = up.get(x).copied().unwrap_or(0);
+                let c = if x >= bpp { up.get(x - bpp).copied().unwrap_or(0) } else { 0 };
+                let p = match f {
+                    0 => 0,
+                    1 => a,
+                    2 => b,
+                    3 => ((a as u16 + b as u16) / 2) as u8,
+                    _ => paeth(a, b, c),
+                };
+                let v = r[x].wrapping_sub(p);
+                cand[x] = v;
+                cost += (v as i8).unsigned_abs() as u64;
+            }
+            if cost < best_cost {
+                best_cost = cost;
+                best_f = f;
+                core::mem::swap(&mut best, &mut cand);
+            }
+        }
+        raw.push(best_f);
+        raw.extend_from_slice(&best);
+    }
+}
+
+fn paeth(a: u8, b: u8, c: u8) -> u8 {
+    let p = a as i16 + b as i16 - c as i16;
+    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
+    if pa <= pb && pa <= pc {
+        a
+    } else if pb <= pc {
+        b
+    } else {
+        c
+    }
+}
+
 /// `raw` in stored deflate blocks.
 fn stored(z: &mut Vec<u8>, raw: &[u8]) {
     z.reserve(raw.len() + raw.len() / 65535 * 5 + 16);
@@ -86,9 +137,13 @@ fn encode_with(w: u32, h: u32, channels: u8, pixels: &[u8], deflated: bool) -> V
     let row = w as usize * channels as usize;
     assert_eq!(pixels.len(), row * h as usize, "pixel count");
     let mut raw = Vec::with_capacity((row + 1) * h as usize);
-    for r in pixels.chunks(row) {
-        raw.push(0); // filter: none
-        raw.extend_from_slice(r);
+    if deflated {
+        filtered(&mut raw, pixels, row, channels as usize);
+    } else {
+        for r in pixels.chunks(row) {
+            raw.push(0); // filter: none
+            raw.extend_from_slice(r);
+        }
     }
     let mut z = alloc::vec![0x78, 0x01]; // deflate, 32 KiB window, no dictionary
     if deflated {
@@ -193,19 +248,6 @@ pub fn decode(png: &[u8]) -> Result<Decoded, &'static str> {
         }
     }
     Ok(Decoded { w, h, channels, pixels })
-}
-
-#[cfg(feature = "decode")]
-fn paeth(a: u8, b: u8, c: u8) -> u8 {
-    let p = a as i16 + b as i16 - c as i16;
-    let (pa, pb, pc) = ((p - a as i16).abs(), (p - b as i16).abs(), (p - c as i16).abs());
-    if pa <= pb && pa <= pc {
-        a
-    } else if pb <= pc {
-        b
-    } else {
-        c
-    }
 }
 
 /// Decodes a PNG whose deflate stream uses only stored blocks and whose rows

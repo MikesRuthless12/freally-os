@@ -6,7 +6,8 @@
 //! - `rack`: the Rack's keys, LEDs and clock well, laid out;
 //! - `clock`: the 12-hour clock;
 //! - `launcher`: typing to filter the apps, choosing, starting;
-//! - `handoff`: what a swap hands the next build (dev images).
+//! - `handoff`: what a swap hands the next build (dev images);
+//! - `saver`: the four screensavers and Reduce Motion's still F.
 #![no_std]
 
 extern crate alloc;
@@ -15,3 +16,4 @@ pub mod clock;
 pub mod handoff;
 pub mod launcher;
 pub mod rack;
+pub mod saver;

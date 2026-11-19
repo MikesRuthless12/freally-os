@@ -30,5 +30,8 @@ fstd.workspace = true
 fui = { workspace = true, features = ["ui"] }
 fwire.workspace = true
 
+[dev-dependencies]
+fimage = { workspace = true, features = ["decode"] }
+
 [lints]
 workspace = true

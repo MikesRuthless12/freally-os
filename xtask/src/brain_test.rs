@@ -395,7 +395,16 @@ fn run_checks(port: u16, swap: &Value, crash: &Value) -> Result<Report, String> 
         if !missing.contains("no window is called") {
             return Err(missing);
         }
-        Ok(format!("{w}x{h} PNG, the Rack {rw}x{rh}; an unknown window refused"))
+        let log = m.ok("read_log", args([("service", "brain".into()), ("limit", 1000.into())]))?;
+        let enc = arr(log.get("records").unwrap_or(&Value::Null))
+            .iter()
+            .rev()
+            .map(|r| s(r, "msg"))
+            .find(|t| t.starts_with("brain: screenshot ") && t.contains("encoded in"))
+            .unwrap_or("")
+            .trim_start_matches("brain: ")
+            .to_string();
+        Ok(format!("{w}x{h} PNG, the Rack {rw}x{rh}; an unknown window refused; the Brain: {enc}"))
     });
     rep.check("resources", || {
         let r = m.request("resources/list", empty())?;

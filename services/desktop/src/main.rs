@@ -949,6 +949,11 @@ impl Desktop {
             if self.hovered.is_some() && self.tooltip.is_none() && self.pressed.is_none() && !self.tip_done {
                 until = until.min(self.hover_at + TOOLTIP_MS * 1_000_000);
             }
+            // The build made to crash wakes for its second.
+            #[cfg(feature = "swap-crash-test")]
+            {
+                until = until.min(self.born + 1_100_000_000);
+            }
             let _ = fstd::sys::wait_many(&items, until);
             match Self::drain(&self.rack.events) {
                 Ok(evs) => evs.into_iter().for_each(|(o, p)| self.rack_event(o, &p)),

@@ -19,6 +19,7 @@ fn cdpd_serves(m: &str) -> bool {
             "Freally.getBootTimeline"
                 | "Freally.getProcesses"
                 | "Freally.getFaults"
+                | "Freally.getManifest"
                 | "Freally.readBack"
                 | "Freally.inventory"
                 | "Freally.nodeAt"
