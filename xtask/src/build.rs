@@ -127,6 +127,15 @@ pub const TEST_PROGRAMS: &[UserProgram] =
 /// what only one flavour may carry is compiled out of the others); returns
 /// each one's image path, kind and built ELF.
 pub fn build_user(programs: &[&UserProgram], flavour: Flavour) -> Result<Vec<(String, fsi::Kind, PathBuf)>, String> {
+    build_user_with(programs, flavour, &[])
+}
+
+/// As [`build_user`], with `extra` features (`cargo xtask brain-swap --crash`).
+pub fn build_user_with(
+    programs: &[&UserProgram],
+    flavour: Flavour,
+    extra: &[&str],
+) -> Result<Vec<(String, fsi::Kind, PathBuf)>, String> {
     let mut c = util::cargo();
     c.env("CARGO_ENCODED_RUSTFLAGS", user_rustflags()).env_remove("RUSTFLAGS");
     c.args(["build", "--quiet", "--release"]).args(user_target_args());
@@ -135,6 +144,7 @@ pub fn build_user(programs: &[&UserProgram], flavour: Flavour) -> Result<Vec<(St
         c.args(["--package", p.package, "--bin", p.bin]);
         features.push(format!("{}/flavour-{}", p.package, flavour.name()));
     }
+    features.extend(extra.iter().map(|f| f.to_string()));
     c.args(["--features", &features.join(",")]);
     util::run_ok(&mut c)?;
     let dir = util::target_dir().join("x86_64-freally/release");

@@ -220,3 +220,11 @@ pub fn process_usage(process: u32) -> Result<(u64, u64), FErr> {
     let u = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap_or_default());
     Ok((u(56), u(64)))
 }
+
+/// Resets the machine (the boot-control grant: conductor). Returns only if refused.
+pub fn system_reset() -> FErr {
+    match call1(nr::SYSTEM_RESET, [0; 6]) {
+        Ok(_) => FErr::Internal,
+        Err(e) => e,
+    }
+}

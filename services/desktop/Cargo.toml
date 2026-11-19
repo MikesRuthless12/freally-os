@@ -18,6 +18,9 @@ path = "src/main.rs"
 flavour-release = []
 flavour-dev = []
 flavour-e2e = []
+# `cargo xtask brain-swap desktop --crash`: a build that ends a second after it
+# starts, to prove a swap's automatic rollback (TASK-083). Never in an image.
+swap-crash-test = []
 
 [dependencies]
 fcore-abi.workspace = true

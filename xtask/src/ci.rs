@@ -188,6 +188,17 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
         }),
     ));
     g.push((
+        "brain-test",
+        Box::new(move || {
+            // The Brain's builds are signed with the dev key, which never goes
+            // into the container: ci:local runs it, on KVM.
+            if container && !crate::keys::KeyName::Dev.secret_path().exists() {
+                return Ok(String::from("SKIP: no dev key in the container to sign the swaps; ci:local runs it"));
+            }
+            crate::brain_test::run()
+        }),
+    ));
+    g.push((
         "flavours",
         Box::new(move || {
             for f in [Flavour::Release, Flavour::Dev, Flavour::E2e] {

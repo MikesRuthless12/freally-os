@@ -7,4 +7,5 @@ after       = logger, stage
 restart     = always
 class       = interactive
 grants      = fonts, hardware, os
+handoff     = true
 flavours    = release, dev, e2e

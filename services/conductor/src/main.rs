@@ -19,6 +19,8 @@ mod faults;
 mod image;
 mod loader;
 mod services;
+#[cfg(any(feature = "flavour-dev", test))]
+mod swap;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -73,6 +75,7 @@ fn run(_bootstrap: u32) -> i64 {
         #[cfg(feature = "flavour-e2e")]
         items.extend(door.wait_item());
         let mut deadline = c.next_start().unwrap_or(u64::MAX).min(c.boot.deadline().unwrap_or(u64::MAX));
+        deadline = deadline.min(c.reboot_at.unwrap_or(u64::MAX));
         if cfg!(feature = "flavour-e2e") {
             deadline = deadline.min(Instant::after(Duration::from_millis(20)));
         }
@@ -94,6 +97,13 @@ fn run(_bootstrap: u32) -> i64 {
             }
         }
         c.boot.tick();
+        // The Brain's `reboot` (dev images): its answer has had time to leave.
+        #[cfg(feature = "flavour-dev")]
+        if c.reboot_at.is_some_and(|t| Instant::now().as_ns() >= t) {
+            c.reboot_at = None;
+            let e = fstd::sys::system_reset();
+            fstd::error!("conductor: the machine didn't restart: {}", e.describe());
+        }
         #[cfg(feature = "flavour-e2e")]
         door.poll(&mut c);
     }

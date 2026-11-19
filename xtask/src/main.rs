@@ -5,6 +5,8 @@
 mod atlas;
 mod bench;
 mod boot_check;
+mod brain_swap;
+mod brain_test;
 mod build;
 mod cdp;
 mod ci;
@@ -40,6 +42,8 @@ cargo xtask <command>
   run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe)
   probe                          boot the probe headless, check what it found, keep each page as a PNG
   brain-bridge [--port N]        the Brain's MCP server for Claude Code: stdio to the dev VM's COM2 (127.0.0.1:4552)
+  brain-swap <service> [--crash] swap_service's arguments: the service built for dev, signed with the dev key
+  brain-test                     the Brain, every tool, swap, rollback and reboot, against a dev VM (headless)
   cdp --os [--site] [--only=ids] the CDP legs: every coverage.json feature, spec by spec
   pack --flavour F [--out P]     pack an unsigned image
   sign <image> --key dev|staging sign an image in place
@@ -94,6 +98,8 @@ fn main() -> ExitCode {
         Some("run") => run::run_cmd(rest),
         Some("probe") => probe::probe_cmd(rest),
         Some("brain-bridge") => brain_bridge_cmd(rest),
+        Some("brain-swap") => brain_swap::brain_swap_cmd(rest),
+        Some("brain-test") => brain_test::brain_test_cmd(rest),
         Some("cdp") => cdp::cdp_cmd(rest),
         Some("boot-check") => boot_check::boot_check_cmd(rest),
         Some("version") => version::version_cmd(rest),

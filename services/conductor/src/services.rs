@@ -11,6 +11,7 @@
 use crate::faults::Kept;
 use crate::image::Image;
 use crate::loader::{self, Child};
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fcore_abi::{FErr, rights, signal, topic, well_known};
@@ -34,10 +35,18 @@ pub struct Service {
     crashes: Vec<u64>,
     pub restarts: u32,
     pub started_ns: u64,
-    start_at: Option<u64>,
-    sha: [u8; 32],
+    pub(crate) start_at: Option<u64>,
+    pub(crate) sha: [u8; 32],
     /// When the test door killed it (e2e), to report how long the restart took.
     pub killed_at: Option<u64>,
+    /// The build running when a swap replaced the image's (dev images, TASK-083).
+    pub(crate) build: Option<Rc<[u8]>>,
+    /// What a rollback restores: `Some(None)`, the image's build.
+    pub(crate) before: Option<Option<Rc<[u8]>>>,
+    /// Until when (ns) the swapped-in build ending rolls it back.
+    pub(crate) probation: Option<u64>,
+    /// The state the next start is handed (a swap's `handoff`).
+    pub(crate) handoff: Option<Handle>,
 }
 
 pub struct Conductor {
@@ -59,6 +68,8 @@ pub struct Conductor {
     pub boot: crate::bootctl::Boot,
     /// The FPDT's reset end and OS-loader start (ns, the firmware's clock), if any.
     pub firmware: Option<(u64, u64)>,
+    /// When the machine resets (the Brain's `reboot`, dev images).
+    pub reboot_at: Option<u64>,
 }
 
 fn rdtsc() -> u64 {
@@ -92,6 +103,10 @@ impl Conductor {
                 start_at: None,
                 sha: [0; 32],
                 killed_at: None,
+                build: None,
+                before: None,
+                probation: None,
+                handoff: None,
             })
             .collect();
         let boot = crate::bootctl::Boot::new(image.slot, &image.bootctl);
@@ -107,6 +122,7 @@ impl Conductor {
             door_out: Vec::new(),
             boot,
             firmware: None,
+            reboot_at: None,
         }
     }
 
@@ -245,8 +261,17 @@ impl Conductor {
             self.services[i].start_at = None;
             let m = self.services[i].m.clone();
             let grants = m.grants.iter().map(|g| loader::kernel_grant(g)).fold(0, |a, b| a | b);
-            let handles = self.granted_handles(&m);
-            let result = self.image.file(&m.binary).and_then(|elf| {
+            let mut handles = self.granted_handles(&m);
+            if let Some(state) = self.services[i].handoff.take() {
+                handles.push((String::from("handoff"), state));
+            }
+            // A swapped-in build (dev images), else the image's.
+            let build = self.services[i].build.clone();
+            let elf = match &build {
+                Some(b) => Ok(&b[..]),
+                None => self.image.file(&m.binary),
+            };
+            let result = elf.and_then(|elf| {
                 self.services[i].sha = fcrypto::sha2::sha256(elf);
                 loader::spawn(elf, &m.name, grants, self.image.flavour, handles)
             });
@@ -280,6 +305,18 @@ impl Conductor {
         let Some(child) = s.child.take() else { return };
         let (_, _, code) = fstd::sys::process_info(child.process.raw()).unwrap_or((0, true, -1));
         s.endpoint = None;
+        // A swapped-in build that ends within 5 s is rolled back (FR-018),
+        // and the build before it starts again at once.
+        if let Some(until) = s.probation.take()
+            && now < until
+        {
+            fstd::warn!("conductor: {}'s new build ended within 5 s ({code}); rolled back", s.m.name);
+            s.build = s.before.take().flatten();
+            s.state = ServiceState::Restarting;
+            s.restarts += 1;
+            s.start_at = Some(now);
+            return;
+        }
         let restart = match s.m.restart {
             Restart::Always => true,
             Restart::OnFailure => code != 0,
@@ -329,6 +366,14 @@ impl Conductor {
             c::FAULTS => self.faults_page(payload).map(|b| (b, Vec::new())),
             c::STAMP => self.stamp(&caller, payload).map(|b| (b, Vec::new())),
             c::MANIFEST => self.manifest(payload).map(|b| (b, Vec::new())),
+            #[cfg(feature = "flavour-dev")]
+            c::SWAP => self.swap(&caller, payload, &mut handles),
+            #[cfg(feature = "flavour-dev")]
+            c::ROLLBACK => self.rollback(&caller, payload),
+            #[cfg(feature = "flavour-dev")]
+            c::RESTART => self.restart_now(&caller, payload),
+            #[cfg(feature = "flavour-dev")]
+            c::REBOOT => self.reboot(&caller, payload),
             _ => Err((FErr::NotSupported, String::from("conductor doesn't serve that"))),
         };
         let msg = match reply {

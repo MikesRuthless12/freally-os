@@ -157,7 +157,7 @@ impl Client {
 }
 
 impl Client {
-    /// As `call` (no handles either way), but while it waits it also watches
+    /// As `call` (no handles sent; the reply's returned), but while it waits it also watches
     /// `others`, channels, running `serve(i)` whenever a message waits on
     /// `others[i]`: for a caller others keep asking meanwhile (conductor's
     /// test door asks cdpd, which asks conductor for the services, and so may
@@ -169,7 +169,7 @@ impl Client {
         deadline_ns: u64,
         others: &[u32],
         mut serve: impl FnMut(usize),
-    ) -> Result<Rep, CallError> {
+    ) -> Result<(Rep, Vec<Handle>), CallError> {
         use fcore_abi::signal;
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1).max(1);
@@ -193,7 +193,7 @@ impl Client {
                         let (code, text) = fwire::error_of(payload)?;
                         return Err(CallError::Remote(code, text));
                     }
-                    return Ok(fwire::from_payload(payload)?);
+                    return Ok((fwire::from_payload(payload)?, m.handles));
                 }
                 i => serve(i - 1),
             }

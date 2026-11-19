@@ -155,3 +155,53 @@ pub fn ask<Req: fwire::Wire, Rep: fwire::Wire>(ordinal: u32, req: &Req) -> Resul
     let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
     Ok(s.directory.call::<_, Rep>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(2)))?.0)
 }
+
+/// As [`ask`], moving `handles` along and waiting up to `wait` (a swap hands
+/// conductor the new build: TASK-083).
+pub fn ask_moving<Req: fwire::Wire, Rep: fwire::Wire>(
+    ordinal: u32,
+    req: &Req,
+    handles: Vec<Handle>,
+    wait: Duration,
+) -> Result<(Rep, Vec<Handle>), CallError> {
+    let mut st = STATE.0.borrow_mut();
+    let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
+    s.directory.call::<_, Rep>(ordinal, req, handles, Instant::after(wait))
+}
+
+/// A VMO holding `bytes`' length (u64, little-endian) and then the bytes: how
+/// a swap's new build and a handed-over state travel (TASK-083).
+pub fn sized_vmo(bytes: &[u8]) -> Result<Handle, FErr> {
+    let h = Handle::from_raw(crate::sys::vmo_create(bytes.len() as u64 + 8)?).ok_or(FErr::NoMemory)?;
+    crate::sys::vmo_write(h.raw(), 0, &(bytes.len() as u64).to_le_bytes())?;
+    crate::sys::vmo_write(h.raw(), 8, bytes)?;
+    Ok(h)
+}
+
+/// Reads a [`sized_vmo`] back; one claiming more than `max` bytes is refused.
+pub fn read_sized(h: &Handle, max: u64) -> Result<Vec<u8>, FErr> {
+    let mut len = [0u8; 8];
+    crate::sys::vmo_read(h.raw(), 0, &mut len)?;
+    let len = u64::from_le_bytes(len);
+    if len > max {
+        return Err(FErr::InvalidArgs);
+    }
+    let mut out = alloc::vec![0u8; len as usize];
+    crate::sys::vmo_read(h.raw(), 8, &mut out)?;
+    Ok(out)
+}
+
+/// The state the build before this one handed over in a swap (dev images),
+/// if there was one (TASK-083, TASK-085).
+pub fn handed_over() -> Option<Vec<u8>> {
+    let h = take_handle("handoff")?;
+    read_sized(&h, 16 << 20).ok()
+}
+
+/// Answers conductor's `handoff` request (`txid`, on `ch`) with `state`.
+pub fn hand_over(ch: &Channel, txid: u32, state: &[u8]) -> Result<(), FErr> {
+    let vmo = sized_vmo(state)?;
+    let body = fwire::to_payload(&c::HandedOff { state: HandleRef(0) });
+    let m = fwire::message_bytes(txid, c::HANDOFF, fwire::flags::REPLY, body).map_err(|_| FErr::Internal)?;
+    ch.send(&m, alloc::vec![vmo])
+}

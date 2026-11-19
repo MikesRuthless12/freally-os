@@ -19,6 +19,8 @@ use fcore_abi::Flavour;
 
 /// Paths a release image never carries.
 const DEV_ONLY: [&str; 3] = ["brain", "cdpd", "uart"];
+/// Words only conductor's swap (dev images) says (`services/conductor/src/swap.rs`).
+const SWAP_MARKER: &[u8] = b"only the Brain swaps services";
 
 pub fn validate_cmd(args: &[String]) -> Result<(), String> {
     let signed = !args.iter().any(|a| a == "--unsigned");
@@ -89,6 +91,27 @@ pub fn check(f: Flavour, b: &Built) -> Result<Vec<String>, String> {
             return Err("the dev kernel lacks the debug_log marker: the release check would prove nothing".into());
         }
         out.push("dev: debug_log is in Freally Core (the release check's control)".into());
+    }
+
+    // The Brain (TASK-088): in dev images alone, and conductor's swap with it.
+    let brain = paths.iter().find(|p| p.ends_with("/brain"));
+    match (f, brain) {
+        (Flavour::Dev, None) => {
+            return Err("the dev image has no Brain: the other flavours' check would prove nothing".into());
+        }
+        (Flavour::Dev, Some(_)) => {}
+        (_, Some(p)) => return Err(format!("the {name} image carries {p}")),
+        (_, None) => out.push(format!("{name}: no Brain in the image")),
+    }
+    let (_, conductor) = fsi::recheck_file(&image, "/system/conductor")
+        .map_err(|e| format!("{name} image's conductor: {}", e.describe()))?;
+    match (f, contains(conductor, SWAP_MARKER)) {
+        (Flavour::Dev, true) => out.push("dev: the Brain, and conductor's swap (the other flavours' control)".into()),
+        (Flavour::Dev, false) => {
+            return Err("the dev conductor can't swap: the other flavours' check would prove nothing".into());
+        }
+        (_, true) => return Err(format!("the {name} conductor has the swap compiled in")),
+        (_, false) => out.push(format!("{name}: no swap in conductor")),
     }
 
     // The manifest rules, on the image as packed.

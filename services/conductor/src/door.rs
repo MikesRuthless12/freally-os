@@ -128,7 +128,7 @@ impl Door {
             let Some(cl) = self.cdpd.as_mut() else { continue };
             let deadline = Instant::after(Duration::from_secs(10));
             match cl.call_serving::<_, cd::Answer>(cd::CALL, &call, deadline, &dirs, |k| c.request(who[k])) {
-                Ok(a) => return alloc::format!("json {}", a.result),
+                Ok((a, _)) => return alloc::format!("json {}", a.result),
                 Err(fstd::ipc::CallError::Remote(_, why)) => return alloc::format!("error: {why}"),
                 Err(e) => {
                     self.cdpd = None;

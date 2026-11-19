@@ -163,3 +163,30 @@ pub fn qemu_exit(code: u8) -> ! {
     outl(0xF4, code as u32);
     halt_forever()
 }
+
+/// Resets the machine (TASK-084): the chipset's reset control register
+/// (0xCF9, a full reset), then the keyboard controller's reset line, then a
+/// triple fault: an empty interrupt table and a breakpoint.
+pub fn reset() -> ! {
+    outb(0xCF9, 0x02);
+    outb(0xCF9, 0x06);
+    for _ in 0..1_000_000 {
+        core::hint::spin_loop();
+    }
+    // The 8042's output port: pulse the reset line, once its input is free.
+    for _ in 0..100_000 {
+        if inb(0x64) & 0x02 == 0 {
+            break;
+        }
+    }
+    outb(0x64, 0xFE);
+    for _ in 0..1_000_000 {
+        core::hint::spin_loop();
+    }
+    let empty: [u16; 5] = [0; 5];
+    // SAFETY: the machine is being reset: an empty IDT makes the breakpoint
+    // a triple fault, which resets the CPU. Nothing runs after it.
+    unsafe {
+        core::arch::asm!("lidt [{}]", "int3", in(reg) &empty, options(noreturn));
+    }
+}

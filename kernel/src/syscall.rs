@@ -544,6 +544,15 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let aspace = proc::aspace_of(&p).ok_or(FErr::BadState)?;
             one(aspace.map(&Vmo::wrap(phys, len), 0, len, 0, perms)?)
         }
+        // The boot-control grant (conductor): the machine resets, through the
+        // chipset's reset register, else the keyboard controller, else a
+        // triple fault.
+        nr::SYSTEM_RESET => {
+            if grants() & grant::BOOT_CONTROL == 0 {
+                return Err(FErr::AccessDenied);
+            }
+            crate::arch::cpu::reset()
+        }
         // e2e kernels only, conductor only: a panic on purpose, so a spec can
         // prove the last-panic page reaches Monitor on the next boot (TASK-074).
         #[cfg(feature = "flavour-e2e")]

@@ -87,6 +87,27 @@ impl Boot {
         }
     }
 
+    /// The next boot from the other slot, if it holds a system that started
+    /// cleanly (the Brain's `reboot { slot: "other" }`, dev images; TASK-084).
+    #[cfg(any(feature = "flavour-dev", test))]
+    #[cfg_attr(not(feature = "flavour-dev"), allow(dead_code))]
+    pub fn switch_to_other(&mut self) -> Result<(), alloc::string::String> {
+        let other = 1 - self.slot;
+        let mut ctl = self.ctl.ok_or_else(|| alloc::string::String::from("there's no A/B record to change"))?;
+        let s = &ctl.slot[other as usize];
+        if s.state != State::Good {
+            return Err(alloc::format!(
+                "slot {} holds no system that started cleanly ({})",
+                slot_name(other),
+                s.state.name()
+            ));
+        }
+        ctl.active = other;
+        write(&ctl).map_err(|e| alloc::format!("the firmware refused the A/B record ({})", e.describe()))?;
+        self.ctl = Some(ctl);
+        Ok(())
+    }
+
     /// An update in slot `s`: a trial of `version`, made active for the next
     /// boot. Its one caller today is the e2e door, so it's compiled into e2e
     /// images only; Settings ▸ Updates (v0.8.0) takes the gate off.

@@ -48,6 +48,14 @@ const LAUNCHER_W: u32 = 560;
 const LAUNCHER_ROW: u32 = 44;
 const LAUNCHER_ROWS: usize = 6;
 
+/// The desktop's door for conductor in a swap (dev images, TASK-085): its
+/// registered endpoint and the connections conductor opened on it.
+#[cfg(feature = "flavour-dev")]
+struct Door {
+    listen: Channel,
+    peers: Vec<Channel>,
+}
+
 /// One of the desktop's windows: its surface, mapped, and its events.
 struct Win {
     id: u32,
@@ -108,6 +116,11 @@ struct Desktop {
     /// The Rack's and the launcher's accessibility trees (TASK-063).
     rack_ax: fstd::ax::Publisher,
     launcher_ax: fstd::ax::Publisher,
+    #[cfg(feature = "flavour-dev")]
+    door: Option<Door>,
+    /// When this build started (the crash-test build ends a second later).
+    #[cfg(feature = "swap-crash-test")]
+    born: u64,
 }
 
 fn deadline() -> u64 {
@@ -235,7 +248,11 @@ fn run(_bootstrap: u32) -> i64 {
     }
     let _ = fstd::log::connect();
     match Desktop::open() {
-        Ok(mut d) => d.serve(),
+        Ok(mut d) => {
+            #[cfg(feature = "flavour-dev")]
+            d.open_door();
+            d.serve()
+        }
         Err(e) => {
             fstd::error!("desktop: {e}");
             1
@@ -322,6 +339,10 @@ impl Desktop {
             os: os_art(),
             rack_ax: Default::default(),
             launcher_ax: Default::default(),
+            #[cfg(feature = "flavour-dev")]
+            door: None,
+            #[cfg(feature = "swap-crash-test")]
+            born: Instant::now().as_ns(),
         };
         d.services();
         d.draw_rack();
@@ -824,6 +845,78 @@ impl Desktop {
         }
     }
 
+    /// A swap (dev images, TASK-085): the state the build before handed
+    /// over is taken up, then the desktop registers so conductor can ask it
+    /// for its own at the next swap.
+    #[cfg(feature = "flavour-dev")]
+    fn open_door(&mut self) {
+        use svc_desktop::handoff::State;
+        if let Some(st) = fstd::service::handed_over().and_then(|b| State::decode(&b)) {
+            if st.launcher_open {
+                self.open_launcher();
+                if let Some((_, l)) = self.launcher.as_mut() {
+                    l.query = st.query.clone();
+                    l.selected = st.selected as usize;
+                }
+                self.draw_launcher();
+            }
+            fstd::info!(
+                "desktop: took over from the build before (the launcher {})",
+                if st.launcher_open { "open" } else { "closed" }
+            );
+        }
+        if let Ok((listen, give)) = Channel::pair()
+            && fstd::service::register(give).is_ok()
+        {
+            self.door = Some(Door { listen, peers: Vec::new() });
+        }
+    }
+
+    /// The state to hand over.
+    #[cfg(feature = "flavour-dev")]
+    fn state(&self) -> svc_desktop::handoff::State {
+        let (open, query, selected) = match &self.launcher {
+            Some((_, l)) => (true, l.query.clone(), l.selected as u32),
+            None => (false, String::new(), 0),
+        };
+        svc_desktop::handoff::State { version: svc_desktop::handoff::VERSION, launcher_open: open, query, selected }
+    }
+
+    /// Conductor's connections, and its `handoff` on them.
+    #[cfg(feature = "flavour-dev")]
+    fn serve_door(&mut self) {
+        let state = self.state().encode();
+        let Some(door) = self.door.as_mut() else { return };
+        while let Ok(m) = door.listen.try_recv() {
+            if let Ok((h, p)) = fwire::parse(&m.bytes)
+                && h.ordinal == c::INCOMING
+                && let Ok(inc) = fwire::from_payload::<c::Incoming>(p)
+                && inc.client == "conductor"
+                && let Some(ch) = m.handles.into_iter().next()
+            {
+                door.peers.push(Channel(ch));
+            }
+        }
+        door.peers.retain(|peer| {
+            loop {
+                match peer.try_recv() {
+                    Ok(m) => {
+                        if let Ok((h, _)) = fwire::parse(&m.bytes)
+                            && h.ordinal == c::HANDOFF
+                        {
+                            match fstd::service::hand_over(peer, h.txid, &state) {
+                                Ok(()) => fstd::info!("desktop: handed its state over"),
+                                Err(e) => fstd::warn!("desktop: couldn't hand its state over: {}", e.describe()),
+                            }
+                        }
+                    }
+                    Err(FErr::ShouldWait) => break true,
+                    Err(_) => break false,
+                }
+            }
+        });
+    }
+
     fn serve(&mut self) -> i64 {
         loop {
             let mut items = alloc::vec![[self.rack.events.0.raw(), signal::READABLE | signal::PEER_CLOSED]];
@@ -832,6 +925,11 @@ impl Desktop {
             }
             if let Some((w, _)) = &self.launcher {
                 items.push([w.events.0.raw(), signal::READABLE]);
+            }
+            #[cfg(feature = "flavour-dev")]
+            if let Some(d) = &self.door {
+                items.push([d.listen.0.raw(), signal::READABLE]);
+                items.extend(d.peers.iter().map(|p| [p.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
             }
             // Wake for the tooltip's 600 ms, or the clock's next minute.
             let now = Instant::now().as_ns();
@@ -852,6 +950,12 @@ impl Desktop {
             }
             if let Some(evs) = self.launcher.as_ref().and_then(|(w, _)| Self::drain(&w.events).ok()) {
                 evs.into_iter().for_each(|(o, p)| self.launcher_event(o, &p));
+            }
+            #[cfg(feature = "flavour-dev")]
+            self.serve_door();
+            #[cfg(feature = "swap-crash-test")]
+            if Instant::now().as_ns() > self.born + 1_000_000_000 {
+                panic!("a build made to crash (cargo xtask brain-swap --crash)");
             }
             let now = Instant::now().as_ns();
             if let Some(i) = self.hovered

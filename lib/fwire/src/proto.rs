@@ -26,6 +26,12 @@ pub mod conductor {
     /// A service's manifest as the image carries it (`ByName` → `Text`;
     /// TASK-081: the Brain's `freally://services/{name}/manifest`).
     pub const MANIFEST: u32 = 12;
+    /// Conductor to a service with `handoff = true`, on a connection of its
+    /// own, during a swap (dev images; TASK-083): its state (`HandedOff`).
+    pub const HANDOFF: u32 = 13;
+    /// The Brain's `reboot` (dev images; TASK-084): `Reboot` → `()`, then the
+    /// machine resets half a second later (the answer has time to leave).
+    pub const REBOOT: u32 = 14;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
@@ -88,12 +94,32 @@ pub mod conductor {
     }
 
     wire_struct! {
-        /// `swap` (brain only, dev flavour only): the binary is handle 0.
+        /// `swap` (brain only, dev images only; TASK-083): the new build is
+        /// handle 0, a VMO holding its length (u64, little-endian) and then the
+        /// ELF; `signature` is the dev key's Ed25519 signature over its SHA-256.
         pub struct Swap { pub name: String, pub binary: HandleRef, pub signature: [u8; 64] }
     }
 
     wire_struct! {
+        /// `ms`: from the call to the new build started, its state handed over.
         pub struct Swapped { pub old_sha256: [u8; 32], pub new_sha256: [u8; 32], pub ms: u32 }
+    }
+
+    wire_struct! {
+        /// `reboot`: into the same slot, or the other.
+        pub struct Reboot { pub other_slot: bool }
+    }
+
+    wire_struct! {
+        /// `rollback`'s answer: the build running again.
+        pub struct RolledBack { pub restored_sha256: [u8; 32] }
+    }
+
+    wire_struct! {
+        /// `handoff`'s answer (a service with `handoff = true`, dev images):
+        /// its state, a VMO (handle 0) holding the length (u64, little-endian)
+        /// and then the bytes. The new build finds it as the grant `handoff`.
+        pub struct HandedOff { pub state: HandleRef }
     }
 
     wire_struct! {

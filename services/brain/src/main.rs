@@ -376,6 +376,98 @@ impl Brain {
         Ok(Value::obj([("ok", true.into())]))
     }
 
+    /// Waits (≤ 10 s) until `name` runs with a build `ok` accepts; the ms
+    /// from `t0`, and its row.
+    fn wait_up(
+        &self,
+        name: &str,
+        t0: u64,
+        ok: impl Fn(&c::ServiceInfo) -> bool,
+    ) -> Result<(u64, c::ServiceInfo), String> {
+        let until = Instant::after(Duration::from_secs(10));
+        loop {
+            if let Some(s) = services()?.into_iter().find(|s| s.name == name)
+                && s.state == c::ServiceState::Running
+                && ok(&s)
+            {
+                return Ok((Instant::now().as_ns().saturating_sub(t0) / 1_000_000, s));
+            }
+            if Instant::now().as_ns() > until {
+                return Err(format!("{name} wasn't running again within 10 s"));
+            }
+            fstd::time::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn row(&self, name: &str) -> Result<c::ServiceInfo, String> {
+        services()?.into_iter().find(|s| s.name == name).ok_or_else(|| format!("no service is called {name}"))
+    }
+
+    fn restart(&mut self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
+        let was = self.row(name)?;
+        let t0 = Instant::now().as_ns();
+        conductor::<_, ()>(c::RESTART, &c::ByName { name: name.to_string() })?;
+        let (ms, _) = self.wait_up(name, t0, |s| s.restarts > was.restarts)?;
+        Ok(Value::obj([("ok", true.into()), ("ms", ms.into())]))
+    }
+
+    /// The new build in, its state handed over; then 5 s watched, since a
+    /// build that ends in them is rolled back (FR-018) and the answer says so.
+    fn swap(&mut self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
+        let field = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or_default();
+        let build = fjson::base64::decode(field("binary_base64")).ok_or("binary_base64 isn't base64")?;
+        let signature: [u8; 64] = fjson::base64::decode(field("signature_base64"))
+            .and_then(|s| s.try_into().ok())
+            .ok_or("signature_base64 isn't a 64-byte signature in base64")?;
+        self.row(name)?;
+        let vmo = fstd::service::sized_vmo(&build).map_err(|e| format!("no room for the build: {e:?}"))?;
+        let t0 = Instant::now().as_ns();
+        let swap = c::Swap { name: name.to_string(), binary: fwire::HandleRef(0), signature };
+        let (sw, _) =
+            fstd::service::ask_moving::<_, c::Swapped>(c::SWAP, &swap, alloc::vec![vmo], Duration::from_secs(15))
+                .map_err(|e| match e {
+                    CallError::Remote(code, why) if code == FErr::Integrity as i32 => format!("Integrity: {why}"),
+                    CallError::Remote(_, why) => why,
+                    e => format!("conductor: {e:?}"),
+                })?;
+        let (ms, up) = self.wait_up(name, t0, |s| s.binary_sha256 == sw.new_sha256)?;
+        // The probation: one more restart means the new build ended and
+        // conductor put the old one back (the hashes may match: a rebuild).
+        let until = Instant::after(Duration::from_secs(5));
+        while Instant::now().as_ns() < until {
+            fstd::time::sleep(Duration::from_millis(100));
+            if self.row(name)?.restarts > up.restarts {
+                return Err(format!(
+                    "the new build ({}) ended within 5 s and was rolled back: {} runs again",
+                    hex(&sw.new_sha256[..6]),
+                    hex(&sw.old_sha256[..6])
+                ));
+            }
+        }
+        fstd::info!("brain: {name} swapped in {ms} ms and kept");
+        Ok(Value::obj([
+            ("old_sha256", hex(&sw.old_sha256).into()),
+            ("new_sha256", hex(&sw.new_sha256).into()),
+            ("ms", ms.into()),
+        ]))
+    }
+
+    fn rollback(&mut self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
+        let t0 = Instant::now().as_ns();
+        let r = conductor::<_, c::RolledBack>(c::ROLLBACK, &c::ByName { name: name.to_string() })?;
+        let (ms, _) = self.wait_up(name, t0, |s| s.binary_sha256 == r.restored_sha256)?;
+        Ok(Value::obj([("restored_sha256", hex(&r.restored_sha256).into()), ("ms", ms.into())]))
+    }
+
+    fn reboot(&mut self, args: &Value) -> Result<Value, String> {
+        let other_slot = args.get("slot").and_then(Value::as_str) == Some("other");
+        conductor::<_, ()>(c::REBOOT, &c::Reboot { other_slot })?;
+        Ok(Value::obj([("ok", true.into())]))
+    }
+
     fn set_theme(&mut self, args: &Value) -> Result<Value, String> {
         let theme = match args.get("theme").and_then(Value::as_str) {
             Some("light") => st::Theme::Light,
@@ -399,7 +491,11 @@ impl Host for Brain {
             "screenshot" => self.screenshot(args),
             "send_input" => self.send_input(args).map(ToolAnswer::json),
             "set_theme" => self.set_theme(args).map(ToolAnswer::json),
-            other => Err(format!("{other} isn't wired yet (TASK-084)")),
+            "restart_service" => self.restart(args).map(ToolAnswer::json),
+            "swap_service" => self.swap(args).map(ToolAnswer::json),
+            "rollback_service" => self.rollback(args).map(ToolAnswer::json),
+            "reboot" => self.reboot(args).map(ToolAnswer::json),
+            other => Err(format!("{other} isn't a tool the Brain has")),
         };
         answer.unwrap_or_else(|why| {
             fstd::warn!("brain: {} refused: {why}", tool.name);

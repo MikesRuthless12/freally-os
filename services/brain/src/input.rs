@@ -70,22 +70,44 @@ fn key_for(c: char) -> Option<(u16, bool)> {
 /// The presses for `usage` with `held` modifiers (bits): each modifier
 /// down in turn, the key down and up, the modifiers up in reverse.
 fn tap(out: &mut Vec<Press>, usage: u16, held: u8) {
-    let order = [(1u8, SHIFT), (2, CTRL), (4, ALT), (8, META)];
-    let mut bits = 0u8;
-    for (b, u) in order {
-        if held & b != 0 {
-            bits |= b;
-            out.push(Press { usage: u, down: true, ch: 0, modifiers: bits });
+    press_mods(out, held, true);
+    let ch = us_char(usage, mods(held)).filter(|_| held & !1 == 0).map_or(0, |c| c as u32);
+    out.push(Press { usage, down: true, ch, modifiers: held });
+    out.push(Press { usage, down: false, ch: 0, modifiers: held });
+    press_mods(out, held, false);
+}
+
+const MODIFIERS: [(u8, u16); 4] = [(1, SHIFT), (2, CTRL), (4, ALT), (8, META)];
+
+/// The `held` modifiers going down in turn (each event carrying the
+/// modifiers held after it, as drv-i8042's do), or up in reverse.
+fn press_mods(out: &mut Vec<Press>, held: u8, down: bool) {
+    if down {
+        let mut bits = 0u8;
+        for (b, u) in MODIFIERS {
+            if held & b != 0 {
+                bits |= b;
+                out.push(Press { usage: u, down: true, ch: 0, modifiers: bits });
+            }
+        }
+    } else {
+        let mut bits = held;
+        for (b, u) in MODIFIERS.iter().rev() {
+            if held & b != 0 {
+                bits &= !b;
+                out.push(Press { usage: *u, down: false, ch: 0, modifiers: bits });
+            }
         }
     }
-    let ch = us_char(usage, mods(held)).filter(|_| held & !1 == 0).map_or(0, |c| c as u32);
-    out.push(Press { usage, down: true, ch, modifiers: bits });
-    out.push(Press { usage, down: false, ch: 0, modifiers: bits });
-    for (b, u) in order.iter().rev() {
-        if held & b != 0 {
-            bits &= !b;
-            out.push(Press { usage: *u, down: false, ch: 0, modifiers: bits });
-        }
+}
+
+fn modifier(name: &str) -> Option<u8> {
+    match name {
+        "shift" => Some(1),
+        "ctrl" | "control" => Some(2),
+        "alt" => Some(4),
+        "super" | "meta" | "win" | "cmd" => Some(8),
+        _ => None,
     }
 }
 
@@ -106,13 +128,15 @@ pub fn chord(chord: &str) -> Result<Vec<Press>, String> {
     let (last, rest) = parts.split_last().ok_or("an empty chord")?;
     let mut held = 0u8;
     for m in rest {
-        held |= match m.as_str() {
-            "shift" => 1,
-            "ctrl" | "control" => 2,
-            "alt" => 4,
-            "super" | "meta" | "win" | "cmd" => 8,
-            other => return Err(format!("{other:?} isn't a modifier (Shift, Ctrl, Alt, Super)")),
-        };
+        held |= modifier(m).ok_or_else(|| format!("{m:?} isn't a modifier (Shift, Ctrl, Alt, Super)"))?;
+    }
+    // A chord ending in a modifier taps the modifiers alone ("Super" opens
+    // the launcher).
+    if let Some(bit) = modifier(last) {
+        let mut out = Vec::new();
+        press_mods(&mut out, held | bit, true);
+        press_mods(&mut out, held | bit, false);
+        return Ok(out);
     }
     let usage = if let Some(&(_, u)) = NAMED.iter().find(|(n, _)| n == last) {
         u
@@ -169,6 +193,14 @@ mod tests {
         assert_eq!(downs(&chord("ctrl+shift+tab").unwrap()).last(), Some(&(0x2B, 0, 3)));
         assert_eq!(downs(&chord("F5").unwrap()), [(0x3E, 0, 0)]);
         assert_eq!(downs(&chord("Enter").unwrap()), [(0x28, 0, 0)]);
+        // Super alone: the tap that opens the launcher, Meta held on its own down.
+        assert_eq!(
+            chord("Super").unwrap(),
+            [
+                Press { usage: META, down: true, ch: 0, modifiers: 8 },
+                Press { usage: META, down: false, ch: 0, modifiers: 0 },
+            ]
+        );
         assert!(chord("Hyper+A").unwrap_err().contains("isn't a modifier"));
         assert!(chord("Ctrl+Banana").unwrap_err().contains("isn't a key name"));
     }
