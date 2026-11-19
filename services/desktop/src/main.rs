@@ -139,6 +139,8 @@ struct Desktop {
     launcher: Option<(Win, Launcher)>,
     shortcuts: Option<Channel>,
     clock: String,
+    /// The clock's format, as stage holds it (Settings, TASK-104).
+    clock_24h: bool,
     stamped: bool,
     /// The OS's renders at the screen's scale, if the image carries them.
     os: Option<Bundle<'static>>,
@@ -326,6 +328,22 @@ impl Desktop {
                 },
                 shortcut: "Super+M",
             },
+            Known {
+                app: App {
+                    name: String::from("Settings"),
+                    description: String::from("Your look, your account, and this machine."),
+                    service: String::from("settings"),
+                },
+                shortcut: "Super+I",
+            },
+            Known {
+                app: App {
+                    name: String::from("Files"),
+                    description: String::from("Your home: its folders, its files, and the bin."),
+                    service: String::from("files"),
+                },
+                shortcut: "Super+E",
+            },
         ];
         let mut keys = alloc::vec![Key::Launcher];
         for (i, k) in known.iter().enumerate() {
@@ -347,6 +365,9 @@ impl Desktop {
                 y: (scr.h - rack_h) as i32,
             },
         )?;
+        // A desktop started again (a swap, a crash) keeps the clock's format.
+        let clock_24h =
+            stage.call::<_, st::Look>(st::LOOK, &(), Vec::new(), deadline()).is_ok_and(|(l, _)| l.clock_24h);
         let n = known.len();
         let mut d = Desktop {
             stage,
@@ -369,6 +390,7 @@ impl Desktop {
             launcher: None,
             shortcuts,
             clock: String::new(),
+            clock_24h,
             stamped: false,
             os: os_art(pct(&theme)),
             rack_ax: Default::default(),
@@ -411,7 +433,7 @@ impl Desktop {
         let (hovered, pressed) = (self.hovered, self.pressed);
         let avail: Vec<bool> = keys.iter().map(|k| self.key_available(*k)).collect();
         let lit: Vec<bool> = keys.iter().map(|k| matches!(k, Key::App(i) if self.running[*i])).collect();
-        self.clock = clock::twelve_hour(fstd::time::utc_ns());
+        self.clock = clock::words(fstd::time::utc_ns(), self.clock_24h);
         let text = self.clock.clone();
         let (tw, line) = self.fonts.measure(t, TextStyle::Clock, &text);
         let plate = art(self.os.as_ref(), t, "rack_faceplate");
@@ -973,8 +995,13 @@ impl Desktop {
                     self.open_launcher();
                 }
             }
-            st::Shortcut::Monitor | st::Shortcut::Terminal => {
-                let want = if e.shortcut == st::Shortcut::Monitor { "monitor" } else { "terminal" };
+            st::Shortcut::Monitor | st::Shortcut::Terminal | st::Shortcut::Settings | st::Shortcut::Files => {
+                let want = match e.shortcut {
+                    st::Shortcut::Monitor => "monitor",
+                    st::Shortcut::Settings => "settings",
+                    st::Shortcut::Files => "files",
+                    _ => "terminal",
+                };
                 if let Some(i) = self.known.iter().position(|k| k.app.service == want) {
                     if self.available[i] {
                         self.start(i);
@@ -1212,6 +1239,12 @@ impl Desktop {
                                 self.saver_event(e);
                             }
                         }
+                        // The loop's clock check redraws the Rack in the new format.
+                        st::EV_CLOCK => {
+                            if let Ok(c) = fwire::from_payload::<st::SetClock>(&p) {
+                                self.clock_24h = c.h24;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1238,7 +1271,7 @@ impl Desktop {
             {
                 self.show_tooltip(i);
             }
-            if clock::twelve_hour(fstd::time::utc_ns()) != self.clock {
+            if clock::words(fstd::time::utc_ns(), self.clock_24h) != self.clock {
                 self.services();
                 self.draw_rack();
             }

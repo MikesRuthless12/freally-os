@@ -7,5 +7,26 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "settings"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = ["fimage/guard"]
+flavour-e2e = ["fimage/guard"]
+
+[dependencies]
+app-session = { path = "../session" }
+fapp.workspace = true
+fcore-abi.workspace = true
+fimage.workspace = true
+fstd.workspace = true
+fui = { workspace = true, features = ["ui"] }
+fwire.workspace = true
+
 [lints]
 workspace = true

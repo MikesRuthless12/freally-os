@@ -92,6 +92,14 @@ struct Stage {
     art: Option<Art>,
     /// The screensaver's timer (TASK-077C).
     idle: svc_stage::idle::Idle,
+    /// The wallpaper (an index into `st::WALLPAPERS`) and the Rack clock's
+    /// format, as Settings last chose (TASK-104).
+    wallpaper: u8,
+    clock_24h: bool,
+    /// The scale the screen's EDID gives, and whether it's the one in use
+    /// (Settings' *Automatic*; TASK-104).
+    auto_pct: u16,
+    scale_auto: bool,
 }
 
 /// Who may read back the windows and the pointer: the test door (conductor
@@ -131,6 +139,9 @@ struct Art {
     scales: Vec<(u16, Bundle<'static>)>,
     bundle: Bundle<'static>,
     walls: Bundle<'static>,
+    /// The wallpaper chosen (TASK-104): `studio`, `circuit`, `orbit` or
+    /// `connected`, each the piece `<theme>/wallpaper[-<look>]`.
+    look: String,
     dark: Option<compose::ThemeArt<'static>>,
     light: Option<compose::ThemeArt<'static>>,
 }
@@ -154,7 +165,14 @@ impl Art {
             SCALES.iter().filter_map(|&p| os_bundle(&alloc::format!("os:{p}")).map(|b| (p, b))).collect();
         let bundle = scales.iter().find(|(p, _)| *p == pct)?.1;
         fstd::info!("stage: art at {pct} %");
-        Some(Art { scales, bundle, walls: os_bundle("os:wallpaper")?, dark: None, light: None })
+        Some(Art {
+            scales,
+            bundle,
+            walls: os_bundle("os:wallpaper")?,
+            look: String::from("studio"),
+            dark: None,
+            light: None,
+        })
     }
 
     /// The scale changed: the strips made for it; the grounds stay.
@@ -178,7 +196,9 @@ impl Art {
     fn for_theme(&mut self, mode: Mode, w: u32, h: u32) -> Option<&compose::ThemeArt<'static>> {
         let (name, slot) = if mode == Mode::Light { ("light", &mut self.light) } else { ("dark", &mut self.dark) };
         if slot.is_none() {
-            let wall = piece(&self.walls, name, "wallpaper")?;
+            // A look this image has no render of falls back to studio.
+            let chosen = alloc::format!("wallpaper-{}", self.look);
+            let wall = piece(&self.walls, name, &chosen).or_else(|| piece(&self.walls, name, "wallpaper"))?;
             let (strip, strip_focused) =
                 (piece(&self.bundle, name, "title_strip")?, piece(&self.bundle, name, "title_strip_focused")?);
             *slot = Some(compose::ThemeArt { ground: fimage::blit::cover(&wall, w, h), strip, strip_focused });
@@ -249,6 +269,10 @@ fn run(_bootstrap: u32) -> i64 {
         refresh: Vec::new(),
         cursor: Cursor::new(screen.w as i32 / 2, screen.h as i32 / 2, Instant::now().as_ns()),
         idle: svc_stage::idle::Idle::new(Instant::now().as_ns()),
+        wallpaper: 0,
+        clock_24h: false,
+        auto_pct: pct,
+        scale_auto: true,
         shortcuts: None,
         stamped: false,
         art: Art::load(pct),
@@ -386,13 +410,22 @@ impl Stage {
             }
             st::SET_SCALE => {
                 fwire::from_payload::<st::SetScale>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|sc| {
-                    if !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {
-                        return Err((FErr::AccessDenied, "only settings, the shell and cdpd set the scale"));
+                    if !matches!(name.as_str(), "settings" | "accounts" | "shell" | "terminal" | "cdpd" | "conductor") {
+                        return Err((FErr::AccessDenied, "only settings, accounts, the shell and cdpd set the scale"));
                     }
-                    if !(100..=300).contains(&sc.pct) || sc.pct % 25 != 0 {
-                        return Err((FErr::InvalidArgs, "a scale from 100 to 300 %, in steps of 25"));
+                    // 0: the screen's own (Settings' Automatic).
+                    if sc.pct != 0 && (!(100..=300).contains(&sc.pct) || sc.pct % 25 != 0) {
+                        return Err((
+                            FErr::InvalidArgs,
+                            "a scale from 100 to 300 %, in steps of 25 (0: the screen's own)",
+                        ));
                     }
-                    self.set_scale(sc.pct);
+                    self.scale_auto = sc.pct == 0;
+                    let pct = if sc.pct == 0 { self.auto_pct } else { sc.pct };
+                    // The scale in use already: nothing to rescale, no window told.
+                    if pct != (self.theme.scale * 100.0 + 0.5) as u16 {
+                        self.set_scale(pct);
+                    }
                     Ok((Vec::new(), Vec::new()))
                 })
             }
@@ -402,6 +435,10 @@ impl Stage {
                     h: self.screen.h,
                     scale_pct: (self.theme.scale * 100.0 + 0.5) as u16,
                     theme: if self.theme.mode == Mode::Light { st::Theme::Light } else { st::Theme::Dark },
+                    work_h: {
+                        let (top, bottom) = self.desk.windows.work();
+                        (bottom - top).max(0) as u32
+                    },
                 }),
                 Vec::new(),
             )),
@@ -473,8 +510,8 @@ impl Stage {
             }
             st::SET_SAVER | st::SET_MOTION => {
                 let door = cfg!(feature = "flavour-e2e") && matches!(name.as_str(), "conductor" | "cdpd");
-                if !door && name != "settings" {
-                    Err((FErr::AccessDenied, "only settings (and the e2e door) choose the screensaver"))
+                if !door && name != "settings" && name != "accounts" {
+                    Err((FErr::AccessDenied, "only settings and accounts (and the e2e door) choose the screensaver"))
                 } else if h.ordinal == st::SET_SAVER {
                     fwire::from_payload::<st::SetSaver>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).map(|v| {
                         self.idle.set(v.kind.min(3), v.idle_ms as u64 * 1_000_000, Instant::now().as_ns());
@@ -490,11 +527,65 @@ impl Stage {
                     })
                 }
             }
+            st::SET_WALLPAPER => {
+                let door = cfg!(feature = "flavour-e2e") && matches!(name.as_str(), "conductor" | "cdpd");
+                if !door && name != "settings" && name != "accounts" {
+                    Err((FErr::AccessDenied, "only settings and accounts choose the wallpaper"))
+                } else {
+                    fwire::from_payload::<st::SetWallpaper>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(
+                        |v| {
+                            if !st::WALLPAPERS.contains(&v.name.as_str()) {
+                                return Err((FErr::InvalidArgs, "studio, circuit, orbit or connected"));
+                            }
+                            self.set_wallpaper(&v.name);
+                            Ok((Vec::new(), Vec::new()))
+                        },
+                    )
+                }
+            }
+            st::SET_CLOCK => {
+                let door = cfg!(feature = "flavour-e2e") && matches!(name.as_str(), "conductor" | "cdpd");
+                if !door && name != "settings" && name != "accounts" {
+                    Err((FErr::AccessDenied, "only settings and accounts set the clock"))
+                } else {
+                    fwire::from_payload::<st::SetClock>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).map(|v| {
+                        self.clock_24h = v.h24;
+                        fstd::info!("stage: the clock is {}-hour", if v.h24 { 24 } else { 12 });
+                        if let Some(ch) = &self.shortcuts
+                            && let Ok(e) = fwire::event(st::EV_CLOCK, &v)
+                        {
+                            let _ = ch.send(&e, Vec::new());
+                        }
+                        (Vec::new(), Vec::new())
+                    })
+                }
+            }
+            st::LOOK => Ok((fwire::to_payload(&self.look()), Vec::new())),
+            st::CARRY => {
+                fwire::from_payload::<st::Carry>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|c| {
+                    self.own(conn, c.window_id)?;
+                    if c.data.len() > 4096 {
+                        return Err((FErr::InvalidArgs, "at most 4 KiB is carried"));
+                    }
+                    if !self.desk.carry(c.window_id, c.data) {
+                        return Err((FErr::BadState, "only while the pointer is held on that window"));
+                    }
+                    Ok((Vec::new(), Vec::new()))
+                })
+            }
             st::SET_THEME => {
                 fwire::from_payload::<st::SetTheme>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|t| {
                     let brain = cfg!(feature = "flavour-dev") && name == "brain";
-                    if !brain && !matches!(name.as_str(), "settings" | "shell" | "terminal" | "cdpd" | "conductor") {
-                        return Err((FErr::AccessDenied, "only settings, the shell, the Brain and cdpd set the theme"));
+                    if !brain
+                        && !matches!(
+                            name.as_str(),
+                            "settings" | "accounts" | "shell" | "terminal" | "cdpd" | "conductor"
+                        )
+                    {
+                        return Err((
+                            FErr::AccessDenied,
+                            "only settings, accounts, the shell, the Brain and cdpd set the theme",
+                        ));
                     }
                     self.set_theme(t.theme);
                     Ok((Vec::new(), Vec::new()))
@@ -600,8 +691,38 @@ impl Stage {
         self.apply(out);
     }
 
+    /// Another wallpaper (TASK-104): both themes' grounds made again.
+    fn set_wallpaper(&mut self, name: &str) {
+        self.wallpaper = st::WALLPAPERS.iter().position(|w| *w == name).unwrap_or(0) as u8;
+        if let Some(a) = self.art.as_mut() {
+            a.look = String::from(name);
+            a.dark = None;
+            a.light = None;
+        }
+        fstd::info!("stage: the wallpaper is {name}");
+        self.damage(self.back.rect());
+    }
+
+    /// What the screen shows now (TASK-104).
+    fn look(&self) -> st::Look {
+        let none = self.idle.after_ns == 0;
+        st::Look {
+            dark: self.theme.mode == Mode::Dark,
+            scale_pct: if self.scale_auto { 0 } else { (self.theme.scale * 100.0 + 0.5) as u16 },
+            wallpaper: self.wallpaper,
+            reduce_motion: self.idle.reduce_motion,
+            clock_24h: self.clock_24h,
+            saver: if none { st::NO_SAVER } else { self.idle.kind },
+            saver_idle_min: if none { 10 } else { (self.idle.after_ns / 60_000_000_000).max(1) as u16 },
+        }
+    }
+
     fn set_theme(&mut self, t: st::Theme) {
-        self.theme.mode = if t == st::Theme::Light { Mode::Light } else { Mode::Dark };
+        let mode = if t == st::Theme::Light { Mode::Light } else { Mode::Dark };
+        if mode == self.theme.mode {
+            return;
+        }
+        self.theme.mode = mode;
         self.damage(self.back.rect());
         for w in &self.wins {
             if let Ok(e) = fwire::event(st::EV_THEME, &st::SetTheme { theme: t }) {
@@ -769,6 +890,7 @@ impl Stage {
                         Event::Pointer(p) => fwire::event(st::EV_POINTER, &p),
                         Event::Focus(f) => fwire::event(st::EV_FOCUS, &st::Focus { focused: f }),
                         Event::CloseRequested => fwire::event(st::EV_CLOSE_REQUESTED, &()),
+                        Event::Drop(d) => fwire::event(st::EV_DROP, &d),
                     };
                     // A client that's stopped reading loses events, never stage's time.
                     if let Ok(m) = msg {
@@ -781,6 +903,8 @@ impl Stage {
                         Action::Launcher => Some(st::Shortcut::Launcher),
                         Action::Monitor => Some(st::Shortcut::Monitor),
                         Action::Terminal => Some(st::Shortcut::Terminal),
+                        Action::Settings => Some(st::Shortcut::Settings),
+                        Action::Files => Some(st::Shortcut::Files),
                         _ => None,
                     };
                     fstd::info!("stage: shortcut {a:?}");

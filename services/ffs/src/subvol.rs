@@ -224,6 +224,24 @@ impl<S: Store> Volume<S> {
         Ok(())
     }
 
+    /// A home whose account was removed (TASK-104): renamed `retired:<id>`,
+    /// read-only, its key forgotten. The key went with the account's record,
+    /// so its sealed tree can't be walked to free its blocks: they stay used
+    /// until FreallyFS tracks blocks by subvolume.
+    pub fn retire_subvol(&mut self, id: u64) -> Result<(), FsError> {
+        if id == SYSTEM {
+            return Err(FsError::ReadOnly);
+        }
+        let s = self.subvol(id)?;
+        s.rec.name = alloc::format!("retired:{id}");
+        s.rec.flags |= crate::snapshot::READ_ONLY;
+        s.changed = true;
+        if self.keys.0.contains_key(&id) {
+            self.lock(id)?;
+        }
+        Ok(())
+    }
+
     /// Writes each changed subvolume's tree and then its record into the
     /// root tree (the commit's step 2).
     pub(crate) fn write_subvols(&mut self) -> Result<(), FsError> {

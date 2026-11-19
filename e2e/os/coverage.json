@@ -415,6 +415,48 @@
       "what": "PRD § 7: Login → desktop ≤ 1 s, Argon2id included, from Enter in the password well to the desktop saying whose it is."
     },
     {
+      "id": "settings.look",
+      "task": "TASK-104",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "Every Personalisation control worked and read back from stage: the theme and the four backgrounds live, the clock, screensaver, idle time, Reduce Motion and scale only at Apply (the window made again at 125 %); Escape and Cancel put back what was live; OK saves and closes; the look comes back at the next login; Restore Defaults."
+    },
+    {
+      "id": "settings.keyboard",
+      "task": "TASK-104",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "The tab list one stop, its arrows cycling (Home, End); each row one stop, worked by its keys; Tab reaches OK and Cancel and comes round; Shift+Tab back; Escape cancels."
+    },
+    {
+      "id": "settings.accounts",
+      "task": "TASK-104",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "Accounts lists who is here; Add an account (a mismatch said under its field), Change your password (a wrong one said; changed and back), Export, Import from the list (opened, previewed, renamed), Remove (the username typed exactly); the Owner has no Remove."
+    },    {
+      "id": "files.browse",
+      "task": "TASK-105",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "The home listed, folders first, sizes in words; a folder opened by double-click and by Enter; Backspace and Up back to the home with the folder it left chosen; the grid and back."
+    },
+    {
+      "id": "files.edit",
+      "task": "TASK-105",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "A new folder named as it is made; F2 renames (an empty name and a taken one refused, Escape leaves it); Delete to the bin, Restore, Empty the bin for good."
+    },
+    {
+      "id": "files.drag",
+      "task": "TASK-105",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "A row dragged onto a folder in its own window moves into it; Ctrl+N opens a second window; a row dragged onto the other window (stage carries it) moves into the folder it shows; Alt+F4 closes each."
+    },
+
+    {
       "id": "login.restart",
       "task": "TASK-102",
       "setup": "e2e-gpt-session",

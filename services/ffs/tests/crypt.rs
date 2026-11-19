@@ -132,3 +132,25 @@ fn a_flipped_bit_is_never_different_data() {
     // more) is caught; the rest are other trees'.
     assert!(caught >= 5, "{caught} of {} flips caught", used.len());
 }
+
+#[test]
+fn a_retired_home_frees_its_name_and_keeps_its_blocks() {
+    let (mut v, home) = build();
+    let used = v.free_blocks();
+    v.lock(home).unwrap();
+    v.retire_subvol(home).unwrap();
+    v.commit().unwrap();
+    let names: Vec<String> = v.subvols().unwrap().into_iter().map(|(_, r)| r.name).collect();
+    assert!(names.contains(&format!("retired:{home}")) && !names.iter().any(|n| n.starts_with("home:")), "{names:?}");
+    assert!(v.is_locked(home).unwrap(), "still sealed: nothing can read it");
+    assert_eq!(v.unlock(home, &[0x4C; 32]), Err(FsError::WrongKey));
+    // Its name is free for a new home; its blocks aren't (no key to walk them).
+    let again = v.create_encrypted_subvol("home:mike", [9; 16], &[7; 32]).unwrap();
+    assert_ne!(again, home);
+    v.commit().unwrap();
+    assert!(v.free_blocks() < used);
+    let mut v = Volume::mount(v.into_store()).unwrap();
+    let r = v.fsck().unwrap();
+    assert!(r.is_clean(), "{:?}", r.findings);
+    assert_eq!(v.retire_subvol(SYSTEM), Err(FsError::ReadOnly));
+}

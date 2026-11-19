@@ -5,14 +5,14 @@
 //! typed into a process that holds nothing else; the desktop starts the
 //! right one while no one is logged in, and each ends once a session has
 //! started. `form` and `login` are their models, tested on the host;
-//! `screen` draws them.
+//! `fapp` draws them.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod form;
+pub mod import;
 pub mod login;
-pub mod screen;
 
 /// Key usages the screens read.
 pub mod key {

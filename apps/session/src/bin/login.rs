@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use app_session::key;
 use app_session::login::{Focus, Login, Outcome, User};
-use app_session::screen::{Look, Screen, inside};
+use fapp::{Look, Window, inside};
 use fcore_abi::{FErr, signal};
 use fstd::ipc::{CallError, Client};
 use fstd::time::{Duration, Instant};
@@ -32,7 +32,7 @@ const IDS: [&str; 3] = ["login-submit", "login-shutdown", "login-restart"];
 const LABELS: [&str; 3] = ["Log in", "Shut down", "Restart"];
 
 struct Screen2 {
-    screen: Screen,
+    screen: Window,
     accounts: Client,
     login: Login,
     busy: bool,
@@ -271,7 +271,7 @@ fn run(_bootstrap: u32) -> i64 {
     if call::<_, a::Who>(&mut accounts, a::SESSION, &()).is_ok_and(|w| !w.user.username.is_empty()) {
         return 0;
     }
-    let screen = match Screen::open("Log in") {
+    let screen = match Window::open("Log in", fwire::proto::stage::Kind::Lock, (0, 0)) {
         Ok(s) => s,
         Err(e) => {
             fstd::error!("login: {e}");

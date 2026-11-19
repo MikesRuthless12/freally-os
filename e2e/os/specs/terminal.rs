@@ -281,7 +281,7 @@ pub fn builtins(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// Runs a command that changes something once (`expect` would run it again).
-fn once(ctx: &Ctx, line: &str, want: &[&str]) -> Result<(), String> {
+pub(crate) fn once(ctx: &Ctx, line: &str, want: &[&str]) -> Result<(), String> {
     let s = shell(ctx, line)?;
     if !want.iter().all(|w| s.contains(w)) {
         return Err(format!("`{line}` printed:\n{s}\n(wanted {want:?})"));

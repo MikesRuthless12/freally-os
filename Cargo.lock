@@ -9,6 +9,15 @@ version = "0.4.0"
 [[package]]
 name = "app-files"
 version = "0.4.0"
+dependencies = [
+ "app-session",
+ "fapp",
+ "fcore-abi",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
 
 [[package]]
 name = "app-monitor"
@@ -39,6 +48,7 @@ dependencies = [
 name = "app-session"
 version = "0.4.0"
 dependencies = [
+ "fapp",
  "fcore-abi",
  "ffont",
  "fimage",
@@ -51,6 +61,15 @@ dependencies = [
 [[package]]
 name = "app-settings"
 version = "0.4.0"
+dependencies = [
+ "app-session",
+ "fapp",
+ "fcore-abi",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
 
 [[package]]
 name = "app-shell"
@@ -149,6 +168,18 @@ version = "0.4.0"
 [[package]]
 name = "facpi"
 version = "0.4.0"
+
+[[package]]
+name = "fapp"
+version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "ffont",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
 
 [[package]]
 name = "fbootctl"

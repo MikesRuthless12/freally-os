@@ -518,6 +518,7 @@ mod tests {
             dark: true,
             ui_scale_pct: 150,
             locale: *b"en-US\0\0\0",
+            look: crate::Look::default(),
         }
     }
 

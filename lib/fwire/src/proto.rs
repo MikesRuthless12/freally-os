@@ -412,6 +412,18 @@ pub mod stage {
     /// `set_motion` (settings; the e2e door): Reduce Motion on or off (the
     /// cursor's trail, the savers).
     pub const SET_MOTION: u32 = 17;
+    /// `set_wallpaper` (`SetWallpaper`; settings and accounts): one of
+    /// the Freally wallpapers, by name (`studio` …) (TASK-104).
+    pub const SET_WALLPAPER: u32 = 18;
+    /// `()` → `Look`: what the screen shows now (anyone; TASK-104).
+    pub const LOOK: u32 = 19;
+    /// `set_clock` (`SetClock`; settings and accounts): the Rack's clock,
+    /// 12- or 24-hour; the desktop hears `EV_CLOCK`.
+    pub const SET_CLOCK: u32 = 20;
+    /// `Carry` → `()`: while the pointer is held on the caller's window,
+    /// stage carries `data` (a path, for Files); let go over another window,
+    /// that one hears `EV_DROP` (TASK-105: drag between windows).
+    pub const CARRY: u32 = 21;
     /// The e2e door's read-backs (e2e images only; conductor's door only).
     pub const LIST_WINDOWS: u32 = 100;
     pub const POINTER: u32 = 101;
@@ -432,6 +444,10 @@ pub mod stage {
     /// To the desktop (on its shortcuts channel): a screensaver starts or
     /// ends (`SaverEvent`).
     pub const EV_SAVER: u32 = 9;
+    /// To the desktop: the clock's format changed (`SetClock`).
+    pub const EV_CLOCK: u32 = 10;
+    /// What another window carried, let go over this one (`DropEvent`).
+    pub const EV_DROP: u32 = 11;
 
     wire_enum! {
         pub enum Kind {
@@ -514,7 +530,8 @@ pub mod stage {
     }
 
     wire_struct! {
-        /// `set_scale`: 100 to 300 %, in steps of 25 (FR-031).
+        /// `set_scale`: 100 to 300 %, in steps of 25 (FR-031); 0, the screen's
+        /// own, from its EDID (TASK-104). Its event carries the scale in use.
         pub struct SetScale { pub pct: u16 }
     }
 
@@ -611,6 +628,8 @@ pub mod stage {
             Launcher = 0,
             Monitor = 1,
             Terminal = 2,
+            Settings = 3,
+            Files = 4,
         }
     }
 
@@ -629,6 +648,44 @@ pub mod stage {
     }
 
     wire_struct! {
+        pub struct SetWallpaper { pub name: String }
+    }
+
+    /// The Freally wallpapers, by `Look::wallpaper`.
+    pub const WALLPAPERS: [&str; 4] = ["studio", "circuit", "orbit", "connected"];
+    /// `Look::saver` when there's none.
+    pub const NO_SAVER: u8 = 255;
+
+    wire_struct! {
+        pub struct SetClock { pub h24: bool }
+    }
+
+    wire_struct! {
+        pub struct Carry { pub window_id: u32, pub data: String }
+    }
+
+    wire_struct! {
+        /// Where it was let go (surface pixels), and what was carried.
+        pub struct DropEvent { pub x: i32, pub y: i32, pub data: String }
+    }
+
+    wire_struct! {
+        /// A person's look (TASK-104; the account record's bytes 11–13 and
+        /// 449–454, PRD § 3). `scale_pct` 0: the screen's own (its EDID's).
+        pub struct Look {
+            pub dark: bool,
+            pub scale_pct: u16,
+            /// An index into `WALLPAPERS`.
+            pub wallpaper: u8,
+            pub reduce_motion: bool,
+            pub clock_24h: bool,
+            /// 0 Bounce, 1 the turning block, 2 Swarm, 3 Warp; `NO_SAVER`.
+            pub saver: u8,
+            pub saver_idle_min: u16,
+        }
+    }
+
+    wire_struct! {
         /// `EV_SAVER`: a screensaver starts (which, and whether Reduce Motion
         /// asks for the still F) or ends.
         pub struct SaverEvent { pub start: bool, pub kind: u8, pub reduce_motion: bool }
@@ -640,7 +697,9 @@ pub mod stage {
     }
 
     wire_struct! {
-        pub struct ScreenInfo { pub w: u32, pub h: u32, pub scale_pct: u16, pub theme: Theme }
+        /// `work_h`: the height a window's frame has (the screen less the
+        /// Rack), so a window is made to fit it.
+        pub struct ScreenInfo { pub w: u32, pub h: u32, pub scale_pct: u16, pub theme: Theme, pub work_h: u32 }
     }
 }
 
@@ -879,6 +938,11 @@ pub mod ffs {
     /// `()` → `()`: a commit with the clean flag (conductor, just before
     /// Shut down or Restart: the next mount needs no ffsck).
     pub const UNMOUNT: u32 = 16;
+    /// `Subvol` → `()` (accounts, an account removed; TASK-104): the home
+    /// renamed `retired:<sv>` and kept. Its key went with the account's
+    /// record, so nothing can read it again; its blocks are freed once
+    /// FreallyFS tracks blocks by subvolume (a sealed tree can't be walked).
+    pub const RETIRE: u32 = 17;
 
     /// Inode kinds as the protocol carries them.
     pub const FILE: u8 = 1;
@@ -1059,6 +1123,12 @@ pub mod accounts {
     /// `Import` → `User`: a bundle made into an account (the first is the
     /// Owner; any other needs the Owner logged in and its password).
     pub const IMPORT: u32 = 10;
+    /// `stage::Look` → `()`: Settings saves the session account's look
+    /// (TASK-104); accounts applies it to stage at once, and at every login.
+    pub const SET_LOOK: u32 = 11;
+    /// `Remove` → `()`: the Owner removes another account, typing its
+    /// username again; its home goes with it.
+    pub const REMOVE: u32 = 12;
 
     wire_struct! {
         /// One account as the login screen shows it.
@@ -1104,6 +1174,10 @@ pub mod accounts {
     wire_struct! {
         /// `rename`: a username instead of the bundle's (empty: its own).
         pub struct Import { pub name: String, pub password: String, pub rename: String, pub owner_password: String }
+    }
+    wire_struct! {
+        /// `confirm`: the username typed again.
+        pub struct Remove { pub username: String, pub confirm: String, pub owner_password: String }
     }
 }
 
@@ -1176,6 +1250,10 @@ pub mod inventory {
                 (st::RAISE_APP, "raise_app"),
                 (st::SET_SAVER, "set_saver"),
                 (st::SET_MOTION, "set_motion"),
+                (st::SET_WALLPAPER, "set_wallpaper"),
+                (st::LOOK, "look"),
+                (st::SET_CLOCK, "set_clock"),
+                (st::CARRY, "carry"),
                 (st::LIST_WINDOWS, "list_windows"),
                 (st::POINTER, "pointer"),
                 (st::AX_TREE, "ax_tree"),
@@ -1204,6 +1282,7 @@ pub mod inventory {
                 (fs::UNLOCK, "unlock"),
                 (fs::LOCK, "lock"),
                 (fs::UNMOUNT, "unmount"),
+                (fs::RETIRE, "retire"),
             ],
         ),
         (
@@ -1238,6 +1317,8 @@ pub mod inventory {
                 (acc::BUNDLES, "bundles"),
                 (acc::PREVIEW, "preview"),
                 (acc::IMPORT, "import"),
+                (acc::SET_LOOK, "set_look"),
+                (acc::REMOVE, "remove"),
             ],
         ),
     ];

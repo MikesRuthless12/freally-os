@@ -33,14 +33,26 @@ pub fn publish(stage: &mut Client, window_id: u32, tree: &ax::Tree) -> Result<()
 #[derive(Default)]
 pub struct Publisher {
     last: alloc::vec::Vec<u8>,
+    /// The window it went to (a window made again needs it too).
+    window: u32,
 }
 
 impl Publisher {
     pub fn publish(&mut self, stage: &mut Client, window_id: u32, tree: &ax::Tree) {
         let bytes = fwire::to_payload(tree);
-        if bytes != self.last && publish(stage, window_id, tree).is_ok() {
-            self.last = bytes;
+        if self.fresh(window_id, &bytes) && publish(stage, window_id, tree).is_ok() {
+            self.sent(window_id, &bytes);
         }
+    }
+
+    /// Whether this tree for this window isn't the one sent last.
+    fn fresh(&self, window_id: u32, bytes: &[u8]) -> bool {
+        window_id != self.window || bytes != self.last.as_slice()
+    }
+
+    fn sent(&mut self, window_id: u32, bytes: &[u8]) {
+        self.window = window_id;
+        self.last = bytes.to_vec();
     }
 }
 
@@ -57,5 +69,20 @@ pub fn node(parent: u32, role: u8, name: &str, state: u32, (x, y, w, h): (i32, i
         y,
         w,
         h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_same_tree_goes_to_a_new_window() {
+        let mut p = Publisher::default();
+        p.sent(4, b"tree");
+        assert!(!p.fresh(4, b"tree"), "unchanged: not sent again");
+        assert!(p.fresh(4, b"other"));
+        // A window made again (a new scale): its tree is sent, unchanged or not.
+        assert!(p.fresh(5, b"tree"));
     }
 }

@@ -145,7 +145,10 @@ mod tests {
         assert_eq!(date(1_795_046_400), (2026, 11, 19));
         assert_eq!(size(999), "999 bytes");
         assert_eq!(size(1_200_000), "1.2 MB");
-        assert_eq!(preview_words("mike", 3, 1_200_000, 1_795_046_400), "Account 'mike', 3 files, 1.2 MB, exported 19 Nov 2026");
+        assert_eq!(
+            preview_words("mike", 3, 1_200_000, 1_795_046_400),
+            "Account 'mike', 3 files, 1.2 MB, exported 19 Nov 2026"
+        );
         assert_eq!(preview_words("dana", 1, 10, 0), "Account 'dana', 1 file, 10 bytes, exported 1 Jan 1970");
     }
 

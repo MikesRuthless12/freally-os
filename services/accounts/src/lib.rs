@@ -67,7 +67,26 @@ pub struct AccountRecord {
     pub dark: bool,
     pub ui_scale_pct: u16,
     pub locale: [u8; 8],
+    /// The person's look (TASK-104), applied at login.
+    pub look: Look,
 }
+
+/// The settings an account keeps in its record (TASK-104): 0 in every byte
+/// reads as the defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Look {
+    /// 0 studio, 1 circuit, 2 orbit, 3 connected.
+    pub wallpaper: u8,
+    pub reduce_motion: bool,
+    pub clock_24h: bool,
+    /// 0 Bounce, 1 the turning block, 2 Swarm, 3 Warp, 255 none.
+    pub saver: u8,
+    /// Minutes idle before it (0: the default, 10).
+    pub saver_idle_min: u16,
+}
+
+/// The screensaver's idle time when the record says 0 (owner, 2026-11-18).
+pub const SAVER_IDLE_DEFAULT_MIN: u16 = 10;
 
 /// `^[a-z][a-z0-9_-]{1,31}$`.
 pub fn valid_username(u: &str) -> bool {
@@ -109,6 +128,11 @@ impl AccountRecord {
         b[120..144].copy_from_slice(&self.wrap_nonce);
         b[144..152].copy_from_slice(&self.home_subvolume.to_le_bytes());
         b[152..160].copy_from_slice(&self.locale);
+        b[449] = self.look.wallpaper;
+        b[450] = self.look.reduce_motion as u8;
+        b[451] = self.look.clock_24h as u8;
+        b[452] = self.look.saver;
+        b[453..455].copy_from_slice(&self.look.saver_idle_min.to_le_bytes());
         let u = &self.username.as_bytes()[..self.username.len().min(32)];
         b[160] = u.len() as u8;
         b[161..161 + u.len()].copy_from_slice(u);
@@ -164,6 +188,13 @@ impl AccountRecord {
             dark: b[11] == 0,
             ui_scale_pct: u16::from_le_bytes([b[12], b[13]]),
             locale,
+            look: Look {
+                wallpaper: b[449],
+                reduce_motion: b[450] != 0,
+                clock_24h: b[451] != 0,
+                saver: b[452],
+                saver_idle_min: u16::from_le_bytes([b[453], b[454]]),
+            },
         })
     }
 }
@@ -263,6 +294,7 @@ mod tests {
             dark: true,
             ui_scale_pct: 150,
             locale: *b"en-US\0\0\0",
+            look: Look { wallpaper: 2, reduce_motion: true, clock_24h: true, saver: 3, saver_idle_min: 15 },
         }
     }
 

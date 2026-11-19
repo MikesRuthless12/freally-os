@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fapp"
+description = "What an app draws with: its window of stage's, the theme and fonts, fields, keys, switches, choices and meters, each in the accessibility tree."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcore-abi.workspace = true
+ffont = { workspace = true, features = ["raster"] }
+fimage.workspace = true
+fstd.workspace = true
+fui = { workspace = true, features = ["ui"] }
+fwire.workspace = true
+
+[lints]
+workspace = true

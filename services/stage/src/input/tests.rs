@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::shortcuts::{mods, usage};
+use alloc::string::String;
 use alloc::vec;
 
 fn desk() -> Desk {
@@ -184,4 +185,29 @@ fn a_window_hears_when_the_pointer_leaves_it() {
     // Onto its strip: off its surface, so it hears that too.
     d.mouse(500, -150, 0, 0, &mut out); // (546, 250): the strip
     assert!(sends(&out).is_empty(), "never was over it since");
+}
+
+#[test]
+fn what_a_window_carries_is_dropped_on_the_window_under_the_pointer() {
+    let mut d = desk();
+    let a = open(&mut d, 400, 300); // surface at (300, 266)
+    let mut out = Vec::new();
+    let b = d.create("b", Kind::Popup, (100, 100), (0, 0), (10, 10), (2, "t"), &mut out);
+    d.mouse(0, 0, 0, 1, &mut out); // (500, 400): down on a
+    assert!(!d.carry(b, String::from("no")), "only the window the button went down on carries");
+    assert!(d.carry(a, String::from("/home/mike/x")));
+    out.clear();
+    d.mouse(-440, -340, 0, 1, &mut out); // (60, 60): over b
+    d.mouse(0, 0, 0, 0, &mut out); // let go over b
+    let s = sends(&out);
+    let dropped = DropEvent { x: 50, y: 50, data: String::from("/home/mike/x") };
+    assert!(s.contains(&(b, Event::Drop(dropped))), "{s:?}");
+    assert!(s.iter().any(|(id, e)| *id == a && matches!(e, Event::Pointer(Pointer { kind: PointerKind::Up, .. }))));
+    // Carried and let go over its own window: no drop; nothing carried after.
+    out.clear();
+    d.mouse(440, 340, 0, 1, &mut out); // (500, 400): down on a
+    assert!(d.carry(a, String::from("/home/mike/y")));
+    d.mouse(0, 0, 0, 0, &mut out);
+    assert!(!sends(&out).iter().any(|(_, e)| matches!(e, Event::Drop(_))));
+    assert!(!d.carry(a, String::from("late")), "no button held: nothing to carry");
 }

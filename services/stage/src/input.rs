@@ -8,12 +8,14 @@
 //!   window raises and focuses it (panels stay below and don't take focus);
 //!   on its strip, dragging moves it; on its close button, it's asked to
 //!   close. While a button is held, the window it went down on hears the
-//!   pointer even outside it.
+//!   pointer even outside it; what it carries meanwhile (`carry`) is
+//!   dropped on the window the button is let go over.
 
 use crate::shortcuts::{Action, Outcome, Shortcuts};
 use crate::windows::{Part, Rect, WindowId, Windows};
+use alloc::string::String;
 use alloc::vec::Vec;
-use fwire::proto::stage::{Key, Kind, Pointer, PointerKind};
+use fwire::proto::stage::{DropEvent, Key, Kind, Pointer, PointerKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -21,6 +23,7 @@ pub enum Event {
     Pointer(Pointer),
     Focus(bool),
     CloseRequested,
+    Drop(DropEvent),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +46,8 @@ pub struct Desk {
     drag: Option<(WindowId, i32, i32)>,
     /// The window a held button went down on.
     grab: Option<WindowId>,
+    /// What that window carries, to drop where the button's let go.
+    carrying: Option<(WindowId, String)>,
     /// The window whose surface the pointer is over, to tell it when it leaves.
     over: Option<WindowId>,
     shortcuts: Shortcuts,
@@ -62,6 +67,7 @@ impl Desk {
             buttons: 0,
             drag: None,
             grab: None,
+            carrying: None,
             over: None,
             shortcuts: Shortcuts::default(),
             cycle: None,
@@ -235,10 +241,30 @@ impl Desk {
                 Event::Pointer(Pointer { x: self.x - r.x, y: self.y - r.y, buttons, kind, dx: ex, dy: ey }),
             ));
         }
+        if released & LEFT != 0
+            && let Some((from, data)) = self.carrying.take()
+            && let Some((to, Part::Surface { .. })) = self.windows.hit(self.x, self.y)
+            && to != from
+            && let Some(w) = self.windows.get(to)
+        {
+            let r = self.windows.surface_rect(w);
+            out.push(Effect::Send(to, Event::Drop(DropEvent { x: self.x - r.x, y: self.y - r.y, data })));
+        }
         if buttons == 0 {
             self.grab = None;
+            self.carrying = None;
         }
         self.leave_if_left(out);
+    }
+
+    /// Window `id` carries `data` while the left button it went down on is
+    /// held. False if it isn't.
+    pub fn carry(&mut self, id: WindowId, data: String) -> bool {
+        if self.grab != Some(id) || self.buttons & LEFT == 0 {
+            return false;
+        }
+        self.carrying = Some((id, data));
+        true
     }
 
     /// The window the pointer was over hears that it left, unless a held

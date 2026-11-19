@@ -24,6 +24,7 @@ flavour-dev = ["fimage/guard"]
 flavour-e2e = ["fimage/guard"]
 
 [dependencies]
+fapp.workspace = true
 fcore-abi.workspace = true
 ffont = { workspace = true, features = ["raster"] }
 fimage.workspace = true

@@ -31,6 +31,8 @@ mod crisp;
 mod desktop;
 #[path = "../../../e2e/os/specs/display.rs"]
 mod display;
+#[path = "../../../e2e/os/specs/files.rs"]
+mod files;
 #[path = "../../../e2e/os/specs/kernel.rs"]
 mod kernel;
 #[path = "../../../e2e/os/specs/monitor.rs"]
@@ -41,6 +43,8 @@ mod saver;
 mod services;
 #[path = "../../../e2e/os/specs/session.rs"]
 mod session;
+#[path = "../../../e2e/os/specs/settings.rs"]
+mod settings;
 #[path = "../../../e2e/site/specs/site.rs"]
 mod site_specs;
 #[path = "../../../e2e/os/specs/stage.rs"]
@@ -101,6 +105,12 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("accounts.login", session::login_time),
     ("login.restart", session::login_restart),
     ("login.shutdown", session::login_shutdown),
+    ("settings.look", settings::look_spec),
+    ("settings.keyboard", settings::keyboard),
+    ("settings.accounts", settings::accounts),
+    ("files.browse", files::browse),
+    ("files.edit", files::edit),
+    ("files.drag", files::drag_spec),
     ("stage.windows", stage::windows),
     ("ui.cursor", stage::cursor),
     ("stage.doors", stage::doors),

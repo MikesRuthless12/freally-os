@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 const OWNER: &str = "mike";
 const PASSWORD: &str = "correct-horse";
 
-fn sel(id: &str) -> String {
+pub(crate) fn sel(id: &str) -> String {
     format!("[data-testid=\"{id}\"]")
 }
 
-fn press(ctx: &mut Ctx, code: &str) -> Result<(), String> {
+pub(crate) fn press(ctx: &mut Ctx, code: &str) -> Result<(), String> {
     key(ctx, code, true)?;
     key(ctx, code, false)
 }
@@ -30,7 +30,7 @@ fn shifted(ctx: &mut Ctx, code: &str) -> Result<(), String> {
 }
 
 /// Text typed on the real keyboard: letters, digits, space, - and _.
-fn typed(ctx: &mut Ctx, text: &str) -> Result<(), String> {
+pub(crate) fn typed(ctx: &mut Ctx, text: &str) -> Result<(), String> {
     for c in text.chars() {
         match c {
             'a'..='z' => press(ctx, &format!("Key{}", c.to_ascii_uppercase()))?,
@@ -46,12 +46,12 @@ fn typed(ctx: &mut Ctx, text: &str) -> Result<(), String> {
 }
 
 /// What a field holds, as the tree says (dots for a password).
-fn value(ctx: &mut Ctx, id: &str) -> Result<String, String> {
+pub(crate) fn value(ctx: &mut Ctx, id: &str) -> Result<String, String> {
     let n = until_q(ctx, &sel(id))?;
     Ok(attr(ctx, n, "aria-valuenow")?.unwrap_or_default())
 }
 
-fn expect_value(ctx: &mut Ctx, id: &str, want: &str) -> Result<(), String> {
+pub(crate) fn expect_value(ctx: &mut Ctx, id: &str, want: &str) -> Result<(), String> {
     let start = Instant::now();
     loop {
         let v = value(ctx, id)?;
@@ -65,12 +65,12 @@ fn expect_value(ctx: &mut Ctx, id: &str, want: &str) -> Result<(), String> {
     }
 }
 
-fn expect_focus(ctx: &mut Ctx, id: &str) -> Result<(), String> {
+pub(crate) fn expect_focus(ctx: &mut Ctx, id: &str) -> Result<(), String> {
     until_attr(ctx, &sel(id), "data-focused", "true")
 }
 
 /// The error under field `id` says `want`.
-fn expect_error(ctx: &mut Ctx, id: &str, want: &str) -> Result<(), String> {
+pub(crate) fn expect_error(ctx: &mut Ctx, id: &str, want: &str) -> Result<(), String> {
     until_attr(ctx, &sel(&format!("{id}-error")), "aria-label", want)
 }
 
@@ -101,7 +101,7 @@ fn both_themes(ctx: &mut Ctx, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn waits_for_log(ctx: &Ctx, text: &str, more_than: usize) -> Result<Duration, String> {
+pub(crate) fn waits_for_log(ctx: &Ctx, text: &str, more_than: usize) -> Result<Duration, String> {
     let start = Instant::now();
     while ctx.log_count(text) <= more_than {
         if start.elapsed() > Duration::from_secs(20) {

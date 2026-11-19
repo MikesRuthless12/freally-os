@@ -5,7 +5,9 @@
 //! KEK unwraps the master key, ffs unlocks the home with it, vfs makes the
 //! account the session's), logout (ffs locks the home and forgets the key,
 //! the session ends, the key here is zeroed), password changes (the key
-//! re-wrapped; the files untouched), and the throttle.
+//! re-wrapped; the files untouched), and the throttle. From TASK-104, each
+//! account's look (put on the screen at login and when Settings saves it)
+//! and the Owner removing an account.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -18,6 +20,7 @@ use fstd::time::{Duration, Instant};
 use fwire::proto::accounts as a;
 use fwire::proto::conductor as c;
 use fwire::proto::ffs as f;
+use fwire::proto::stage as st;
 use fwire::proto::vfs as v;
 use svc_accounts::{AccountRecord, Refused, Role, Throttle, file_name, kek, unwrap, wipe, wrap};
 
@@ -44,6 +47,12 @@ struct Accounts {
     throttle: Throttle,
     /// No try is heard before this (monotonic ns).
     next_try: u64,
+    /// stage, once a look is first put on the screen.
+    stage: Option<Client>,
+    /// A look to put on the screen once the request that brought it is
+    /// answered: reaching stage means asking conductor, which may be the
+    /// one waiting on that request (its test door).
+    to_show: Option<AccountRecord>,
 }
 
 fn refused(r: Refused) -> (FErr, String) {
@@ -150,18 +159,125 @@ impl Accounts {
 
     /// The role of a new account: the first is the Owner; any other needs
     /// the Owner, logged in, to give its password.
-    fn role_for_new(&self, owner_password: &str) -> Result<Role, (FErr, String)> {
+    fn role_for_new(&mut self, owner_password: &str) -> Result<Role, (FErr, String)> {
         if self.records.is_empty() {
             return Ok(Role::Owner);
         }
+        self.owner_check(owner_password, "Only the Owner adds accounts.")?;
+        Ok(Role::Standard)
+    }
+
+    /// The Owner, logged in, gives its password (throttled as logins are).
+    fn owner_check(&mut self, owner_password: &str, only: &str) -> Result<(), (FErr, String)> {
+        let now = Instant::now().as_ns();
+        if now < self.next_try {
+            return Err((FErr::Busy, String::from("Wait a moment before trying again.")));
+        }
         let owner = self.session.as_ref().and_then(|s| self.records.iter().find(|r| r.username == s.username));
         let Some(owner) = owner.filter(|r| r.role == Role::Owner) else {
-            return Err((FErr::AccessDenied, String::from("Only the Owner adds accounts.")));
+            return Err((FErr::AccessDenied, String::from(only)));
         };
-        let k = kek(owner_password, &owner.salt, owner.kdf).map_err(refused)?;
-        let mut check = unwrap(&k, &owner.wrap_nonce, &owner.id, &owner.wrapped_master_key).map_err(refused)?;
+        let mut k = kek(owner_password, &owner.salt, owner.kdf).map_err(refused)?;
+        let opened = unwrap(&k, &owner.wrap_nonce, &owner.id, &owner.wrapped_master_key);
+        wipe(&mut k);
+        let Ok(mut check) = opened else {
+            self.next_try = now + self.throttle.failed();
+            return Err(refused(Refused::WrongPassword));
+        };
         wipe(&mut check);
-        Ok(Role::Standard)
+        self.throttle.succeeded();
+        Ok(())
+    }
+
+    /// TASK-104: the Owner removes another account. Its record goes, and its
+    /// home is retired: still sealed, and its key gone with the record.
+    fn remove(&mut self, rm: &a::Remove) -> Reply {
+        self.owner_check(&rm.owner_password, "Only the Owner removes accounts.")?;
+        if rm.confirm != rm.username {
+            return Err((FErr::InvalidArgs, String::from("Type the username again to remove the account.")));
+        }
+        let i = self
+            .records
+            .iter()
+            .position(|r| r.username == rm.username)
+            .ok_or((FErr::NotFound, alloc::format!("There's no account called {}.", rm.username)))?;
+        let r = self.records[i].clone();
+        if r.role == Role::Owner {
+            return Err((FErr::AccessDenied, String::from("The Owner's account can't be removed.")));
+        }
+        Self::call::<_, ()>(&mut self.ffs, f::RETIRE, &f::Subvol { sv: r.home_subvolume })?;
+        fstd::fs::remove(&alloc::format!("{DIR}/{}", file_name(&r.id))).map_err(|e| (e.code, e.text))?;
+        self.records.remove(i);
+        fstd::info!("accounts: {} removed (home subvolume {} retired)", r.username, r.home_subvolume);
+        Ok(fwire::to_payload(&()))
+    }
+
+    /// TASK-104: Settings saves the session account's look; it's put on the
+    /// screen at once.
+    fn set_look(&mut self, l: &st::Look) -> Reply {
+        let user = self
+            .session
+            .as_ref()
+            .map(|s| s.username.clone())
+            .ok_or((FErr::AccessDenied, String::from("Log in first.")))?;
+        let saver_ok = l.saver < 4 || l.saver == st::NO_SAVER;
+        let scale_ok = l.scale_pct == 0 || ((100..=300).contains(&l.scale_pct) && l.scale_pct % 25 == 0);
+        if (l.wallpaper as usize) >= st::WALLPAPERS.len()
+            || !saver_ok
+            || !scale_ok
+            || !(1..=120).contains(&l.saver_idle_min)
+        {
+            return Err((FErr::InvalidArgs, String::from("That look isn't one Settings offers.")));
+        }
+        let i =
+            self.records.iter().position(|r| r.username == user).ok_or((FErr::NotFound, String::from("no record")))?;
+        let mut r = self.records[i].clone();
+        r.dark = l.dark;
+        r.ui_scale_pct = l.scale_pct;
+        r.look = svc_accounts::Look {
+            wallpaper: l.wallpaper,
+            reduce_motion: l.reduce_motion,
+            clock_24h: l.clock_24h,
+            saver: l.saver,
+            saver_idle_min: l.saver_idle_min,
+        };
+        self.save(&r)?;
+        self.to_show = Some(r.clone());
+        self.records[i] = r;
+        fstd::info!("accounts: {user}'s look saved");
+        Ok(fwire::to_payload(&()))
+    }
+
+    /// An account's look put on the screen (after a login, and when it's
+    /// saved), between requests.
+    fn show(&mut self, r: &AccountRecord) {
+        if self.stage.is_none() {
+            match fstd::service::connect("stage") {
+                Ok(ch) => self.stage = Some(Client::new(ch)),
+                Err(e) => fstd::warn!("accounts: stage: {e:?}: {}'s look isn't on the screen", r.username),
+            }
+        }
+        let Some(stage) = self.stage.as_mut() else { return };
+        let l = r.look;
+        let theme = if r.dark { st::Theme::Dark } else { st::Theme::Light };
+        let wall = st::WALLPAPERS.get(l.wallpaper as usize).copied().unwrap_or("studio");
+        let idle = if l.saver_idle_min == 0 { svc_accounts::SAVER_IDLE_DEFAULT_MIN } else { l.saver_idle_min };
+        let saver = if l.saver == st::NO_SAVER {
+            st::SetSaver { kind: 0, idle_ms: 0 }
+        } else {
+            st::SetSaver { kind: l.saver.min(3), idle_ms: idle as u32 * 60_000 }
+        };
+        let told = [
+            Self::call::<_, ()>(stage, st::SET_THEME, &st::SetTheme { theme }),
+            Self::call::<_, ()>(stage, st::SET_SCALE, &st::SetScale { pct: r.ui_scale_pct }),
+            Self::call::<_, ()>(stage, st::SET_WALLPAPER, &st::SetWallpaper { name: String::from(wall) }),
+            Self::call::<_, ()>(stage, st::SET_MOTION, &st::SetMotion { reduce: l.reduce_motion }),
+            Self::call::<_, ()>(stage, st::SET_CLOCK, &st::SetClock { h24: l.clock_24h }),
+            Self::call::<_, ()>(stage, st::SET_SAVER, &saver),
+        ];
+        for e in told.into_iter().filter_map(Result::err) {
+            fstd::warn!("accounts: {}'s look: {}", r.username, e.1);
+        }
     }
 
     /// A new account with its sealed home, which is left unlocked for the
@@ -199,8 +315,9 @@ impl Accounts {
             wrap_nonce: nonce,
             home_subvolume: sv,
             dark: like.is_none_or(|l| l.dark),
-            ui_scale_pct: like.map_or(100, |l| l.ui_scale_pct),
+            ui_scale_pct: like.map_or(0, |l| l.ui_scale_pct),
             locale: like.map_or(*b"en-US\0\0\0", |l| l.locale),
+            look: like.map(|l| l.look).unwrap_or_default(),
         })
     }
 
@@ -329,6 +446,7 @@ impl Accounts {
             &v::Session { user: r.username.clone(), sv: r.home_subvolume },
         )?;
         fstd::info!("accounts: {} logged in", r.username);
+        self.to_show = Some(r.clone());
         self.session = Some(Session { username: r.username, home: r.home_subvolume, key });
         Ok(fwire::to_payload(&()))
     }
@@ -432,6 +550,13 @@ impl Accounts {
                 fstd::secret::wipe_str(&mut im.owner_password);
                 r
             }
+            a::SET_LOOK => self.set_look(&arg(p)?),
+            a::REMOVE => {
+                let mut rm: a::Remove = arg(p)?;
+                let r = self.remove(&rm);
+                fstd::secret::wipe_str(&mut rm.owner_password);
+                r
+            }
             a::SESSION => {
                 let user = match &self.session {
                     Some(s) => {
@@ -461,7 +586,16 @@ fn run(_bootstrap: u32) -> i64 {
         fstd::info!("accounts: no storage: no accounts (a guest session only)");
         return 0;
     };
-    let mut acc = Accounts { ffs, vfs, records: Vec::new(), session: None, throttle: Throttle::default(), next_try: 0 };
+    let mut acc = Accounts {
+        ffs,
+        vfs,
+        records: Vec::new(),
+        session: None,
+        throttle: Throttle::default(),
+        next_try: 0,
+        stage: None,
+        to_show: None,
+    };
     acc.load();
     fstd::info!(
         "accounts: {} account(s){}",
@@ -492,6 +626,9 @@ fn run(_bootstrap: u32) -> i64 {
                 let who = who.clone();
                 if !serve(&mut acc, &who, ch) {
                     clients.remove(k - 1);
+                }
+                if let Some(r) = acc.to_show.take() {
+                    acc.show(&r);
                 }
             }
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! What Welcome and Login draw with: a full-screen window of stage's, the
-//! theme and fonts, the ground (the theme's, or the wallpaper dimmed 40 %),
-//! the centred module, fields, keys and the meter, each in the theme's
-//! tokens at the screen's scale, and each published to the accessibility
-//! tree with its test id.
+//! What an app draws with (TASK-102, then Settings, Files and Calculator):
+//! a window of stage's, the theme and fonts, the ground (the theme's, or the
+//! wallpaper dimmed 40 %), a centred module, fields, keys and the meter,
+//! each in the theme's tokens at the screen's scale, and each published to
+//! the accessibility tree with its test id.
+#![no_std]
+
+extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -20,6 +23,9 @@ use fui::theme::{Mode, TextStyle, Theme, Tok};
 use fwire::proto::ax;
 use fwire::proto::stage as st;
 
+/// Whether this program has registered its endpoint (its first window).
+static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub fn deadline() -> u64 {
     Instant::after(Duration::from_secs(5))
 }
@@ -32,7 +38,7 @@ pub struct Look {
     pub pressed: bool,
 }
 
-pub struct Screen {
+pub struct Window {
     pub stage: Client,
     pub id: u32,
     pub events: Channel,
@@ -48,8 +54,51 @@ pub struct Screen {
     /// The wallpaper at the screen's size, for the theme it was made for.
     wall: Option<(Mode, Vec<u32>)>,
     /// The endpoint registered with conductor (so the desktop can see the
-    /// screen is up); nothing is served on it.
-    listen: Channel,
+    /// program is up); nothing is served on it. The program's first window
+    /// holds it: a program registers once.
+    listen: Option<Channel>,
+    /// What it was opened as, to open it again at another scale.
+    title: String,
+    kind: st::Kind,
+    size: (u32, u32),
+}
+
+/// A window of stage's: its id, events, surface (mapped) and size.
+struct Made {
+    id: u32,
+    events: Channel,
+    px: *mut u32,
+    w: u32,
+    h: u32,
+    vmo: Handle,
+}
+
+fn make(stage: &mut Client, theme: &Theme, title: &str, kind: st::Kind, size: (u32, u32)) -> Result<Made, String> {
+    let (scr, _) = stage
+        .call::<_, st::ScreenInfo>(st::SCREEN, &(), Vec::new(), deadline())
+        .map_err(|e| alloc::format!("the screen: {e:?}"))?;
+    let (w, h) = match kind {
+        st::Kind::Lock | st::Kind::Fullscreen => (scr.w, scr.h),
+        // Its frame (the title strip above it) fits the work area.
+        st::Kind::Normal => (
+            theme.px(size.0).min(scr.w),
+            theme.px(size.1).min(scr.work_h.saturating_sub(theme.px(fui::tokens_os::TITLE_STRIP_H))),
+        ),
+        _ => (theme.px(size.0).min(scr.w), theme.px(size.1).min(scr.h)),
+    };
+    let req = st::CreateWindow { title: String::from(title), w, h, min_w: 0, min_h: 0, kind, x: 0, y: 0 };
+    let (made, mut hs) = stage
+        .call::<_, st::Created>(st::CREATE_WINDOW, &req, Vec::new(), deadline())
+        .map_err(|e| alloc::format!("create_window: {e:?}"))?;
+    if hs.len() != 2 {
+        return Err(String::from("stage sent no surface"));
+    }
+    let events = Channel(hs.remove(1));
+    let vmo = hs.remove(0);
+    let len = (w as u64 * h as u64 * 4).next_multiple_of(4096);
+    let at = fstd::sys::vm_map(well_known::SELF_ASPACE, vmo.raw(), 0, len, 0, perm::READ | perm::WRITE)
+        .map_err(|e| String::from(e.describe()))?;
+    Ok(Made { id: made.window_id, events, px: at as *mut u32, w, h, vmo })
 }
 
 fn fonts() -> Result<Fonts<'static>, String> {
@@ -64,9 +113,10 @@ fn fonts() -> Result<Fonts<'static>, String> {
     .map_err(|e| alloc::format!("the fonts: {e:?}"))
 }
 
-impl Screen {
-    /// A full-screen window called `title`.
-    pub fn open(title: &str) -> Result<Screen, String> {
+impl Window {
+    /// A window called `title`: a `Lock` or `Fullscreen` one covers the
+    /// screen; any other is `size` (scaled), placed by stage.
+    pub fn open(title: &str, kind: st::Kind, size: (u32, u32)) -> Result<Window, String> {
         let ch = fstd::service::connect("stage").map_err(|e| alloc::format!("stage: {e:?}"))?;
         let mut stage = Client::new(ch);
         let (scr, _) = stage
@@ -76,44 +126,57 @@ impl Screen {
             if scr.theme == st::Theme::Light { Mode::Light } else { Mode::Dark },
             scr.scale_pct as f32 / 100.0,
         );
-        let req = st::CreateWindow {
-            title: String::from(title),
-            w: scr.w,
-            h: scr.h,
-            min_w: 0,
-            min_h: 0,
-            kind: st::Kind::Lock,
-            x: 0,
-            y: 0,
+        let m = make(&mut stage, &theme, title, kind, size)?;
+        let listen = if REGISTERED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            None
+        } else {
+            let (listen, give) = Channel::pair().map_err(|e| String::from(e.describe()))?;
+            fstd::service::register(give).map_err(|e| alloc::format!("register: {e:?}"))?;
+            Some(listen)
         };
-        let (made, mut hs) = stage
-            .call::<_, st::Created>(st::CREATE_WINDOW, &req, Vec::new(), deadline())
-            .map_err(|e| alloc::format!("create_window: {e:?}"))?;
-        if hs.len() != 2 {
-            return Err(String::from("stage sent no surface"));
-        }
-        let events = Channel(hs.remove(1));
-        let vmo = hs.remove(0);
-        let len = (scr.w as u64 * scr.h as u64 * 4).next_multiple_of(4096);
-        let at = fstd::sys::vm_map(well_known::SELF_ASPACE, vmo.raw(), 0, len, 0, perm::READ | perm::WRITE)
-            .map_err(|e| String::from(e.describe()))?;
-        let (listen, give) = Channel::pair().map_err(|e| String::from(e.describe()))?;
-        fstd::service::register(give).map_err(|e| alloc::format!("register: {e:?}"))?;
-        Ok(Screen {
+        Ok(Window {
             stage,
-            id: made.window_id,
-            events,
-            px: at as *mut u32,
-            w: scr.w,
-            h: scr.h,
-            _vmo: vmo,
+            id: m.id,
+            events: m.events,
+            px: m.px,
+            w: m.w,
+            h: m.h,
+            _vmo: m.vmo,
             theme,
             fonts: fonts()?,
             nodes: Vec::new(),
             ax: Default::default(),
             wall: None,
             listen,
+            title: String::from(title),
+            kind,
+            size,
         })
+    }
+
+    /// The window closed and opened again at the theme's scale (after a
+    /// scale change: a window's size is fixed when it's made).
+    pub fn reopen(&mut self) -> Result<(), String> {
+        let _ = self.stage.call::<_, ()>(st::CLOSE_WINDOW, &st::ById { window_id: self.id }, Vec::new(), deadline());
+        let len = (self.w as u64 * self.h as u64 * 4).next_multiple_of(4096);
+        let _ = fstd::sys::vm_unmap(well_known::SELF_ASPACE, self.px as u64, len);
+        let m = make(&mut self.stage, &self.theme, &self.title, self.kind, self.size)?;
+        (self.id, self.events, self.px, self.w, self.h, self._vmo) = (m.id, m.events, m.px, m.w, m.h, m.vmo);
+        self.wall = None;
+        Ok(())
+    }
+
+    /// The window closed (the program goes on). The endpoint it holds, if
+    /// it's the program's first, goes to `heir`.
+    pub fn close(mut self, heir: Option<&mut Window>) {
+        let _ = self.stage.call::<_, ()>(st::CLOSE_WINDOW, &st::ById { window_id: self.id }, Vec::new(), deadline());
+        let len = (self.w as u64 * self.h as u64 * 4).next_multiple_of(4096);
+        let _ = fstd::sys::vm_unmap(well_known::SELF_ASPACE, self.px as u64, len);
+        if let Some(h) = heir
+            && h.listen.is_none()
+        {
+            h.listen = self.listen.take();
+        }
     }
 
     pub fn surface(&mut self) -> Surface<'_> {
@@ -138,7 +201,7 @@ impl Screen {
     /// is taken here (and reported, so the screen is drawn again).
     pub fn events(&mut self) -> Result<Vec<(u32, Vec<u8>)>, FErr> {
         // Whoever connected (the desktop, seeing the screen is up) is let go.
-        while self.listen.try_recv().is_ok() {}
+        while self.listen.as_ref().is_some_and(|l| l.try_recv().is_ok()) {}
         let mut out = Vec::new();
         loop {
             match self.events.try_recv() {

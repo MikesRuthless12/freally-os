@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The Rack's clock (TASK-059, FR-030): the owner's choice, 12-hour with no
-//! seconds ("9:42 PM"). The time is the RTC's as the kernel reads it; a
+//! seconds ("9:42 PM"); Settings offers 24-hour ("21:42") from TASK-104. The time is the RTC's as the kernel reads it; a
 //! machine that keeps its RTC in local time (as Windows does) shows local
 //! time, and QEMU runs with `-rtc base=localtime` to match. Time zones come
 //! with Settings.
@@ -16,6 +16,15 @@ pub fn twelve_hour(unix_ns: u64) -> String {
     alloc::format!("{h12}:{m:02} {}", if h < 12 { "AM" } else { "PM" })
 }
 
+/// The clock's words, 12- or 24-hour.
+pub fn words(unix_ns: u64, h24: bool) -> String {
+    if !h24 {
+        return twelve_hour(unix_ns);
+    }
+    let day = unix_ns / 1_000_000_000 % 86_400;
+    alloc::format!("{:02}:{:02}", day / 3600, day / 60 % 60)
+}
+
 /// Nanoseconds until the minute changes: the clock redraws then, and not
 /// before (a still desktop costs nothing).
 pub fn until_next_minute(unix_ns: u64) -> u64 {
@@ -28,6 +37,14 @@ mod tests {
 
     const H: u64 = 3600 * 1_000_000_000;
     const M: u64 = 60 * 1_000_000_000;
+
+    #[test]
+    fn twenty_four_hour_with_no_seconds() {
+        assert_eq!(words(0, true), "00:00", "midnight");
+        assert_eq!(words(21 * H + 42 * M + 59_000_000_000, true), "21:42");
+        assert_eq!(words(9 * H + 7 * M, true), "09:07");
+        assert_eq!(words(9 * H + 7 * M, false), "9:07 AM", "12-hour unless asked");
+    }
 
     #[test]
     fn twelve_hour_with_no_seconds() {

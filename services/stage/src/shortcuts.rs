@@ -3,7 +3,8 @@
 //! key:
 //!
 //! - `Super` pressed and let go alone: the launcher;
-//! - `Super+M`: Monitor; `Super+T`: Terminal;
+//! - `Super+M`: Monitor; `Super+T`: Terminal; `Super+I`: Settings and
+//!   `Super+E`: Files (as Windows has them; TASK-104, TASK-105);
 //! - `Alt+Tab` (and `Alt+Shift+Tab`): step through the windows, most recent
 //!   first, while Alt is held; letting go of Alt keeps the one reached;
 //! - `Alt+F4`: ask the focused window to close.
@@ -15,6 +16,8 @@ use alloc::vec::Vec;
 
 /// Key usages (HID), as drv-i8042 reports them.
 pub mod usage {
+    pub const E: u16 = 0x08;
+    pub const I: u16 = 0x0C;
     pub const M: u16 = 0x10;
     pub const T: u16 = 0x17;
     pub const TAB: u16 = 0x2B;
@@ -38,6 +41,8 @@ pub enum Action {
     Launcher,
     Monitor,
     Terminal,
+    Settings,
+    Files,
     /// One step of Alt+Tab: forward, or back with Shift.
     Cycle {
         back: bool,
@@ -104,6 +109,8 @@ impl Shortcuts {
             match u {
                 usage::M => Some(Action::Monitor),
                 usage::T => Some(Action::Terminal),
+                usage::I => Some(Action::Settings),
+                usage::E => Some(Action::Files),
                 _ => None,
             }
         } else if m & mods::ALT != 0 && m & mods::CTRL == 0 {
@@ -154,6 +161,8 @@ mod tests {
         let mut s = Shortcuts::default();
         s.key(usage::RIGHT_META, true, META);
         assert_eq!(s.key(usage::T, true, META), Outcome::Fire(Action::Terminal));
+        assert_eq!(s.key(usage::I, true, META), Outcome::Fire(Action::Settings));
+        assert_eq!(s.key(usage::E, true, META), Outcome::Fire(Action::Files));
         assert_eq!(s.key(0x04, true, META), Outcome::Pass, "Super+A isn't ours");
     }
 

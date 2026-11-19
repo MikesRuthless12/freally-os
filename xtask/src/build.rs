@@ -110,6 +110,8 @@ pub const PROGRAMS: &[UserProgram] = &[
     },
     UserProgram { package: "app-terminal", bin: "terminal", path: "/system/apps/terminal", kind: fsi::Kind::App },
     UserProgram { package: "app-monitor", bin: "monitor", path: "/system/apps/monitor", kind: fsi::Kind::App },
+    UserProgram { package: "app-settings", bin: "settings", path: "/system/apps/settings", kind: fsi::Kind::App },
+    UserProgram { package: "app-files", bin: "files", path: "/system/apps/files", kind: fsi::Kind::App },
     UserProgram { package: "app-session", bin: "welcome", path: "/system/apps/welcome", kind: fsi::Kind::App },
     UserProgram { package: "app-session", bin: "login", path: "/system/apps/login", kind: fsi::Kind::App },
     UserProgram { package: "svc-cdpd", bin: "cdpd", path: "/system/services/cdpd", kind: fsi::Kind::Service },

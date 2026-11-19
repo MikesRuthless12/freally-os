@@ -428,6 +428,10 @@ impl Conductor {
             || (caller == "desktop" && demand)
             // Whether anyone is logged in, so the desktop knows which screen to start (TASK-102).
             || (caller == "desktop" && want.name == "accounts")
+            // Settings ▸ Accounts, and a person's look saved (TASK-104);
+            // accounts checks each request itself. Not `after`: a release
+            // image has no accounts, and Settings is a guest's there.
+            || (caller == "settings" && want.name == "accounts")
             || caller_m.is_some_and(|m| m.after.contains(&want.name))
             || (cfg!(feature = "flavour-e2e") && caller == "cdpd");
         if !allowed {

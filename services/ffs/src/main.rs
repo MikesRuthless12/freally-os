@@ -246,6 +246,13 @@ fn handle(v: &mut Volume<BlockStore>, ordinal: u32, p: &[u8]) -> Result<Vec<u8>,
             let s: f::Subvol = arg(p)?;
             ok(v.lock(s.sv))
         }
+        f::RETIRE => {
+            let r: f::Subvol = arg(p)?;
+            v.retire_subvol(r.sv).map_err(ferr)?;
+            v.commit().map_err(ferr)?;
+            fstd::info!("ffs: subvolume {} retired (its account was removed)", r.sv);
+            Ok(fwire::to_payload(&()))
+        }
         f::UNMOUNT => {
             v.commit_clean().map_err(ferr)?;
             fstd::info!("ffs: unmounted cleanly at generation {}", v.generation());

@@ -66,6 +66,26 @@ impl Cdpd {
         answer
     }
 
+    /// What the screen shows (TASK-104), in words a spec compares:
+    /// `dark scale=0 wallpaper=orbit motion=off clock=24 saver=3 idle=15`.
+    fn look(&mut self) -> Result<String, String> {
+        let cl = self.stage()?;
+        let (l, _) = cl.call::<_, st::Look>(st::LOOK, &(), Vec::new(), deadline()).map_err(|e| {
+            self.stage = None;
+            format!("stage: {e:?}")
+        })?;
+        Ok(format!(
+            "{} scale={} wallpaper={} motion={} clock={} saver={} idle={}",
+            if l.dark { "dark" } else { "light" },
+            l.scale_pct,
+            st::WALLPAPERS.get(l.wallpaper as usize).copied().unwrap_or("?"),
+            if l.reduce_motion { "on" } else { "off" },
+            if l.clock_24h { 24 } else { 12 },
+            if l.saver == st::NO_SAVER { String::from("none") } else { l.saver.to_string() },
+            l.saver_idle_min,
+        ))
+    }
+
     fn tree(&mut self, window_id: u32) -> Option<ax::Tree> {
         let cl = self.stage().ok()?;
         let (b, _) = cl.call::<_, st::AxBytes>(st::AX_TREE, &st::ById { window_id }, Vec::new(), deadline()).ok()?;
@@ -282,6 +302,7 @@ impl Cdpd {
         let value: String = match (service, query) {
             ("stage", "theme") => format!("{:?}", self.windows()?.theme),
             ("stage", "scale") => self.windows()?.scale_pct.to_string(),
+            ("stage", "look") => self.look()?,
             ("stage", "focused") => {
                 let ws = self.windows()?;
                 ws.windows.iter().find(|w| w.focused).map_or(String::new(), |w| w.title.clone())
@@ -296,7 +317,7 @@ impl Cdpd {
             }
             _ => {
                 return Err(format!(
-                    "cdpd reads back stage theme|scale|focused and conductor `state <name>`, not {service} {query}"
+                    "cdpd reads back stage theme|scale|look|focused and conductor `state <name>`, not {service} {query}"
                 ));
             }
         };

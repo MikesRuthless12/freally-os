@@ -12,7 +12,9 @@
 //!   `os.json`), one bundle for each scale the OS offers (TASK-090A).
 //! - `wallpaper_bundle()`: both themes' wallpapers whole, at the size they
 //!   were rendered (2560 × 1600); stage brings them down to the screen with
-//!   an area filter, never up on a screen no larger.
+//!   an area filter, never up on a screen no larger. Beside the studio wall
+//!   (`wallpaper`), each other look Settings offers (TASK-104):
+//!   `wallpaper-<look>.png`, rendered as the wall is.
 
 use crate::util;
 use fjson::Value;
@@ -126,7 +128,35 @@ pub fn os_bundle(pct: u32) -> Result<Vec<u8>, String> {
 /// Both themes' wallpapers, each at its render's own size: `dark/wallpaper`,
 /// `light/wallpaper`.
 pub fn wallpaper_bundle() -> Result<Vec<u8>, String> {
-    bundle_of(|piece| piece == "wallpaper", |render_scale| render_scale * 100)
+    let (_, scale, slice) = pieces()?.into_iter().find(|(p, ..)| p == "wallpaper").ok_or("os.json has no wallpaper")?;
+    let dir = copy_dir();
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for theme in THEMES {
+        let mut names = vec![String::from("wallpaper")];
+        names.extend(looks(&dir.join(theme))?);
+        for piece in names {
+            let png = std::fs::read(dir.join(theme).join(format!("{piece}.png")))
+                .map_err(|e| format!("assets/os/{theme}/{piece}.png: {e}"))?;
+            let fimg = fimage::fimg::from_png(&png, scale * 100, scale, slice)
+                .map_err(|e| format!("{theme}/{piece} at {} %: {e}", scale * 100))?;
+            files.push((format!("{theme}/{piece}"), fimg));
+        }
+    }
+    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    Ok(fimage::bundle::build(&refs))
+}
+
+/// The other looks rendered for a theme: `wallpaper-<look>`, sorted.
+fn looks(theme_dir: &Path) -> Result<Vec<String>, String> {
+    let mut v: Vec<String> = std::fs::read_dir(theme_dir)
+        .map_err(|e| format!("{}: {e}", theme_dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter_map(|n| {
+            n.strip_prefix("wallpaper-").and_then(|n| n.strip_suffix(".png")).map(|l| format!("wallpaper-{l}"))
+        })
+        .collect();
+    v.sort();
+    Ok(v)
 }
 
 /// The pieces `which` picks, both themes, each as FIMG at the percent `at`

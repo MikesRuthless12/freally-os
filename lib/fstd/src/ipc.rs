@@ -138,18 +138,30 @@ impl Client {
         let called = sys::channel_call(self.channel.0.raw(), &msg, &raw, &mut reply, &mut rh, deadline_ns);
         // A request may carry a secret (a home's key, a password): not left in freed heap.
         crate::secret::wipe(&mut msg);
-        let (n, nh) = match called {
+        let ch = self.channel.0.raw();
+        // The reply came but didn't fit: it's still waiting (a read with too
+        // little room takes nothing). Read it with room for any message;
+        // calling again would send the request twice, and the second answer
+        // would be taken as the next call's.
+        let read_big = |reply: &mut Vec<u8>, rh: &mut [u32; 16]| {
+            reply.resize(65_536, 0);
+            sys::channel_read(ch, reply, rh)
+        };
+        let (mut n, mut nh) = match called {
             Ok(r) => r,
-            // The reply came but didn't fit: it's still waiting (a read with
-            // too little room takes nothing). Read it with room for any
-            // message; calling again would send the request twice, and the
-            // second answer would be taken as the next call's.
-            Err(FErr::BufferTooSmall) => {
-                reply.resize(65_536, 0);
-                sys::channel_read(self.channel.0.raw(), &mut reply, &mut rh)?
-            }
+            Err(FErr::BufferTooSmall) => read_big(&mut reply, &mut rh)?,
             Err(e) => return Err(e.into()),
         };
+        // A reply to an earlier call that gave up waiting came in first: it
+        // isn't this call's answer. Dropped, and ours waited for.
+        while fwire::parse(&reply[..n]).is_ok_and(|(h, _)| stale(&h, txid)) {
+            rh[..nh].iter().filter_map(|&v| Handle::from_raw(v)).for_each(drop);
+            sys::wait_one(ch, fcore_abi::signal::READABLE | fcore_abi::signal::PEER_CLOSED, deadline_ns)?;
+            (n, nh) = match sys::channel_read(ch, &mut reply, &mut rh) {
+                Err(FErr::BufferTooSmall) => read_big(&mut reply, &mut rh)?,
+                r => r?,
+            };
+        }
         handles.into_iter().for_each(|h| {
             h.into_raw();
         });
@@ -212,6 +224,11 @@ impl Client {
     }
 }
 
+/// A reply, but to another call (one that gave up waiting before it came).
+fn stale(h: &Header, txid: u32) -> bool {
+    h.is_reply() && h.txid != txid
+}
+
 fn check_reply(h: &Header, txid: u32, ordinal: u32) -> Result<(), CallError> {
     if !h.is_reply() || h.txid != txid || h.ordinal != ordinal {
         return Err(CallError::Wire(WireError::BadTag));
@@ -239,5 +256,19 @@ mod tests {
         assert_eq!((bytes.len(), hs), (3000, vec![11, 12]));
         // Past the kernel's 64 KiB nothing fits: an error, not a loop.
         assert_eq!(read_whole(|_, _| Err(FErr::BufferTooSmall)), Err(FErr::BufferTooSmall));
+    }
+
+    #[test]
+    fn a_reply_to_an_earlier_call_is_stale() {
+        // Call 7 gave up waiting; its reply came after: call 8 mustn't take it.
+        let late = fwire::reply(7, 3, &1u32).unwrap();
+        let ours = fwire::reply(8, 3, &2u32).unwrap();
+        let asked = fwire::request(9, 3, &3u32).unwrap();
+        let header = |m: &[u8]| fwire::parse(m).unwrap().0;
+        assert!(stale(&header(&late), 8));
+        assert!(!stale(&header(&ours), 8));
+        // Not a reply at all: not stale, and check_reply refuses it.
+        assert!(!stale(&header(&asked), 8));
+        assert!(check_reply(&header(&asked), 8, 3).is_err());
     }
 }
