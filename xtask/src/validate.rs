@@ -115,7 +115,106 @@ pub fn check(f: Flavour, b: &Built) -> Result<Vec<String>, String> {
         "{name}: {} manifests, each for this flavour, each binary carried, the set in order",
         manifests.len()
     ));
+    out.push(no_writes(&manifests, &paths, &interlock_tested()).map_err(|e| format!("{name} image: {e}"))?);
     Ok(out)
+}
+
+/// Storage drivers by the binary's name: each must carry the partition
+/// interlock's test (TASK-092) before an image may hold it.
+const STORAGE_DRIVERS: [&str; 6] = ["nvme", "ahci", "ata", "virtio-blk", "usb-storage", "sdhci"];
+
+/// The storage drivers whose partition interlock test is in the tree: the
+/// file `drivers/<name>/src/interlock.rs` with a test refusing a write
+/// outside the Freally partitions (`AccessDenied`).
+pub fn interlock_tested() -> Vec<String> {
+    let root = crate::util::repo_root();
+    STORAGE_DRIVERS
+        .iter()
+        .filter(|d| {
+            std::fs::read_to_string(root.join("drivers").join(d).join("src/interlock.rs"))
+                .is_ok_and(|s| s.contains("#[test]") && s.contains("AccessDenied"))
+        })
+        .map(|d| d.to_string())
+        .collect()
+}
+
+/// The no-writes audit (TASK-077, PRD charter rule 6): nothing in an image
+/// can write to a storage device unless the partition interlock stands in
+/// its way.
+/// - no storage driver, unless its interlock test is in the tree (`allowed`);
+/// - the root resource (`devices`: what carves a controller's registers)
+///   only for conductor (PID 1, which hands devmgr its share) and devmgr,
+///   so no other service can reach a disk;
+/// - the DMA grant (a disk is written by DMA) only for an allowed storage
+///   driver (and conductor, PID 1, whose manifest lists every grant because
+///   it holds them all to hand out; it drives no device).
+pub fn no_writes(manifests: &[fsvc::Manifest], paths: &[String], allowed: &[String]) -> Result<String, String> {
+    let storage = |s: &str| STORAGE_DRIVERS.iter().find(|d| s.contains(*d)).map(|d| d.to_string());
+    for p in paths.iter().filter(|p| p.starts_with("/system/drivers/")) {
+        if let Some(d) = storage(p)
+            && !allowed.contains(&d)
+        {
+            return Err(format!("it carries the storage driver {p} with no partition interlock test (TASK-077)"));
+        }
+    }
+    for m in manifests {
+        if m.grants.iter().any(|g| g == "devices") && !["conductor", "devmgr"].contains(&m.name.as_str()) {
+            return Err(format!("{} holds the root resource; only conductor and devmgr may (TASK-077)", m.name));
+        }
+        if m.grants.iter().any(|g| g == "dma")
+            && m.name != "conductor"
+            && !storage(&m.binary).is_some_and(|d| allowed.contains(&d))
+        {
+            return Err(format!("{} holds the DMA grant without a tested partition interlock (TASK-077)", m.name));
+        }
+    }
+    let drivers = paths.iter().filter(|p| p.starts_with("/system/drivers/")).count();
+    Ok(match allowed {
+        [] => format!(
+            "no writes: no storage driver among its {drivers} drivers, the root resource conductor's and devmgr's alone, no DMA"
+        ),
+        a => format!("no writes outside Freally partitions: {} only with the interlock tested", a.join(", ")),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::no_writes;
+
+    fn m(name: &str, binary: &str, grants: &str) -> fsvc::Manifest {
+        let text = format!(
+            "name = {name}\nbinary = {binary}\ndescription = A test service for the no-writes rule.\nstart = boot\nrestart = never\nclass = normal\ngrants = {grants}\nflavours = release\n"
+        );
+        fsvc::parse(&text).unwrap()
+    }
+
+    fn paths(p: &[&str]) -> Vec<String> {
+        p.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn todays_images_pass() {
+        let ms = [m("devmgr", "/system/services/devmgr", "devices"), m("logger", "/system/services/logger", "serial")];
+        let ps = paths(&["/system/drivers/gop-fb", "/system/drivers/i8042", "/system/services/devmgr"]);
+        assert!(no_writes(&ms, &ps, &[]).unwrap().contains("no storage driver among its 2 drivers"));
+    }
+
+    #[test]
+    fn a_storage_driver_without_its_interlock_is_refused() {
+        let ps = paths(&["/system/drivers/nvme"]);
+        assert!(no_writes(&[], &ps, &[]).unwrap_err().contains("storage driver /system/drivers/nvme"));
+        // With its interlock tested, and its DMA grant, it may.
+        let ms = [m("drv-nvme", "/system/drivers/nvme", "dma")];
+        assert!(no_writes(&ms, &ps, &["nvme".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn the_root_resource_and_dma_stay_where_they_belong() {
+        let ms = [m("desktop", "/system/services/desktop", "devices")];
+        assert!(no_writes(&ms, &[], &[]).unwrap_err().contains("desktop holds the root resource"));
+        let ms = [m("drv-x", "/system/drivers/x", "dma")];
+        assert!(no_writes(&ms, &[], &[]).unwrap_err().contains("drv-x holds the DMA grant"));
+    }
 }
 
 /// Freally Core's ELF, as the image carries it.
