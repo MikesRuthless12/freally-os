@@ -47,6 +47,10 @@ const TABS: [&str; 5] = ["Processes", "Boot", "Faults", "Log", "Devices"];
 const TAB_H: u32 = 44;
 const ROW_H: u32 = 32;
 const PAD: u32 = 16;
+/// How many seconds the CPU graph holds.
+const CPU_HISTORY: usize = 60;
+/// The CPU graph's height, at 100 %.
+const GRAPH_H: u32 = 104;
 /// The boot's stages, by id (the protocol's own list).
 const STAGES: [&str; 15] = c::STAGES;
 /// The Processes table's columns: header, x at 100 %, sort column.
@@ -110,6 +114,8 @@ struct Monitor {
     clock: String,
     devices: Vec<DeviceRow>,
     devices_top: usize,
+    /// Processes: the whole machine's CPU %, a sample a second (TASK-075A).
+    cpu_history: Vec<f64>,
     /// Conductor didn't answer three refreshes running: the banner (one
     /// missed refresh keeps what was shown).
     unreachable: bool,
@@ -203,6 +209,7 @@ impl Monitor {
             clock: String::new(),
             devices: Vec::new(),
             devices_top: 0,
+            cpu_history: Vec::new(),
             unreachable: false,
             missed: 0,
             last_sample: 0,
@@ -236,6 +243,15 @@ impl Monitor {
                     })
                     .collect();
                 self.procs.sample(procs, now);
+                // The whole machine's CPU: every process's share over the CPUs.
+                let cpus = fstd::machine::cpus().map_or(1, |c| c.cpus.len().max(1)) as f64;
+                if self.procs.rows.iter().any(|r| r.cpu_pct.is_some()) {
+                    let total: f64 = self.procs.rows.iter().filter_map(|r| r.cpu_pct).map(f64::from).sum();
+                    if self.cpu_history.len() == CPU_HISTORY {
+                        self.cpu_history.remove(0);
+                    }
+                    self.cpu_history.push((total / cpus).clamp(0.0, 100.0));
+                }
             }
             Err(_) => {
                 self.missed += 1;
@@ -387,6 +403,7 @@ impl Monitor {
         let shown: Vec<Line> = self.log.shown().into_iter().cloned().collect();
         let (svc, lvl) = (self.log.service.clone(), self.log.min_level);
         let cpus_line = self.cpus_line.clone();
+        let history = self.cpu_history.clone();
         let clock = self.clock.clone();
         let devices: Vec<DeviceRow> =
             self.devices.iter().skip(self.devices_top).take(self.device_rows_shown()).cloned().collect();
@@ -456,9 +473,11 @@ impl Monitor {
                                 Tok::Text2,
                             );
                         }
+                        // The table stops above the CPU graph at the foot.
+                        let graph_top = h as i32 - px(GRAPH_H) - px(PAD) - px(24);
                         for (i, r) in rows.iter().enumerate() {
                             let y = top + px(28) + i as i32 * px(ROW_H);
-                            if y + px(ROW_H) > h as i32 {
+                            if y + px(ROW_H) > graph_top {
                                 break;
                             }
                             if i % 2 == 1 {
@@ -501,6 +520,46 @@ impl Monitor {
                                 Tok::Text,
                             );
                         }
+                        // THE FLEET DISPLAY (TASK-075A): the machine's CPU over
+                        // the last minute, in the plot kit's pen.
+                        let gx = px(PAD) + px(52);
+                        let gy = graph_top + px(24);
+                        let (gw, gh) = (w.saturating_sub(t.px(2 * PAD) + t.px(52)), t.px(GRAPH_H));
+                        words(
+                            &mut s,
+                            fonts,
+                            t,
+                            TextStyle::Small,
+                            (px(PAD), graph_top),
+                            "CPU, the last minute (every core)",
+                            Tok::Text2,
+                        );
+                        if history.len() < 2 {
+                            words(&mut s, fonts, t, TextStyle::Small, (gx, gy + px(40)), "Measuring…", Tok::Text3);
+                        } else {
+                            let mut faint = t.colour(Tok::Border);
+                            faint.a = 160;
+                            fui::plot::grid(&mut s, Rect::new(gx, gy, gw, gh), 4, 6, faint);
+                            for (k, figure) in ["100 %", "50 %", "0 %"].iter().enumerate() {
+                                let fy = gy + (k as i32 * gh as i32) / 2 - px(8);
+                                words(&mut s, fonts, t, TextStyle::Mono, (px(PAD), fy), figure, Tok::Text3);
+                            }
+                            // Newest at the right edge; a minute across.
+                            let step = gw as f64 / (CPU_HISTORY - 1) as f64;
+                            let first = CPU_HISTORY - history.len();
+                            let points: Vec<fui::plot::Pt> = history
+                                .iter()
+                                .enumerate()
+                                .map(|(k, v)| fui::plot::Pt {
+                                    x: gx as f64 + (first + k) as f64 * step,
+                                    y: gy as f64 + gh as f64 * (1.0 - v / 100.0),
+                                })
+                                .collect();
+                            let accent = t.colour(Tok::PrimaryInk);
+                            let (top_y, foot_y) = (gy as f64, (gy + gh as i32) as f64);
+                            fui::plot::fill_under(&mut s, &points, top_y, foot_y, accent, fui::plot::Ink::Body);
+                            fui::plot::stroke(&mut s, &points, 1.5 * t.scale as f64, accent, t.mode == Mode::Dark);
+                        }
                     }
                     1 => {
                         if let Some(b) = &boot {
@@ -530,13 +589,18 @@ impl Monitor {
                                 words(&mut s, fonts, t, TextStyle::Small, (px(PAD), y), name, Tok::Text2);
                                 let r = Rect::new(bar_x, y + px(4), bar_w as u32, t.px(10));
                                 draw::round_rect(&mut s, r, 3.0, t.colour(Tok::MeterOff));
+                                // Lit by level (the plot kit's body ink), its top
+                                // edge a crisp line of the accent.
                                 let lit = ((bar_w as f32) * b.share(i)).max(2.0) as u32;
-                                draw::round_rect(
-                                    &mut s,
-                                    Rect::new(bar_x, y + px(4), lit, t.px(10)),
-                                    3.0,
-                                    t.colour(Tok::PrimaryInk),
-                                );
+                                let (bt, bh) = (y + px(4), t.px(10));
+                                let edge = [
+                                    fui::plot::Pt { x: bar_x as f64, y: bt as f64 },
+                                    fui::plot::Pt { x: (bar_x + lit as i32) as f64, y: bt as f64 },
+                                ];
+                                let accent = t.colour(Tok::PrimaryInk);
+                                let foot = (bt + bh as i32) as f64;
+                                fui::plot::fill_under(&mut s, &edge, bt as f64, foot, accent, fui::plot::Ink::Body);
+                                fui::plot::stroke(&mut s, &edge, 1.0, accent, t.mode == Mode::Dark);
                                 words(
                                     &mut s,
                                     fonts,
@@ -729,6 +793,21 @@ impl Monitor {
                 );
                 tb.testid = String::from("processes");
                 nodes.push(tb);
+                // The CPU graph (TASK-075A): how much it holds, and the latest.
+                let gy = self.h as i32 - px(GRAPH_H) - px(PAD);
+                let mut graph = node(
+                    ax::ROOT,
+                    ax::IMG,
+                    "CPU, the last minute",
+                    0,
+                    (px(PAD), gy, self.w - t.px(2 * PAD), t.px(GRAPH_H)),
+                );
+                graph.testid = String::from("cpu-graph");
+                graph.value = match self.cpu_history.last() {
+                    Some(v) => alloc::format!("{} samples, now {v:.0} %", self.cpu_history.len()),
+                    None => String::from("measuring"),
+                };
+                nodes.push(graph);
                 for (i, r) in self.procs.rows.iter().enumerate() {
                     let at = (px(8), top + px(24) + i as i32 * px(ROW_H), self.w - t.px(16), t.px(ROW_H));
                     let mut row = node(table, ax::ROW, &r.proc.name, 0, at);

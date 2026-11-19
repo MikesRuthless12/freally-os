@@ -25,6 +25,7 @@ fcrypto = { path = "lib/fcrypto" }
 fbootctl = { path = "lib/fbootctl" }
 fsi = { path = "lib/fsi" }
 ffont = { path = "lib/ffont" }
+frandom = { path = "lib/frandom" }
 fscreen = { path = "lib/fscreen" }
 fui = { path = "lib/fui" }
 fimage = { path = "lib/fimage" }

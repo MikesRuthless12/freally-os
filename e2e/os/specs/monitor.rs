@@ -137,6 +137,22 @@ pub fn tabs(ctx: &mut Ctx) -> Result<(), String> {
         key(ctx, "ControlLeft", false)?;
         until(ctx, &format!("Ctrl+Tab to {want}"), |s| s.tab == want)?;
     }
+    // The CPU graph at the foot of Processes fills a sample a second, in the
+    // plot kit's pen (TASK-075A).
+    let sel = "WINDOW[data-owner=\"monitor\"] [data-testid=\"cpu-graph\"]";
+    let start = Instant::now();
+    loop {
+        let id = crate::sweep::until_q(ctx, sel)?;
+        let v = crate::sweep::attr(ctx, id, "aria-valuenow")?.unwrap_or_default();
+        let n: usize = v.split(' ').next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        if n >= 3 && v.contains(" %") {
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(15) {
+            return Err(format!("the CPU graph holds {v:?}, not 3 samples"));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
     ctx.keep_shot("monitor")?;
     Ok(())
 }

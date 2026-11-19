@@ -12,10 +12,17 @@
 //! Every algorithm is tested against its official vectors (`tests/vectors.rs`).
 #![no_std]
 
+pub mod aead;
+pub mod argon2;
+pub mod blake2b;
+pub mod chacha;
 pub mod crc32c;
 pub mod ct;
 pub mod ed25519;
+pub mod hkdf;
+pub mod poly1305;
 pub mod sha1;
 pub mod sha2;
 #[cfg(all(target_arch = "x86_64", feature = "shani"))]
 pub mod sha256_ni;
+pub mod x25519;

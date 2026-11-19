@@ -32,13 +32,13 @@ const fn load64(s: &[u8; 32], i: usize) -> u64 {
 
 /// An element of GF(2^255 − 19): Σ limb[i] · 2^(51·i).
 #[derive(Clone, Copy)]
-struct Fe([u64; 5]);
+pub(crate) struct Fe([u64; 5]);
 
 impl Fe {
     const ZERO: Fe = Fe([0; 5]);
     const ONE: Fe = Fe([1, 0, 0, 0, 0]);
 
-    const fn small(v: u64) -> Fe {
+    pub(crate) const fn small(v: u64) -> Fe {
         Fe([v, 0, 0, 0, 0])
     }
 
@@ -62,14 +62,14 @@ impl Fe {
         Fe(l)
     }
 
-    const fn add(&self, b: &Fe) -> Fe {
+    pub(crate) const fn add(&self, b: &Fe) -> Fe {
         let a = &self.0;
         let b = &b.0;
         Fe::weak_reduce([a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3], a[4] + b[4]])
     }
 
     /// `self − b`, computed as `self + 4p − b` so no limb goes negative.
-    const fn sub(&self, b: &Fe) -> Fe {
+    pub(crate) const fn sub(&self, b: &Fe) -> Fe {
         let a = &self.0;
         let b = &b.0;
         // 4p in radix 2^51: 4·(2^51 − 19), then 4·(2^51 − 1) four times.
@@ -86,7 +86,7 @@ impl Fe {
         Fe::ZERO.sub(self)
     }
 
-    const fn mul(&self, b: &Fe) -> Fe {
+    pub(crate) const fn mul(&self, b: &Fe) -> Fe {
         let a = &self.0;
         let b = &b.0;
         let b1 = b[1] * 19;
@@ -108,7 +108,7 @@ impl Fe {
         Fe([(l0 & m51) as u64, l1 as u64, (r2 & m51) as u64, (r3 & m51) as u64, (r4 & m51) as u64])
     }
 
-    const fn square(&self) -> Fe {
+    pub(crate) const fn square(&self) -> Fe {
         self.mul(self)
     }
 
@@ -127,7 +127,7 @@ impl Fe {
     }
 
     /// 1/self, as self^(p − 2). Zero maps to zero.
-    const fn invert(&self) -> Fe {
+    pub(crate) const fn invert(&self) -> Fe {
         self.pow(&[0xFFFF_FFFF_FFFF_FFEB, u64::MAX, u64::MAX, 0x7FFF_FFFF_FFFF_FFFF])
     }
 
@@ -137,7 +137,7 @@ impl Fe {
     }
 
     /// Loads 32 little-endian bytes, ignoring the top bit.
-    const fn from_bytes(s: &[u8; 32]) -> Fe {
+    pub(crate) const fn from_bytes(s: &[u8; 32]) -> Fe {
         Fe([
             load64(s, 0) & MASK,
             (load64(s, 6) >> 3) & MASK,
@@ -149,7 +149,7 @@ impl Fe {
 
     /// The canonical encoding (fully reduced mod p), as in curve25519-donna's
     /// contraction: carry twice, add 19, carry, add 2^255 − 19, carry, drop 2^255.
-    const fn to_bytes(self) -> [u8; 32] {
+    pub(crate) const fn to_bytes(self) -> [u8; 32] {
         let mut t = self.0;
         let mut pass = 0;
         while pass < 2 {
@@ -220,7 +220,7 @@ impl Fe {
     }
 
     /// `a` if `bit` is 0, `b` if `bit` is 1, without a branch.
-    fn select(bit: u64, a: &Fe, b: &Fe) -> Fe {
+    pub(crate) fn select(bit: u64, a: &Fe, b: &Fe) -> Fe {
         let mut r = [0u64; 5];
         for (i, l) in r.iter_mut().enumerate() {
             *l = ct::select64(bit, a.0[i], b.0[i]);

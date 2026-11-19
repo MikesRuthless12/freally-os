@@ -35,6 +35,8 @@ pub mod layout;
 #[cfg(feature = "ui")]
 pub mod paint;
 #[cfg(feature = "ui")]
+pub mod plot;
+#[cfg(feature = "ui")]
 pub mod strings;
 #[cfg(feature = "ui")]
 pub mod text;

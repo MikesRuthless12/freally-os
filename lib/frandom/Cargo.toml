@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "frandom"
+description = "frandom: random bytes for keys and salts, from RDSEED/RDRAND (self-tested) mixed with TSC jitter through HKDF."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcrypto.workspace = true
+
+[lints]
+workspace = true
