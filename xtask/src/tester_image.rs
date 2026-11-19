@@ -32,10 +32,7 @@ const MOST: u64 = 1 << 30;
 const CHECK_GIB: u64 = 4;
 
 pub fn tester_image_cmd(args: &[String]) -> Result<(), String> {
-    let out = args
-        .iter()
-        .position(|a| a == "--out")
-        .and_then(|i| args.get(i + 1))
+    let out = util::flag(args, "--out")
         .map(PathBuf::from)
         .unwrap_or_else(|| util::target_dir().join(format!("Freally-OS-v{}-tester.img", fcore_abi::VERSION)));
     let built = build::build(Flavour::Release)?;

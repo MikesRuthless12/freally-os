@@ -606,12 +606,17 @@ impl App {
         }
         y += (key_h + t.px(12)) as i32;
         if let Some(note) = self.report_note.clone() {
-            let (nw, nh) = self.win.measure(TextStyle::Small, &note);
-            self.win.say((x, y), TextStyle::Small, &note, Tok::Text2);
-            let mut n = node(ax::TEXT, &note, 0, Rect::new(x, y, nw, nh), "settings-report-note");
-            n.value = note;
-            self.win.nodes.push(n);
+            self.note((x, y), note, "settings-report-note");
         }
+    }
+
+    /// A line of small text, and its node (its value the words) for the specs.
+    fn note(&mut self, at: (i32, i32), words: String, testid: &str) {
+        let (w, h) = self.win.measure(TextStyle::Small, &words);
+        self.win.say(at, TextStyle::Small, &words, Tok::Text2);
+        let mut n = node(ax::TEXT, &words, 0, Rect::new(at.0, at.1, w, h), testid);
+        n.value = words;
+        self.win.nodes.push(n);
     }
 
     /// Settings ▸ Update (TASK-110): what this computer runs, an update
@@ -675,11 +680,7 @@ impl App {
             if matches!(act, UpAct::File(i) if Some(*i) == self.updates.chosen)
                 && let Some(words) = self.updates.chosen_words()
             {
-                let (ww, wh) = self.win.measure(TextStyle::Small, &words);
-                self.win.say((x + t.px(12) as i32, y), TextStyle::Small, &words, Tok::Text2);
-                let mut n = node(ax::TEXT, &words, 0, Rect::new(x, y, ww, wh), "settings-update-chosen");
-                n.value = words;
-                self.win.nodes.push(n);
+                self.note((x + t.px(12) as i32, y), words, "settings-update-chosen");
                 y += t.px(20) as i32;
                 let notes = match &self.updates.info {
                     Some(Ok(i)) => i.notes.clone(),
@@ -698,11 +699,7 @@ impl App {
             }
         }
         if let Some(note) = self.updates.note.clone() {
-            let (nw, nh) = self.win.measure(TextStyle::Small, &note);
-            self.win.say((x, y), TextStyle::Small, &note, Tok::Text2);
-            let mut n = node(ax::TEXT, &note, 0, Rect::new(x, y, nw, nh), "settings-update-note");
-            n.value = note;
-            self.win.nodes.push(n);
+            self.note((x, y), note, "settings-update-note");
         }
     }
 

@@ -85,7 +85,7 @@ impl VmOptions {
 
     pub fn from_args(args: &[String]) -> Result<VmOptions, String> {
         let flavour = pack::flavour_arg(args)?;
-        let arg = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
+        let arg = |n: &str| crate::util::flag(args, n).map(String::from);
         let mut o = VmOptions::new(flavour, &arg("--vm").unwrap_or_else(|| flavour.name().to_string()));
         o.headless = args.iter().any(|a| a == "--headless");
         o.probe = args.iter().any(|a| a == "--probe");

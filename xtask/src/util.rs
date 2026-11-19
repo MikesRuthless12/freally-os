@@ -26,6 +26,11 @@ pub fn keys_dir() -> PathBuf {
     home().join(".freally-keys")
 }
 
+/// The value after the flag `name` in `args`, if both are there.
+pub fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
 /// Where VM folders live: `~/.freally-vms/<name>/`.
 pub fn vms_dir() -> PathBuf {
     home().join(".freally-vms")

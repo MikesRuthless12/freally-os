@@ -259,11 +259,7 @@ fn random<const N: usize>() -> Result<[u8; N], String> {
 
 /// The folder a ceremony command names (`--to` or `--from`), checked.
 fn checked_folder(args: &[String], flag: &str) -> Result<PathBuf, String> {
-    let to = args
-        .iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .ok_or_else(|| format!("{flag} <the release key drive's folder>"))?;
+    let to = util::flag(args, flag).ok_or_else(|| format!("{flag} <the release key drive's folder>"))?;
     let to = std::fs::canonicalize(to).map_err(|e| format!("{to}: {e}"))?;
     if !to.is_dir() {
         return Err(format!("{} isn't a folder", to.display()));

@@ -103,7 +103,7 @@ pub fn image_cmd(args: &[String]) -> Result<(), String> {
         );
     }
     let flavour = pack::flavour_arg(args)?;
-    let arg = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
+    let arg = |n: &str| util::flag(args, n).map(String::from);
     let data_mib = match arg("--data-mib") {
         Some(v) => v.parse().map_err(|_| "--data-mib takes a number")?,
         None => DATA_MIB,

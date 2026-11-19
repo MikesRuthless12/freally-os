@@ -50,10 +50,7 @@ fn panics(setups: &[String]) -> usize {
 }
 
 pub fn soak_cmd(args: &[String]) -> Result<(), String> {
-    let hours: f64 = args
-        .iter()
-        .position(|a| a == "--hours")
-        .and_then(|i| args.get(i + 1))
+    let hours: f64 = util::flag(args, "--hours")
         .map(|h| h.parse().map_err(|_| "--hours takes a number"))
         .transpose()?
         .unwrap_or(24.0);
@@ -112,12 +109,9 @@ pub fn soak_cmd(args: &[String]) -> Result<(), String> {
         );
         failed.extend(fails);
     }
-    let mut by: Vec<(String, usize)> = Vec::new();
+    let mut by = std::collections::BTreeMap::<&str, usize>::new();
     for f in &failed {
-        match by.iter_mut().find(|(s, _)| s == f) {
-            Some(e) => e.1 += 1,
-            None => by.push((f.clone(), 1)),
-        }
+        *by.entry(f).or_default() += 1;
     }
     line(
         &mut log,

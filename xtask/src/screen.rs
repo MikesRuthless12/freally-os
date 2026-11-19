@@ -12,7 +12,7 @@ pub fn to_png(w: usize, h: usize, px: &[u32]) -> Vec<u8> {
 
 pub fn screen_cmd(args: &[String]) -> Result<(), String> {
     let which = args.first().map(String::as_str).ok_or("cargo xtask screen title|integrity --out file.png")?;
-    let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let arg = |name: &str| crate::util::flag(args, name).map(String::from);
     let (w, h) = match arg("--size") {
         Some(s) => {
             let (a, b) = s.split_once('x').ok_or("--size WxH")?;

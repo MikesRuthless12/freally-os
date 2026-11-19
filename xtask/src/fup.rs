@@ -8,22 +8,18 @@
 use crate::{build, keys, pack, util};
 use std::path::{Path, PathBuf};
 
-fn arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-}
-
 pub fn fup_cmd(args: &[String]) -> Result<(), String> {
     let flavour = pack::flavour_arg(args)?;
-    let version = arg(args, "--version").ok_or("--version <the version it brings>")?;
-    let notes = match arg(args, "--notes") {
+    let version = util::flag(args, "--version").ok_or("--version <the version it brings>")?;
+    let notes = match util::flag(args, "--notes") {
         Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
         None => format!("# Freally OS {version}\n"),
     };
-    let out = arg(args, "--out").map(PathBuf::from).unwrap_or_else(|| {
+    let out = util::flag(args, "--out").map(PathBuf::from).unwrap_or_else(|| {
         util::target_dir().join("freally").join("updates").join(format!("{}-{version}.fup", flavour.name()))
     });
     let crash = args.iter().any(|a| a == "--crash");
-    make(flavour, version, arg(args, "--oldest").unwrap_or(""), &notes, crash, &out)?;
+    make(flavour, version, util::flag(args, "--oldest").unwrap_or(""), &notes, crash, &out)?;
     println!("fup: {} ({} {version})", out.display(), flavour.name());
     Ok(())
 }

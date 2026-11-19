@@ -239,7 +239,7 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
 
 pub fn sign_cmd(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("cargo xtask sign <image> --key dev|staging|release")?;
-    let key = match args.iter().position(|a| a == "--key").and_then(|i| args.get(i + 1)).map(String::as_str) {
+    let key = match crate::util::flag(args, "--key") {
         Some("dev") => KeyName::Dev,
         Some("staging") => KeyName::Staging,
         // The release key, from its drive, opened with its passphrase
