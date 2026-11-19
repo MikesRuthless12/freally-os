@@ -17,3 +17,5 @@ pub mod ct;
 pub mod ed25519;
 pub mod sha1;
 pub mod sha2;
+#[cfg(all(target_arch = "x86_64", feature = "shani"))]
+pub mod sha256_ni;

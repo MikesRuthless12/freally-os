@@ -11,7 +11,7 @@ use fcore_abi::Flavour;
 use std::process::Command;
 use std::time::Instant;
 
-pub const HOST_FEATURES: &str = "fsi/build,ffont/raster,fui/ui";
+pub const HOST_FEATURES: &str = "fsi/build,ffont/raster,fui/ui,fcrypto/shani";
 
 type Gate = (&'static str, Box<dyn Fn() -> Result<String, String>>);
 

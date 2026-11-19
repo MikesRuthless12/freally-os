@@ -102,6 +102,20 @@ impl Sha256 {
         }
     }
 
+    /// Whole blocks, with the SHA extensions when the CPU has them (the
+    /// `shani` feature, TASK-076), else in software.
+    fn compress_blocks(h: &mut [u32; 8], blocks: &[[u8; 64]]) {
+        #[cfg(all(target_arch = "x86_64", feature = "shani"))]
+        if crate::sha256_ni::available() {
+            // SAFETY: `available` asked CPUID for every extension it uses.
+            unsafe { crate::sha256_ni::compress(h, blocks, &K256) };
+            return;
+        }
+        for block in blocks {
+            Self::compress(h, block);
+        }
+    }
+
     pub fn update(&mut self, mut data: &[u8]) {
         self.total = self.total.wrapping_add(data.len() as u64);
         if self.buf_len > 0 {
@@ -113,13 +127,11 @@ impl Sha256 {
                 return;
             }
             let block = self.buf;
-            Self::compress(&mut self.h, &block);
+            Self::compress_blocks(&mut self.h, &[block]);
             self.buf_len = 0;
         }
         let (blocks, rest) = data.as_chunks::<64>();
-        for block in blocks {
-            Self::compress(&mut self.h, block);
-        }
+        Self::compress_blocks(&mut self.h, blocks);
         self.buf[..rest.len()].copy_from_slice(rest);
         self.buf_len = rest.len();
     }
@@ -244,4 +256,67 @@ pub fn sha512(data: &[u8]) -> [u8; 64] {
     let mut h = Sha512::new();
     h.update(data);
     h.finish()
+}
+
+#[cfg(all(test, target_arch = "x86_64", feature = "shani"))]
+mod shani_tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    /// The SHA extensions give the software path's state, block for block,
+    /// on every length of a pseudo-random message up to 4 KiB (TASK-076).
+    #[test]
+    fn the_sha_extensions_match_the_software_path() {
+        if !crate::sha256_ni::available() {
+            std::println!("SKIP: this CPU has no SHA extensions");
+            return;
+        }
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let data: Vec<u8> = (0..4096)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let (blocks, _) = data.as_chunks::<64>();
+        for n in 0..=blocks.len() {
+            let mut soft = IV256;
+            for b in &blocks[..n] {
+                Sha256::compress(&mut soft, b);
+            }
+            let mut ni = IV256;
+            // SAFETY: `available` said yes.
+            unsafe { crate::sha256_ni::compress(&mut ni, &blocks[..n], &K256) };
+            assert_eq!(ni, soft, "after {n} blocks");
+        }
+        // And whole digests at every length, through the public path.
+        for len in [0, 1, 55, 56, 63, 64, 65, 127, 128, 1000, 4096] {
+            let mut soft = Sha256::new();
+            soft.total = len as u64;
+            let ni = sha256(&data[..len]);
+            let (b, rest) = data[..len].as_chunks::<64>();
+            for block in b {
+                Sha256::compress(&mut soft.h, block);
+            }
+            soft.buf[..rest.len()].copy_from_slice(rest);
+            soft.buf_len = rest.len();
+            // Finish in software too: pad by hand.
+            let bits = (len as u64) * 8;
+            let mut tail = rest.to_vec();
+            tail.push(0x80);
+            while tail.len() % 64 != 56 {
+                tail.push(0);
+            }
+            tail.extend_from_slice(&bits.to_be_bytes());
+            let mut h = soft.h;
+            for block in tail.as_chunks::<64>().0 {
+                Sha256::compress(&mut h, block);
+            }
+            let want: Vec<u8> = h.iter().flat_map(|w| w.to_be_bytes()).collect();
+            assert_eq!(ni.to_vec(), want, "sha256 of {len} bytes");
+        }
+    }
 }

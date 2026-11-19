@@ -9,3 +9,8 @@ publish = false
 
 [lints]
 workspace = true
+
+[features]
+# SHA-256 with the x86 SHA extensions when the CPU has them (TASK-076): the
+# bootloader turns it on; the kernel's soft-float build never does.
+shani = []
