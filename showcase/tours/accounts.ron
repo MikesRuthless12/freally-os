@@ -9,7 +9,8 @@ Tour(
         Record(ms: 6000),
         Type(text: "Sam Rivera"),
         Key(code: "Enter"),
-        Type(text: "sam"),
+        // The username Welcome suggests from the name: kept.
+        Record(ms: 500),
         Key(code: "Enter"),
         Type(text: "correct-horse-7"),
         Key(code: "Enter"),

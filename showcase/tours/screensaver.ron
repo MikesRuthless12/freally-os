@@ -33,7 +33,8 @@ Tour(
         Key(code: "ArrowLeft"),
         Key(code: "ArrowLeft"),
         Record(ms: 1200),
-        // OK.
+        // Restore Defaults (lit now that something changed), then OK.
+        Key(code: "Tab"),
         Key(code: "Tab"),
         Key(code: "Enter"),
         Record(ms: 1500),
