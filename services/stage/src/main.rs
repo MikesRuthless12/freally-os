@@ -312,16 +312,20 @@ fn run(_bootstrap: u32) -> i64 {
         art: Art::load(pct),
         screen,
     };
-    let Ok((listen, give)) = Channel::pair() else { return 1 };
-    if fstd::service::register(give).is_err() {
-        return 1;
-    }
     let keys = input();
     if keys.is_none() {
         fstd::warn!("stage: no keyboard or mouse (drv-i8042 isn't serving)");
     }
     // The first frame (S3) once the input's settled: S2 always comes first.
+    // Drawn and stamped before stage registers: from then on conductor's test
+    // door may be waiting on stage, so stage never waits on conductor after
+    // (it would sit out the door's 2 s, and the desktop's first call with it).
     s.flush();
+    let Ok((listen, give)) = Channel::pair() else { return 1 };
+    if fstd::service::register(give).is_err() {
+        return 1;
+    }
+    fstd::info!("stage: first frame, {}x{}", s.screen.w, s.screen.h);
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
         if let Some(k) = &keys {
@@ -1143,7 +1147,6 @@ impl Stage {
             if let Err(e) = fstd::service::stamp(13, at) {
                 fstd::warn!("stage: S3 not stamped: {e:?}");
             }
-            fstd::info!("stage: first frame, {}x{}", self.screen.w, self.screen.h);
         }
     }
 }

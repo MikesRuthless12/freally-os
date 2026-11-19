@@ -116,7 +116,16 @@ pub fn fill(ctx: &mut Ctx) -> Result<(), String> {
     if answer.first().map(String::as_str) != Some("ok") {
         return Err(format!("fbfill: {answer:?}"));
     }
-    ctx.expect_screen(Expect::Fill(0x09_0c_09))
+    ctx.expect_screen(Expect::Fill(0x09_0c_09))?;
+    // The fill went behind stage's back: stage draws the whole screen again
+    // (light, then dark), so the next spec finds the desktop, not the fill.
+    for theme in ["light", "dark"] {
+        let said = ctx.door(&format!("stage theme {theme}"))?;
+        if said.first().map(String::as_str) != Some("ok") {
+            return Err(format!("stage theme {theme}: {said:?}"));
+        }
+    }
+    ctx.expect_screen(Expect::Desktop)
 }
 
 /// The DOM key code and shift that type `c` on a US keyboard.
