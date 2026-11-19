@@ -7,5 +7,8 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[dependencies]
+fcrypto.workspace = true
+
 [lints]
 workspace = true

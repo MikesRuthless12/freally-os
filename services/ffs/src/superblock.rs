@@ -3,9 +3,9 @@
 //! written to slot `g % 2`, so a crash while one is written leaves the other
 //! whole. Mount takes the valid slot with the higher generation.
 
-use crate::crc32c::crc32c;
 use crate::ptr::BlockPtr;
 use crate::{BLOCK, FsError};
+use fcrypto::crc32c::crc32c;
 
 pub const MAGIC: [u8; 8] = *b"FRLYFS01";
 pub const VERSION: u16 = 1;

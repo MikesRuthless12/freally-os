@@ -346,6 +346,9 @@ dependencies = [
 [[package]]
 name = "svc-ffs"
 version = "0.4.0"
+dependencies = [
+ "fcrypto",
+]
 
 [[package]]
 name = "svc-logger"

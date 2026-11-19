@@ -70,8 +70,11 @@ impl<S: Store> Volume<S> {
         }
         let mut b = [0u8; BLOCK];
         self.store.read(p.block, &mut b)?;
-        if !p.matches(&b) {
-            return Err(FsError::Integrity(p.block));
+        // An encrypted subvolume's nodes open with the pointer's tag (§ 12).
+        match self.sealer(tree)? {
+            Some(s) => s.open(p.block, p.generation, &mut b, &p.check)?,
+            None if !p.matches(&b) => return Err(FsError::Integrity(p.block)),
+            None => {}
         }
         let n = Node::decode(&b, p.block, tree)?;
         if n.generation != p.generation {

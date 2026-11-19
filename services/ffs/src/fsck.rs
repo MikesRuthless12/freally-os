@@ -45,6 +45,9 @@ pub struct Report {
     pub nodes: u64,
     pub data: u64,
     pub items: u64,
+    /// Encrypted subvolumes checked without their key: their insides
+    /// weren't read, so neither reference counts nor leaks were judged.
+    pub locked: Vec<u64>,
 }
 
 impl Report {
@@ -117,6 +120,10 @@ impl<S: Store> Volume<S> {
         }
         let mut sv_items: Vec<(u64, Items)> = Vec::new();
         for (id, rec) in &subvols {
+            if self.is_locked(*id)? {
+                r.locked.push(*id);
+                continue;
+            }
             *w.ptrs.entry(rec.root.block).or_default() += 1;
             let mut items = Vec::new();
             self.walk(&rec.root, *id, None, (None, None), &mut w, &mut r, false, &mut items);
@@ -133,7 +140,8 @@ impl<S: Store> Volume<S> {
                 sv_items.push((*id, all));
             }
         }
-        // 3. Reference counts.
+        // 3. Reference counts (only with every subvolume read).
+        let whole = r.locked.is_empty();
         let mut refs = BTreeMap::new();
         for (k, v) in &ref_items {
             let n = v.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).unwrap_or(0);
@@ -144,12 +152,12 @@ impl<S: Store> Volume<S> {
         }
         for (&b, &n) in &w.ptrs {
             let want = refs.get(&b).copied().unwrap_or(1);
-            if n != want && !w.plain.contains(&b) {
+            if whole && n != want && !w.plain.contains(&b) {
                 r.add(Some(b), format!("block {b} is pointed to {n} time(s) but its reference count is {want}"));
             }
         }
         for &b in refs.keys() {
-            if !w.ptrs.contains_key(&b) {
+            if whole && !w.ptrs.contains_key(&b) {
                 r.add(Some(b), format!("a reference count for block {b}, which nothing reaches"));
             }
         }
@@ -190,7 +198,7 @@ impl<S: Store> Volume<S> {
         }
         let mut leak_start: Option<u64> = None;
         for b in FIRST_FREE..=total {
-            let leaked = b < total && !reached.contains(&b) && !is_free(b);
+            let leaked = whole && b < total && !reached.contains(&b) && !is_free(b);
             match (leaked, leak_start) {
                 (true, None) => leak_start = Some(b),
                 (false, Some(s)) => {
@@ -200,7 +208,7 @@ impl<S: Store> Volume<S> {
                 _ => {}
             }
         }
-        if sb.used_blocks != reached.len() as u64 {
+        if whole && sb.used_blocks != reached.len() as u64 {
             r.add(None, format!("the superblock says {} blocks are used; {} are", sb.used_blocks, reached.len()));
         }
         r.nodes = (w.seen.len() + w.plain.len()) as u64;
@@ -408,8 +416,7 @@ impl<S: Store> Volume<S> {
             last = Some((*ino, off + e.count() * BLOCK as u64));
             for (i, c) in e.checks.iter().enumerate() {
                 let b = e.block + i as u64;
-                let mut buf = [0u8; BLOCK];
-                if self.store.read(b, &mut buf).is_err() || BlockPtr::plain_check(&buf) != *c {
+                if self.read_data(sv, b, c).is_err() {
                     r.add(Some(b), format!("subvolume {sv}: data block {b} of inode {ino} fails its check"));
                 }
             }

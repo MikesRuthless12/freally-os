@@ -45,6 +45,11 @@ pub struct Volume<S: Store> {
     pub(crate) first_change: Option<u64>,
     /// Shared nodes this generation copied: their old blocks aren't freed.
     pub(crate) shared_copied: BTreeSet<u64>,
+    /// The keys of the unlocked encrypted subvolumes (TASK-098).
+    pub(crate) keys: crate::crypt::Keys,
+    /// Which subvolume each of this generation's data blocks belongs to
+    /// (sealed at the commit when it's encrypted).
+    pub(crate) data_sv: BTreeMap<u64, u64>,
 }
 
 impl<S: Store> Volume<S> {
@@ -75,6 +80,8 @@ impl<S: Store> Volume<S> {
             now: 0,
             first_change: None,
             shared_copied: BTreeSet::new(),
+            keys: Default::default(),
+            data_sv: BTreeMap::new(),
         };
         v.root = v.cow(None, Node::leaf(tree::ROOT))?;
         v.free_root = v.cow(None, Node::leaf(tree::FREE))?;
@@ -114,6 +121,8 @@ impl<S: Store> Volume<S> {
             now: 0,
             first_change: None,
             shared_copied: BTreeSet::new(),
+            keys: Default::default(),
+            data_sv: BTreeMap::new(),
         };
         let mut items = FreeItems::new();
         let mut bad = false;
@@ -229,9 +238,13 @@ impl<S: Store> Volume<S> {
                 c.1 = self.write_tree(c.1)?;
             }
         }
-        let bytes = n.encode()?;
+        let mut bytes = n.encode()?;
+        let check = match self.sealer(n.tree)? {
+            Some(s) => s.seal(p.block, p.generation, &mut bytes),
+            None => BlockPtr::plain_check(&bytes),
+        };
         self.store.write(p.block, &bytes)?;
-        Ok(BlockPtr { block: p.block, generation: p.generation, check: BlockPtr::plain_check(&bytes) })
+        Ok(BlockPtr { block: p.block, generation: p.generation, check })
     }
 
     /// Commits this generation (§ 13).
@@ -242,9 +255,16 @@ impl<S: Store> Volume<S> {
     /// The commit, with the superblock's `flags` (`CLEAN` at unmount).
     pub(crate) fn commit_with(&mut self, flags: u16) -> Result<(), FsError> {
         // 1. Data first.
-        for (b, d) in core::mem::take(&mut self.data) {
+        for (b, mut d) in core::mem::take(&mut self.data) {
+            // An encrypted subvolume's data, sealed as its extent's tag says.
+            if let Some(sv) = self.data_sv.remove(&b)
+                && let Some(s) = self.sealer(sv)?
+            {
+                s.seal(b, self.generation, &mut d);
+            }
             self.store.write(b, &d)?;
         }
+        self.data_sv.clear();
         // 2. Each changed subvolume's tree, then its record in the root tree.
         self.write_subvols()?;
         // 3, 4. The free-space tree brought level, then the plain trees.

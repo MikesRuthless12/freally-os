@@ -105,6 +105,7 @@ impl<S: Store> Volume<S> {
     /// once; a shared one loses a reference; else it's freed.
     pub(crate) fn release_data(&mut self, block: u64) -> Result<(), FsError> {
         if self.data.remove(&block).is_some() {
+            self.data_sv.remove(&block);
             self.space.free(block, 0);
             return Ok(());
         }
@@ -153,7 +154,11 @@ impl<S: Store> Volume<S> {
         let id = self.next_subvol_id();
         self.inc_ref(rec.root.block)?;
         rec.flags |= READ_ONLY;
-        rec.snapshot_of = src;
+        // The line's first subvolume: a snapshot reads what its source sealed (§ 12).
+        rec.snapshot_of = if rec.snapshot_of != 0 { rec.snapshot_of } else { src };
+        if let Some(k) = self.keys.0.get(&src).copied() {
+            self.keys.0.insert(id, k);
+        }
         rec.created_unix = self.now / 1_000_000_000;
         rec.name = alloc::string::String::from(name);
         self.subvols.insert(id, Open { rec, changed: true });

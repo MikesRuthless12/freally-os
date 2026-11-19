@@ -9,13 +9,13 @@
 //! allocator (a freed block waits two generations). Part 2 (TASK-095):
 //! inodes, directories, extents and file data, and the transaction policy.
 //! Part 3 (TASK-096): subvolumes, snapshots and reference counts, and
-//! `ffsck`.
+//! `ffsck`. Part 4 (TASK-098): encrypted subvolumes.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod btree;
-pub mod crc32c;
+pub mod crypt;
 pub mod dir;
 pub mod extent;
 pub mod fsck;
@@ -65,6 +65,10 @@ pub enum FsError {
     IsADirectory,
     /// A read-only subvolume (a snapshot), or one that can't go (the system's).
     ReadOnly,
+    /// An encrypted subvolume whose key isn't held.
+    Locked,
+    /// A key that doesn't open the subvolume's key check.
+    WrongKey,
 }
 
 /// A key: `(object, kind, offset)`, compared in that order (§ 5).

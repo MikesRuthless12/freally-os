@@ -20,12 +20,15 @@ use alloc::vec::Vec;
 pub const MAX_BLOCKS: u64 = 64;
 const B: u64 = BLOCK as u64;
 
+/// A block's check and the generation that wrote it (§ 11).
+pub type Check = ([u8; 16], u64);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Extent {
     pub block: u64,
     /// The bytes of its last block in use (1–4,096).
     pub len: u32,
-    pub checks: Vec<[u8; 16]>,
+    pub checks: Vec<Check>,
 }
 
 impl Extent {
@@ -34,12 +37,13 @@ impl Extent {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(16 + 16 * self.checks.len());
+        let mut out = Vec::with_capacity(16 + 24 * self.checks.len());
         out.extend_from_slice(&self.block.to_le_bytes());
         out.extend_from_slice(&(self.checks.len() as u32).to_le_bytes());
         out.extend_from_slice(&self.len.to_le_bytes());
-        for c in &self.checks {
+        for (c, g) in &self.checks {
             out.extend_from_slice(c);
+            out.extend_from_slice(&g.to_le_bytes());
         }
         out
     }
@@ -51,16 +55,25 @@ impl Extent {
         let block = u64::from_le_bytes(b[..8].try_into().unwrap_or_default());
         let count = u32::from_le_bytes(b[8..12].try_into().unwrap_or_default()) as usize;
         let len = u32::from_le_bytes(b[12..16].try_into().unwrap_or_default());
-        if count == 0 || count as u64 > MAX_BLOCKS || b.len() != 16 + 16 * count || !(1..=4096).contains(&len) {
+        if count == 0 || count as u64 > MAX_BLOCKS || b.len() != 16 + 24 * count || !(1..=4096).contains(&len) {
             return Err(FsError::Corrupt("an extent's size"));
         }
-        let checks = b[16..].as_chunks::<16>().0.to_vec();
+        let checks = b[16..]
+            .as_chunks::<24>()
+            .0
+            .iter()
+            .map(|e| {
+                let mut c = [0u8; 16];
+                c.copy_from_slice(&e[..16]);
+                (c, u64::from_le_bytes(e[16..].try_into().unwrap_or_default()))
+            })
+            .collect();
         Ok(Extent { block, len, checks })
     }
 }
 
 /// A file block's place on disk and its check.
-type Mapped = BTreeMap<u64, (u64, [u8; 16])>;
+type Mapped = BTreeMap<u64, (u64, Check)>;
 
 impl<S: Store> Volume<S> {
     /// The blocks of file `ino` from file block `first` to `last`
@@ -92,17 +105,35 @@ impl<S: Store> Volume<S> {
         Ok((map, holding))
     }
 
-    /// A data block's bytes, checked against `check`.
-    fn read_data(&mut self, block: u64, check: &[u8; 16]) -> Result<Box<[u8; BLOCK]>, FsError> {
+    /// A data block's bytes, checked against `check` (opened with it, in
+    /// an encrypted subvolume). `generation`: the one that wrote it.
+    pub(crate) fn read_data(&mut self, sv: u64, block: u64, check: &Check) -> Result<Box<[u8; BLOCK]>, FsError> {
         if let Some(d) = self.data.get(&block) {
             return Ok(d.clone());
         }
         let mut b = Box::new([0u8; BLOCK]);
         self.store.read(block, &mut b)?;
-        if BlockPtr::plain_check(&b) != *check {
-            return Err(FsError::Integrity(block));
+        match self.sealer(sv)? {
+            Some(s) => s.open(block, check.1, &mut b, &check.0)?,
+            None if BlockPtr::plain_check(&b) != check.0 => return Err(FsError::Integrity(block)),
+            None => {}
         }
         Ok(b)
+    }
+
+    /// The check of this generation's data block `buf` at `block` of
+    /// subvolume `sv`: its tag when sealed (as the commit will seal it),
+    /// else its CRC32C.
+    fn data_check(&mut self, sv: u64, block: u64, buf: &[u8; BLOCK]) -> Result<Check, FsError> {
+        let tag = match self.sealer(sv)? {
+            Some(s) => {
+                let mut copy = *buf;
+                self.data_sv.insert(block, sv);
+                s.seal(block, self.generation, &mut copy)
+            }
+            None => BlockPtr::plain_check(buf),
+        };
+        Ok((tag, self.generation))
     }
 
     /// Replaces the extents in `holding` with extents for `map` (file block
@@ -175,13 +206,12 @@ impl<S: Store> Volume<S> {
         let mut replaced = Vec::new();
         for fb in first..=last {
             let mut buf = match map.get(&fb) {
-                Some(&(block, check)) => self.read_data(block, &check)?,
+                Some(&(block, check)) => self.read_data(sv, block, &check)?,
                 None => Box::new([0u8; BLOCK]),
             };
             let (a, b) = ((fb * B).max(offset), ((fb + 1) * B).min(end));
             buf[(a - fb * B) as usize..(b - fb * B) as usize]
                 .copy_from_slice(&data[(a - offset) as usize..(b - offset) as usize]);
-            let check = BlockPtr::plain_check(&buf);
             let block = match map.get(&fb) {
                 Some(&(old, _)) if self.data.contains_key(&old) => old,
                 Some(&(old, _)) => {
@@ -190,6 +220,7 @@ impl<S: Store> Volume<S> {
                 }
                 None => self.space.alloc(self.generation)?,
             };
+            let check = self.data_check(sv, block, &buf)?;
             self.data.insert(block, buf);
             map.insert(fb, (block, check));
         }
@@ -219,7 +250,7 @@ impl<S: Store> Volume<S> {
             let (a, b) = ((fb * B).max(offset), ((fb + 1) * B).min(end));
             match map.get(&fb) {
                 Some(&(block, check)) => {
-                    let buf = self.read_data(block, &check)?;
+                    let buf = self.read_data(sv, block, &check)?;
                     out.extend_from_slice(&buf[(a - fb * B) as usize..(b - fb * B) as usize]);
                 }
                 None => out.resize(out.len() + (b - a) as usize, 0),
@@ -254,7 +285,7 @@ impl<S: Store> Volume<S> {
             if !size.is_multiple_of(B)
                 && let Some(&(block, check)) = kept.get(&lo)
             {
-                let mut buf = self.read_data(block, &check)?;
+                let mut buf = self.read_data(sv, block, &check)?;
                 buf[(size % B) as usize..].fill(0);
                 let nb = if self.data.contains_key(&block) {
                     block
@@ -262,7 +293,7 @@ impl<S: Store> Volume<S> {
                     gone.push(block);
                     self.space.alloc(self.generation)?
                 };
-                let c = BlockPtr::plain_check(&buf);
+                let c = self.data_check(sv, nb, &buf)?;
                 self.data.insert(nb, buf);
                 kept.insert(lo, (nb, c));
             }
@@ -290,14 +321,14 @@ mod tests {
 
     #[test]
     fn an_extent_round_trips() {
-        let e = Extent { block: 4000, len: 100, checks: alloc::vec![[1; 16], [2; 16], [3; 16]] };
+        let e = Extent { block: 4000, len: 100, checks: alloc::vec![([1; 16], 5), ([2; 16], 6), ([3; 16], 7)] };
         assert_eq!(Extent::decode(&e.encode()).unwrap(), e);
         let mut bad = e.encode();
         bad[12] = 0;
         bad[13] = 0x20; // len 8192
         assert!(Extent::decode(&bad).is_err());
-        assert_eq!(e.encode().len(), 16 + 48);
-        let full = Extent { block: 0, len: 4096, checks: alloc::vec![[0; 16]; 64] };
+        assert_eq!(e.encode().len(), 16 + 72);
+        let full = Extent { block: 0, len: 4096, checks: alloc::vec![([0; 16], 0); 64] };
         assert!(full.encode().len() <= crate::node::MAX_VALUE);
     }
 }

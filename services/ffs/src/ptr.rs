@@ -3,7 +3,8 @@
 //! and its checksum, so a lost, torn, stale or misdirected write is caught
 //! when it's read, never trusted.
 
-use crate::{BLOCK, crc32c::crc32c};
+use crate::BLOCK;
+use fcrypto::crc32c::crc32c;
 
 /// 32 bytes on disk: `block`, `generation`, `check` (plain: the CRC32C in
 /// its first 4 bytes; encrypted, TASK-098: the Poly1305 tag).
