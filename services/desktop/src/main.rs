@@ -48,6 +48,20 @@ const LAUNCHER_W: u32 = 560;
 const LAUNCHER_ROW: u32 = 44;
 const LAUNCHER_ROWS: usize = 6;
 
+/// A screensaver on screen: its window, the saver, and its frame count.
+struct SaverRun {
+    win: Win,
+    saver: alloc::boxed::Box<dyn svc_desktop::saver::Saver>,
+    name: &'static str,
+    still: bool,
+    last_ns: u64,
+    frames: u32,
+    counted_since: u64,
+}
+
+/// A saver's frame every 25 ms: 40 a second, so FR-091's 30 holds with room.
+const SAVER_FRAME_NS: u64 = 25_000_000;
+
 /// The desktop's door for conductor in a swap (dev images, TASK-085): its
 /// registered endpoint and the connections conductor opened on it.
 #[cfg(feature = "flavour-dev")]
@@ -116,6 +130,10 @@ struct Desktop {
     /// The Rack's and the launcher's accessibility trees (TASK-063).
     rack_ax: fstd::ax::Publisher,
     launcher_ax: fstd::ax::Publisher,
+    /// The screensaver, while one is up (TASK-077C).
+    saver: Option<SaverRun>,
+    /// The savers' F (the 3x OS art's `saver_f`), loaded the first time.
+    saver_f: Option<svc_desktop::saver::Sprite>,
     #[cfg(feature = "flavour-dev")]
     door: Option<Door>,
     /// When this build started (the crash-test build ends a second later).
@@ -339,6 +357,8 @@ impl Desktop {
             os: os_art(),
             rack_ax: Default::default(),
             launcher_ax: Default::default(),
+            saver: None,
+            saver_f: None,
             #[cfg(feature = "flavour-dev")]
             door: None,
             #[cfg(feature = "swap-crash-test")]
@@ -929,6 +949,95 @@ impl Desktop {
         });
     }
 
+    /// The savers' F, as large as the image has it (any theme: the same art), once.
+    fn saver_f(&mut self) -> Option<svc_desktop::saver::Sprite> {
+        if self.saver_f.is_none() {
+            // The largest the image carries: 3x, else 2x, else the 1x already open.
+            let larger = ["os:3x", "os:2x"].into_iter().find_map(|n| fstd::service::data(n).ok());
+            let bundle = larger.and_then(|b| Bundle::parse(b).ok()).or(self.os);
+            let f = bundle.as_ref().and_then(|b| b.get("dark/saver_f")).and_then(|b| fimage::fimg::parse(b).ok());
+            self.saver_f = f.map(|f| svc_desktop::saver::Sprite::from_bgra(f.width, f.height, f.pixels));
+        }
+        self.saver_f.clone()
+    }
+
+    /// Stage says a screensaver starts or ends.
+    fn saver_event(&mut self, e: st::SaverEvent) {
+        use svc_desktop::saver::{self, Kind};
+        if !e.start {
+            if let Some(r) = self.saver.take() {
+                close(&mut self.stage, r.win);
+                fstd::info!("desktop: the screensaver is gone");
+            }
+            return;
+        }
+        if self.saver.is_some() {
+            return;
+        }
+        let Some(f) = self.saver_f() else {
+            fstd::warn!("desktop: no screensaver art in this image");
+            return;
+        };
+        let (w, h) = self.screen;
+        let req = st::CreateWindow {
+            title: String::from("Screensaver"),
+            w,
+            h,
+            min_w: 0,
+            min_h: 0,
+            kind: st::Kind::Saver,
+            x: 0,
+            y: 0,
+        };
+        let mut win = match window(&mut self.stage, &req) {
+            Ok(win) => win,
+            Err(e) => {
+                fstd::warn!("desktop: no screensaver window: {e}");
+                return;
+            }
+        };
+        let kind = Kind::from_u8(e.kind);
+        let now = Instant::now().as_ns();
+        let (s, name): (alloc::boxed::Box<dyn saver::Saver>, &'static str) = if e.reduce_motion {
+            (alloc::boxed::Box::new(saver::still::Still::new(h, &f)), "the still F")
+        } else {
+            (saver::new(kind, w, h, &f, now | 1), kind.name())
+        };
+        win.surface().px.fill(0);
+        self.hide_tooltip();
+        self.saver =
+            Some(SaverRun { win, saver: s, name, still: e.reduce_motion, last_ns: now, frames: 0, counted_since: now });
+        fstd::info!("desktop: the screensaver: {name}");
+        self.draw_saver(now, 0);
+    }
+
+    fn draw_saver(&mut self, now: u64, dt_ms: u32) {
+        let Some(r) = self.saver.as_mut() else { return };
+        let (w, h) = (r.win.w, r.win.h);
+        let s = r.win.surface();
+        r.saver.frame(&mut svc_desktop::saver::Frame { px: s.px, w, h }, dt_ms);
+        present(&mut self.stage, &mut r.win);
+        r.last_ns = now;
+        r.frames += 1;
+        // Its frame rate, said every 5 s (the specs read it).
+        if now.saturating_sub(r.counted_since) >= 5_000_000_000 {
+            let fps = r.frames as u64 * 1_000_000_000 / now.saturating_sub(r.counted_since).max(1);
+            fstd::info!("desktop: the screensaver: {}, {fps} frames a second at {w}x{h}", r.name);
+            (r.frames, r.counted_since) = (0, now);
+        }
+    }
+
+    /// The saver's next frame, if it's time.
+    fn saver_frame(&mut self) {
+        let now = Instant::now().as_ns();
+        let Some(r) = self.saver.as_ref() else { return };
+        if r.still || now < r.last_ns + SAVER_FRAME_NS {
+            return;
+        }
+        let dt = ((now - r.last_ns) / 1_000_000).min(100) as u32;
+        self.draw_saver(now, dt);
+    }
+
     fn serve(&mut self) -> i64 {
         loop {
             let mut items = alloc::vec![[self.rack.events.0.raw(), signal::READABLE | signal::PEER_CLOSED]];
@@ -949,6 +1058,9 @@ impl Desktop {
             if self.hovered.is_some() && self.tooltip.is_none() && self.pressed.is_none() && !self.tip_done {
                 until = until.min(self.hover_at + TOOLTIP_MS * 1_000_000);
             }
+            if let Some(r) = self.saver.as_ref().filter(|r| !r.still) {
+                until = until.min(r.last_ns + SAVER_FRAME_NS);
+            }
             // The build made to crash wakes for its second.
             #[cfg(feature = "swap-crash-test")]
             {
@@ -963,13 +1075,24 @@ impl Desktop {
                 }
             }
             if let Some(evs) = self.shortcuts.as_ref().and_then(|ch| Self::drain(ch).ok()) {
-                evs.into_iter().filter(|(o, _)| *o == st::EV_SHORTCUT).for_each(|(_, p)| self.shortcut(&p));
+                for (o, p) in evs {
+                    match o {
+                        st::EV_SHORTCUT => self.shortcut(&p),
+                        st::EV_SAVER => {
+                            if let Ok(e) = fwire::from_payload::<st::SaverEvent>(&p) {
+                                self.saver_event(e);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             if let Some(evs) = self.launcher.as_ref().and_then(|(w, _)| Self::drain(&w.events).ok()) {
                 evs.into_iter().for_each(|(o, p)| self.launcher_event(o, &p));
             }
             #[cfg(feature = "flavour-dev")]
             self.serve_door();
+            self.saver_frame();
             #[cfg(feature = "swap-crash-test")]
             if Instant::now().as_ns() > self.born + 1_000_000_000 {
                 panic!("a build made to crash (cargo xtask brain-swap --crash)");

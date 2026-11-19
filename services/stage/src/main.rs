@@ -89,6 +89,8 @@ struct Stage {
     stamped: bool,
     /// The OS's renders (TASK-052), when the image carries them.
     art: Option<Art>,
+    /// The screensaver's timer (TASK-077C).
+    idle: svc_stage::idle::Idle,
 }
 
 /// Who may read back the windows and the pointer: the test door (conductor
@@ -196,6 +198,7 @@ fn run(_bootstrap: u32) -> i64 {
         damage: alloc::vec![Rect::new(0, 0, screen.w, screen.h)],
         refresh: Vec::new(),
         cursor: Cursor::new(screen.w as i32 / 2, screen.h as i32 / 2, Instant::now().as_ns()),
+        idle: svc_stage::idle::Idle::new(Instant::now().as_ns()),
         shortcuts: None,
         stamped: false,
         art: Art::load(),
@@ -219,8 +222,9 @@ fn run(_bootstrap: u32) -> i64 {
         let first_conn = items.len();
         items.extend(s.conns.iter().map(|c| [c.ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
         // Frames only while the cursor moves; otherwise sleep until something happens.
-        let until =
+        let mut until =
             if s.cursor.moving(Instant::now().as_ns()) { Instant::after(Duration::from_millis(16)) } else { u64::MAX };
+        until = until.min(s.idle.deadline().unwrap_or(u64::MAX));
         match fstd::sys::wait_many(&items, until) {
             Ok(0) => {
                 while let Ok(m) = listen.try_recv() {
@@ -237,6 +241,9 @@ fn run(_bootstrap: u32) -> i64 {
             Ok(k) => s.serve(k - first_conn),
             Err(FErr::TimedOut) => {}
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),
+        }
+        if s.idle.start_if_due(Instant::now().as_ns()) {
+            s.saver(true);
         }
         s.animate();
         s.flush();
@@ -413,6 +420,25 @@ impl Stage {
                     }
                     (fwire::to_payload(&id.is_some()), Vec::new())
                 })
+            }
+            st::SET_SAVER | st::SET_MOTION => {
+                let door = cfg!(feature = "flavour-e2e") && matches!(name.as_str(), "conductor" | "cdpd");
+                if !door && name != "settings" {
+                    Err((FErr::AccessDenied, "only settings (and the e2e door) choose the screensaver"))
+                } else if h.ordinal == st::SET_SAVER {
+                    fwire::from_payload::<st::SetSaver>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).map(|v| {
+                        self.idle.set(v.kind.min(3), v.idle_ms as u64 * 1_000_000, Instant::now().as_ns());
+                        fstd::info!("stage: the screensaver is {} after {} ms idle", v.kind.min(3), v.idle_ms);
+                        (Vec::new(), Vec::new())
+                    })
+                } else {
+                    fwire::from_payload::<st::SetMotion>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).map(|v| {
+                        self.idle.reduce_motion = v.reduce;
+                        self.cursor.reduce_motion = v.reduce;
+                        fstd::info!("stage: Reduce Motion {}", if v.reduce { "on" } else { "off" });
+                        (Vec::new(), Vec::new())
+                    })
+                }
             }
             st::SET_THEME => {
                 fwire::from_payload::<st::SetTheme>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|t| {
@@ -635,6 +661,10 @@ impl Stage {
 
     /// A key, from drv-i8042 or injected.
     fn key(&mut self, k: inp::Key) {
+        if self.idle.input(Instant::now().as_ns()) {
+            self.saver(false);
+            return;
+        }
         let mut out = Vec::new();
         let key = st::Key { usage: k.usage, down: k.down, ch: k.ch, modifiers: k.modifiers };
         self.desk.key(key, &mut out);
@@ -643,6 +673,10 @@ impl Stage {
 
     /// A mouse report, from drv-i8042 or injected.
     fn mouse(&mut self, m: inp::Mouse) {
+        if self.idle.input(Instant::now().as_ns()) {
+            self.saver(false);
+            return;
+        }
         let mut out = Vec::new();
         let was = self.desk.buttons;
         self.desk.mouse(m.dx as i32, m.dy as i32, m.wheel as i32, m.buttons, &mut out);
@@ -651,6 +685,23 @@ impl Stage {
         }
         self.point();
         self.apply(out);
+    }
+
+    /// A screensaver starts or ends: the desktop draws it (or takes it
+    /// away), and the cursor hides while it's up.
+    fn saver(&mut self, start: bool) {
+        let (kind, reduce_motion) = (self.idle.kind, self.idle.reduce_motion);
+        if start {
+            fstd::info!("stage: the screensaver starts ({kind}{})", if reduce_motion { ", still" } else { "" });
+        } else {
+            fstd::info!("stage: the screensaver ends");
+        }
+        if let Some(ch) = &self.shortcuts
+            && let Ok(e) = fwire::event(st::EV_SAVER, &st::SaverEvent { start, kind, reduce_motion })
+        {
+            let _ = ch.send(&e, Vec::new());
+        }
+        self.refresh.push(self.cursor.bounds());
     }
 
     fn apply(&mut self, out: Vec<Effect>) {
@@ -735,6 +786,9 @@ impl Stage {
         }
         // SAFETY: the framebuffer stays mapped; it's h rows of `stride` pixels.
         unsafe { compose::present(&self.back, r, self.screen.px, self.screen.stride, self.screen.format) };
+        if self.idle.on {
+            return;
+        }
         let o = r.intersect(&self.cursor.bounds());
         if o.is_empty() {
             return;

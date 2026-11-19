@@ -79,6 +79,9 @@ impl Sprite {
     /// covers (a box filter: no shimmer when it shrinks).
     pub fn scaled(&self, w: u32, h: u32) -> Sprite {
         let (w, h) = (w.max(1), h.max(1));
+        if w > self.w || h > self.h {
+            return self.enlarged(w, h);
+        }
         let mut px = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
             let (y0, y1) = (y * self.h / h, ((y + 1) * self.h / h).max(y * self.h / h + 1));
@@ -95,6 +98,28 @@ impl Sprite {
                 }
                 let n = ((y1.min(self.h) - y0) * (x1.min(self.w) - x0)).max(1);
                 px.push(s.map(|v| (v / n) as u8));
+            }
+        }
+        Sprite { w, h, px }
+    }
+
+    /// The sprite at a larger `w × h`, sampled bilinearly (premultiplied, so
+    /// its edge stays clean).
+    fn enlarged(&self, w: u32, h: u32) -> Sprite {
+        let mut px = Vec::with_capacity((w * h) as usize);
+        let (sx, sy) = (self.w as f32 / w as f32, self.h as f32 / h as f32);
+        for y in 0..h {
+            let fy = ((y as f32 + 0.5) * sy - 0.5).max(0.0);
+            let (y0, ty) = (fy as u32, fy - (fy as u32) as f32);
+            for x in 0..w {
+                let fx = ((x as f32 + 0.5) * sx - 0.5).max(0.0);
+                let (x0, tx) = (fx as u32, fx - (fx as u32) as f32);
+                let (a, b, c, d) = (self.at(x0, y0), self.at(x0 + 1, y0), self.at(x0, y0 + 1), self.at(x0 + 1, y0 + 1));
+                px.push(core::array::from_fn(|i| {
+                    let top = a[i] as f32 * (1.0 - tx) + b[i] as f32 * tx;
+                    let bottom = c[i] as f32 * (1.0 - tx) + d[i] as f32 * tx;
+                    (top * (1.0 - ty) + bottom * ty + 0.5) as u8
+                }));
             }
         }
         Sprite { w, h, px }

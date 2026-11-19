@@ -88,6 +88,22 @@ impl StageDoor {
                 Ok(pct) => self.call::<()>(st::SET_SCALE, &st::SetScale { pct }),
                 Err(_) => Err(String::from("stage scale <pct>")),
             },
+            // The screensaver (TASK-077C): which (0 Bounce, 1 the block, 2 Swarm,
+            // 3 Warp) and after how long idle; and Reduce Motion.
+            "saver" => {
+                let (k, ms) = rest.split_once(' ').unwrap_or((rest, ""));
+                match (k.trim().parse::<u8>(), ms.trim().parse::<u32>()) {
+                    (Ok(kind), Ok(idle_ms)) if kind <= 3 => {
+                        self.call::<()>(st::SET_SAVER, &st::SetSaver { kind, idle_ms })
+                    }
+                    _ => Err(String::from("stage saver <0-3> <idle ms>")),
+                }
+            }
+            "motion" => match rest.trim() {
+                "reduce" => self.call::<()>(st::SET_MOTION, &st::SetMotion { reduce: true }),
+                "full" => self.call::<()>(st::SET_MOTION, &st::SetMotion { reduce: false }),
+                _ => Err(String::from("stage motion reduce|full")),
+            },
             "ax" => {
                 let (id, n) = rest.split_once(' ').unwrap_or((rest, ""));
                 match (self.id(id), n.trim().parse::<u64>()) {

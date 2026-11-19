@@ -13,6 +13,7 @@ extern crate alloc;
 
 pub mod compose;
 pub mod cursor;
+pub mod idle;
 pub mod input;
 pub mod shortcuts;
 pub mod windows;

@@ -7,7 +7,7 @@
 use super::{Frame, Rng, Saver, Sprite, add, fade, green};
 use alloc::vec::Vec;
 
-pub const SPARKS: usize = 3000;
+pub const SPARKS: usize = 6000;
 const CYCLE_MS: u32 = 12_000;
 const GATHER_MS: u32 = 5_000;
 const HOLD_MS: u32 = 8_000;
@@ -113,10 +113,12 @@ impl Saver for Swarm {
             s.x += s.vx * dt;
             s.y += s.vy * dt;
             let speed = (s.vx.abs() + s.vy.abs()).min(600.0);
-            let level = 120 + (speed / 600.0 * 135.0) as u32;
+            // Bright when held, brighter still when flying.
+            let level = 190 + (speed / 600.0 * 65.0) as u32;
             add(f, s.x as i32, s.y as i32, green(level));
-            add(f, s.x as i32 + 1, s.y as i32, green(level / 2));
-            add(f, s.x as i32, s.y as i32 + 1, green(level / 2));
+            add(f, s.x as i32 + 1, s.y as i32, green(level * 3 / 4));
+            add(f, s.x as i32, s.y as i32 + 1, green(level * 3 / 4));
+            add(f, s.x as i32 + 1, s.y as i32 + 1, green(level / 2));
         }
     }
 }

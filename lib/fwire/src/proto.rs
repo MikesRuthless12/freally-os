@@ -393,6 +393,12 @@ pub mod stage {
     /// The desktop only: bring an app's most recently used window forward
     /// (`RaiseApp` → `bool`, whether it had one).
     pub const RAISE_APP: u32 = 15;
+    /// `set_saver` (settings; the e2e door): which screensaver, and after how
+    /// long idle (ms; 0: never). TASK-077C, FR-091.
+    pub const SET_SAVER: u32 = 16;
+    /// `set_motion` (settings; the e2e door): Reduce Motion on or off (the
+    /// cursor's trail, the savers).
+    pub const SET_MOTION: u32 = 17;
     /// The e2e door's read-backs (e2e images only; conductor's door only).
     pub const LIST_WINDOWS: u32 = 100;
     pub const POINTER: u32 = 101;
@@ -410,6 +416,9 @@ pub mod stage {
     pub const EV_CLOSE_REQUESTED: u32 = 7;
     /// On the shortcuts channel.
     pub const EV_SHORTCUT: u32 = 8;
+    /// To the desktop (on its shortcuts channel): a screensaver starts or
+    /// ends (`SaverEvent`).
+    pub const EV_SAVER: u32 = 9;
 
     wire_enum! {
         pub enum Kind {
@@ -425,6 +434,10 @@ pub mod stage {
             /// Above everything, placed by its client, never focused, and the
             /// pointer passes through it.
             Tooltip = 4,
+            /// The whole screen, above everything else, never focused: a
+            /// screensaver (the desktop's). While one is up, any input ends it
+            /// and does nothing else (TASK-077C, FR-091).
+            Saver = 5,
         }
     }
 
@@ -586,6 +599,22 @@ pub mod stage {
 
     wire_struct! {
         pub struct ShortcutEvent { pub shortcut: Shortcut }
+    }
+
+    wire_struct! {
+        /// `set_saver`: 0 Bounce, 1 the turning block, 2 Swarm, 3 Warp; idle
+        /// time in ms (0: never).
+        pub struct SetSaver { pub kind: u8, pub idle_ms: u32 }
+    }
+
+    wire_struct! {
+        pub struct SetMotion { pub reduce: bool }
+    }
+
+    wire_struct! {
+        /// `EV_SAVER`: a screensaver starts (which, and whether Reduce Motion
+        /// asks for the still F) or ends.
+        pub struct SaverEvent { pub start: bool, pub kind: u8, pub reduce_motion: bool }
     }
 
     wire_struct! {
@@ -819,6 +848,8 @@ pub mod inventory {
                 (st::SUBSCRIBE_SHORTCUTS, "subscribe_shortcuts"),
                 (st::SCREEN, "screen"),
                 (st::RAISE_APP, "raise_app"),
+                (st::SET_SAVER, "set_saver"),
+                (st::SET_MOTION, "set_motion"),
                 (st::LIST_WINDOWS, "list_windows"),
                 (st::POINTER, "pointer"),
                 (st::AX_TREE, "ax_tree"),

@@ -143,3 +143,15 @@ fn saver_fps() {
         std::println!("{}: {fps:.0} frames a second at {w}x{h}", kind.name());
     }
 }
+
+#[test]
+fn a_sprite_grows_smoothly() {
+    // Black to white, two pixels, grown to eight: a ramp, not two blocks.
+    let s = Sprite { w: 2, h: 1, px: vec![[0, 0, 0, 255], [255, 255, 255, 255]] };
+    let g = s.scaled(8, 1);
+    let ramp: Vec<u8> = g.px.iter().map(|p| p[1]).collect();
+    assert!(ramp.windows(2).all(|w| w[0] <= w[1]), "{ramp:?}");
+    assert!(ramp.iter().filter(|&&v| v != 0 && v != 255).count() >= 3, "{ramp:?}");
+    // Shrinking still averages.
+    assert_eq!(g.scaled(2, 1).px.len(), 2);
+}

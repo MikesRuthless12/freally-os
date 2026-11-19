@@ -31,6 +31,8 @@ mod display;
 mod kernel;
 #[path = "../../../e2e/os/specs/monitor.rs"]
 mod monitor;
+#[path = "../../../e2e/os/specs/saver.rs"]
+mod saver;
 #[path = "../../../e2e/os/specs/services.rs"]
 mod services;
 #[path = "../../../e2e/site/specs/site.rs"]
@@ -78,6 +80,13 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("stage.doors", stage::doors),
     ("desktop.rack", desktop::rack),
     ("desktop.launcher", desktop::launcher),
+    ("saver.starts_when_idle", saver::starts_when_idle),
+    ("saver.ends_on_input", saver::ends_on_input),
+    ("saver.reduce_motion", saver::reduce_motion),
+    ("saver.bounce", saver::bounce),
+    ("saver.block", saver::block),
+    ("saver.swarm", saver::swarm),
+    ("saver.warp", saver::warp),
     ("terminal.vt", terminal::vt),
     ("shell.builtins", terminal::builtins),
     ("monitor.tabs", monitor::tabs),

@@ -193,12 +193,12 @@ impl Windows {
     ) -> WindowId {
         let (sw, sh) = self.screen;
         let (w, h) = match kind {
-            Kind::Fullscreen => (sw, sh),
+            Kind::Fullscreen | Kind::Saver => (sw, sh),
             _ => (w.max(min_w).max(1).min(sw), h.max(min_h).max(1).min(sh)),
         };
         let frame_h = if kind == Kind::Normal { h + self.strip } else { h };
         let frame = match kind {
-            Kind::Fullscreen => Rect::new(0, 0, sw, sh),
+            Kind::Fullscreen | Kind::Saver => Rect::new(0, 0, sw, sh),
             Kind::Panel | Kind::Popup | Kind::Tooltip => Rect::new(at.0, at.1, w, frame_h),
             Kind::Normal => {
                 // Centred in the work area, each next one 32 px further down
@@ -220,6 +220,7 @@ impl Windows {
             Kind::Normal | Kind::Fullscreen => 1,
             Kind::Panel => 2,
             Kind::Popup | Kind::Tooltip => 3,
+            Kind::Saver => 4,
         };
         let win = Window {
             id,
@@ -236,7 +237,7 @@ impl Windows {
         };
         let at = self.list.iter().position(|o| o.layer() > layer).unwrap_or(self.list.len());
         self.list.insert(at, win);
-        if !matches!(kind, Kind::Panel | Kind::Tooltip) {
+        if !matches!(kind, Kind::Panel | Kind::Tooltip | Kind::Saver) {
             self.focus(id);
         }
         id

@@ -290,6 +290,55 @@
       "setup": "dev-log-screen-desktop",
       "spec": "e2e/os/specs/services.rs",
       "what": "With stage in the image, the logger draws the log only until stage begins, says so, and the desktop is what shows."
+    },
+    {
+      "id": "saver.starts_when_idle",
+      "task": "TASK-077C",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "Idle for the time set, the screensaver (Bounce) starts over everything: the Rack and the cursor are gone from the screen."
+    },
+    {
+      "id": "saver.ends_on_input",
+      "task": "TASK-077C",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "A key ends the screensaver and does nothing else: Super, which opens the launcher, doesn't; the next Super does."
+    },
+    {
+      "id": "saver.reduce_motion",
+      "task": "TASK-077C",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "With Reduce Motion, the screensaver is the F still and dimmed: two frames a second apart are the same."
+    },
+    {
+      "id": "saver.bounce",
+      "task": "TASK-077C",
+      "setup": "e2e-panel-16",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "Bounce at 2560x1600: the F glides with its glow, and the desktop draws at least 30 frames a second."
+    },
+    {
+      "id": "saver.block",
+      "task": "TASK-077C",
+      "setup": "e2e-panel-16",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "The turning block at 2560x1600: the block of black glass turns with the F on its faces, at least 30 frames a second."
+    },
+    {
+      "id": "saver.swarm",
+      "task": "TASK-077C",
+      "setup": "e2e-panel-16",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "Swarm at 2560x1600: the sparks flock into the F, at least 30 frames a second."
+    },
+    {
+      "id": "saver.warp",
+      "task": "TASK-077C",
+      "setup": "e2e-panel-16",
+      "spec": "e2e/os/specs/saver.rs",
+      "what": "Warp at 2560x1600: the tunnel of green light, Fs streaking past, at least 30 frames a second."
     }
   ]
 }
