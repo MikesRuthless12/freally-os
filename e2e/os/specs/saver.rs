@@ -131,7 +131,10 @@ pub fn reduce_motion(ctx: &mut Ctx) -> Result<(), String> {
 fn runs(ctx: &mut Ctx, kind: u8, name: &str, shot: &str) -> Result<(), String> {
     reset(ctx)?;
     let said = ctx.log_count(&format!("desktop: the screensaver: {name}, "));
-    ctx.door(&format!("stage saver {kind} 1000"))?;
+    let answer = ctx.door(&format!("stage saver {kind} 1000"))?;
+    if answer.first().map(String::as_str) != Some("ok") {
+        return Err(format!("stage saver {kind} 1000: {answer:?}"));
+    }
     expect_saver(ctx, true, 6)?;
     std::thread::sleep(Duration::from_millis(800));
     let a = ctx.screenshot()?;

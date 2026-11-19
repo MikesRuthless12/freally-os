@@ -309,7 +309,11 @@ pub fn absent(ctx: &mut Ctx) -> Result<(), String> {
         return Err(format!("drv-i8042 said it found no controller {told} times, not once"));
     }
     // Stage doesn't wait on a driver that has ended: it says so, and its
-    // first frame (S3) follows S2 within 500 ms.
+    // first frame (S3) follows S2 well inside the 3 s a wait would take
+    // (`connect_within`). Stage's own start is ~230 ms here, but a loaded
+    // host stretches the whole boot: 2026-11-19's soak, beside other
+    // sessions' builds, had one 2.4× slower, the bootloader included, and
+    // S2→S3 at 511 ms. So within 1,500 ms: half the wait.
     ctx.expect_log("stage: no keyboard or mouse")?;
     ctx.expect_log(" S3=")?;
     let line = ctx.log_line_with(" S3=").unwrap_or_default();
@@ -319,7 +323,7 @@ pub fn absent(ctx: &mut Ctx) -> Result<(), String> {
             .and_then(|v| v.parse::<f64>().ok())
     };
     match (at("S2"), at("S3")) {
-        (Some(s2), Some(s3)) if s3 >= s2 && s3 - s2 <= 500.0 => {}
+        (Some(s2), Some(s3)) if s3 >= s2 && s3 - s2 <= 1500.0 => {}
         _ => return Err(format!("stage waited on the absent driver: {line}")),
     }
     let states = ctx.door("services")?;

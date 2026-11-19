@@ -514,7 +514,22 @@ impl Ctx {
 
     /// Sends `cmd` to the e2e test door (conductor, on COM3) and returns its
     /// answer's lines, up to `end` (waiting up to 10 s).
+    /// A test door command. Stage registers only once its first frame is
+    /// up, so a stage command asked just after boot is asked again until it
+    /// is (at most 10 s): "stage isn't up" is never a spec's answer.
     pub fn door(&self, cmd: &str) -> Result<Vec<String>, String> {
+        let start = Instant::now();
+        loop {
+            let lines = self.door_once(cmd)?;
+            let early = matches!(lines.as_slice(), [only] if only == "error: stage isn't up");
+            if !early || start.elapsed() > Duration::from_secs(10) {
+                return Ok(lines);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn door_once(&self, cmd: &str) -> Result<Vec<String>, String> {
         use std::io::{BufRead, Write};
         let stream = self.door_stream()?;
         let mut w = stream.try_clone().map_err(|e| e.to_string())?;

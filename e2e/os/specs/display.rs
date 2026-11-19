@@ -5,7 +5,6 @@
 //! starts at the scale that size suits.
 
 use crate::Ctx;
-use std::time::{Duration, Instant};
 
 /// `@display.native`: the firmware started at its own mode; the bootloader
 /// switched to the panel's 2560×1600; stage says 2560×1600 at 150 %, and the
@@ -14,19 +13,11 @@ pub fn native(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("using the stand-in EDID.BIN")?;
     ctx.expect_log("freally-boot: display 2560x1600")?;
     ctx.expect_log("stage: 2560x1600, starting at 150 %")?;
-    // Asked from the first moment stage can be reached, it answers at once
-    // (TASK-118's soak: stage stamped S3 after registering, so the door's
-    // call and that stamp each waited on the other for 2 s, and the
-    // desktop's first call timed out with them).
-    let start = Instant::now();
-    let said = loop {
-        let said = ctx.door("stage list")?;
-        if said.first().is_some_and(|l| l == "error: stage isn't up") && start.elapsed() < Duration::from_secs(10) {
-            std::thread::sleep(Duration::from_millis(20));
-            continue;
-        }
-        break said;
-    };
+    // Asked from the first moment stage can be reached (the door asks again
+    // while it isn't up), it answers at once (TASK-118's soak: stage stamped
+    // S3 after registering, so the door's call and that stamp each waited on
+    // the other for 2 s, and the desktop's first call timed out with them).
+    let said = ctx.door("stage list")?;
     if !said.iter().any(|l| l == "scale 150") {
         return Err(format!("stage doesn't say 150 %: {said:?}"));
     }
