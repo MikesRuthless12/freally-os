@@ -67,8 +67,35 @@ fn the_boot_stage_by_stage_with_the_firmware_apart() {
     assert_eq!(b.total_ms, 200.0);
     assert_eq!(b.share(3), 0.4);
     assert_eq!(b.summary(), "Firmware 4.1 s · Freally OS 0.2 s");
+    // With the firmware's vendor (BootInfo v3, TASK-073).
+    let hp = b.clone().with_vendor("HP");
+    assert_eq!(hp.summary(), "Firmware (HP) 4.1 s · Freally OS 0.2 s");
     let none = Boot::of(&stages[2..]);
     assert!(none.summary().contains("doesn't report"));
+    assert_eq!(
+        none.with_vendor("EDK II").summary(),
+        "Freally OS 0.2 s (the EDK II firmware doesn't report its own time)"
+    );
+}
+
+#[test]
+fn devices_list_what_each_driver_took() {
+    let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+    let pci = [s("00:00.0", "Host bridge"), s("00:01.0", "Display (VGA)")];
+    let bound = [
+        s("framebuffer", "drv-gop-fb"),
+        s("00:01.0", "drv-gop-fb"),
+        s("PS/2 controller", "drv-i8042"),
+        s("COM2", "drv-uart16550"),
+    ];
+    let rows = device_rows(&pci, &bound);
+    let at: Vec<&str> = rows.iter().map(|r| r.at.as_str()).collect();
+    // The devices off PCI first, then PCI by address.
+    assert_eq!(at, ["framebuffer", "PS/2 controller", "COM2", "00:00.0", "00:01.0"]);
+    assert_eq!(rows[1].what, "Keyboard and mouse controller (8042)");
+    assert_eq!(rows[2].what, "Serial port");
+    assert_eq!(rows[3].driver, "—");
+    assert_eq!(rows[4].driver, "drv-gop-fb");
 }
 
 #[test]

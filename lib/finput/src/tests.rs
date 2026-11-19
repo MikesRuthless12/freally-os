@@ -120,3 +120,57 @@ fn mouse_packets_move_click_and_scroll() {
     let mut m = Mouse::new(false);
     assert_eq!([0x48, 0x10, 0x10].iter().filter_map(|&b| m.feed(b)).count(), 0);
 }
+
+/// Every key of the set 1 table reads exactly as its set 2 code does, made
+/// and broken, plain and after 0xE0 (TASK-072: a translating 8042).
+#[test]
+fn set1_reads_every_key_as_set2_does() {
+    let keys = |events: &[Option<KeyEvent>]| events.iter().flatten().copied().collect::<Vec<_>>();
+    let mut checked = 0;
+    for (s1, &s2) in SET1_TO_SET2.iter().enumerate() {
+        if s2 == 0 {
+            continue;
+        }
+        for ext in [false, true] {
+            let (mut a, mut b) = (Set1::default(), Set2::default());
+            let mut via1 = Vec::new();
+            let mut via2 = Vec::new();
+            for byte in [if ext { Some(0xE0) } else { None }, Some(s1 as u8)].into_iter().flatten() {
+                via1.extend(keys(&a.feed(byte)));
+            }
+            for byte in [if ext { Some(0xE0) } else { None }, Some(s2)].into_iter().flatten() {
+                via2.extend(b.feed(byte));
+            }
+            // The release: set 1's code with bit 7, set 2's F0 and the code.
+            for byte in [if ext { Some(0xE0) } else { None }, Some(s1 as u8 | 0x80)].into_iter().flatten() {
+                via1.extend(keys(&a.feed(byte)));
+            }
+            for byte in [if ext { Some(0xE0) } else { None }, Some(0xF0), Some(s2)].into_iter().flatten() {
+                via2.extend(b.feed(byte));
+            }
+            assert_eq!(via1, via2, "set 1 {s1:#04x} (extended: {ext}) against set 2 {s2:#04x}");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2 * 98);
+}
+
+#[test]
+fn set1_spot_checks() {
+    let mut s = Set1::default();
+    // A, then its release.
+    assert_eq!(s.feed(0x1E), [Some(down(usage::A)), None]);
+    assert_eq!(s.feed(0x9E), [None, Some(up(usage::A))]);
+    // The arrow up (E0 48) and Pause (E1 1D 45 E1 9D C5: press, then its owed release).
+    assert_eq!(s.feed(0xE0), [None, None]);
+    assert_eq!(s.feed(0x48)[0].map(|e| e.down), Some(true));
+    let mut got = Vec::new();
+    for b in [0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5] {
+        got.extend(s.feed(b).into_iter().flatten());
+        got.extend(s.pending());
+    }
+    assert_eq!(got, [down(usage::PAUSE), up(usage::PAUSE)]);
+    // A code no key has is told, not typed.
+    assert_eq!(s.feed(0x55), [None, None]);
+    assert_eq!(s.take_unknown(), Some((false, 0x55)));
+}

@@ -125,13 +125,14 @@ pub fn gates(fast: bool, slow: bool, container: bool) -> Vec<Gate> {
                 // code (`_start`, the heap, the panic path) only exists here.
                 let mut c = cargo(&["clippy", "--release"]);
                 c.args(build::user_target_args());
-                for p in build::PROGRAMS.iter().chain(build::TEST_PROGRAMS) {
+                for p in build::PROGRAMS.iter().chain(build::TEST_PROGRAMS).chain([&build::PROBE]) {
                     c.args(["--package", p.package]);
                 }
                 // e2e compiles in the most (conductor's test door).
                 let f: Vec<String> = build::PROGRAMS
                     .iter()
                     .chain(build::TEST_PROGRAMS)
+                    .chain([&build::PROBE])
                     .map(|p| format!("{}/flavour-e2e", p.package))
                     .collect();
                 c.args(["--features", &f.join(",")]);

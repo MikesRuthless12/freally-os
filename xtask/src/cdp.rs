@@ -132,6 +132,15 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         o.port_offset = PORT_OFFSET;
         o.tamper_byte = s.get("tamper").and_then(Value::as_i64).map(|b| b as usize);
         o.no_ps2 = s.get("no_ps2").and_then(Value::as_bool).unwrap_or(false);
+        if let Some(n) = s.get("cpus").and_then(Value::as_i64) {
+            o.cpus = n.clamp(1, 64) as u32;
+        }
+        // A stand-in display (TASK-071): the OMEN's 16-inch 2560×1600 panel.
+        o.edid = match s.get("edid").and_then(Value::as_str) {
+            Some("panel-16") => Some(fedid::synthesize(b"FRY", (2560, 1600), (344, 215), "Panel 16").to_vec()),
+            Some(other) => return Err(format!("setup {setup}: edid is panel-16, not {other:?}")),
+            None => None,
+        };
         // Slot B: a crashing image, or this build's own (kept apart: the next build reuses the folder).
         o.slot_b = match s.get("slot_b").and_then(Value::as_str) {
             Some("crash-test") => Some(build::crash_test(flavour)?),

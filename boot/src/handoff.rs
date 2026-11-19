@@ -287,6 +287,31 @@ pub struct Facts {
     /// The slot booted (0 = A, 1 = B), and `FreallyBootCtl` as left this boot.
     pub slot: u8,
     pub bootctl: [u8; 32],
+    /// Every linear GOP mode, `w << 16 | h` (BootInfo v3).
+    pub gop_modes: [u32; fcore_abi::GOP_MODES_MAX],
+    /// The firmware's vendor, in ASCII (BootInfo v3).
+    pub firmware_vendor: [u8; 32],
+}
+
+/// The system table's vendor string (UCS-2) as ASCII, NUL-padded: anything
+/// past ASCII becomes '?', and it stops at 31 characters.
+///
+/// # Safety
+/// `p` must be null or the firmware's NUL-terminated vendor string.
+pub unsafe fn vendor_ascii(p: *const u16) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    if p.is_null() {
+        return out;
+    }
+    for (i, slot) in out.iter_mut().enumerate().take(31) {
+        // SAFETY: the string is NUL-terminated; we stop at its NUL.
+        let c = unsafe { *p.add(i) };
+        if c == 0 {
+            break;
+        }
+        *slot = if (0x20..0x7F).contains(&c) { c as u8 } else { b'?' };
+    }
+    out
 }
 
 /// Exits boot services and jumps to Freally Core. Returns only if something
@@ -483,6 +508,8 @@ unsafe fn prepare_and_go(
         tsc: stamps,
         cmdline: [0; 256],
         bootctl: f.bootctl,
+        gop_modes: f.gop_modes,
+        firmware_vendor: f.firmware_vendor,
     };
     // SAFETY: `info` is our BOOT_DATA page.
     unsafe { info.write(bi) };

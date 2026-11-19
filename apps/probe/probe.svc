@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Only the probe image carries this (`cargo xtask build --probe`): it has no
+# stage or desktop, and the probe draws straight to the framebuffer.
+name        = probe
+binary      = /system/apps/probe
+description = Shows everything Freally OS found on this computer, page by page, to be photographed.
+start       = boot
+after       = logger, devmgr, drv-gop-fb
+restart     = on-failure
+class       = interactive
+grants      = fonts
+flavours    = dev

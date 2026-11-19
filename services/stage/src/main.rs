@@ -171,7 +171,11 @@ fn run(_bootstrap: u32) -> i64 {
             return 1;
         }
     };
-    let theme = Theme::new(Mode::Dark, 1.0);
+    // The scale the display's own size suits (TASK-071): 150 % on the OMEN's
+    // 16-inch 2560×1600 panel, 100 % in a VM.
+    let pct = fedid::scale_for(&fstd::machine::edid(), screen.w);
+    fstd::info!("stage: {}x{}, starting at {pct} %", screen.w, screen.h);
+    let theme = Theme::new(Mode::Dark, pct as f32 / 100.0);
     let strip = theme.px(fui::tokens_os::TITLE_STRIP_H);
     let mut s = Stage {
         desk: Desk::new(Windows::new(screen.w, screen.h, strip)),

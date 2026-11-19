@@ -23,6 +23,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use drv_i8042::quirks::{self, Decode, Scheme};
 use fcore_abi::{FErr, signal, syscall as nr};
 use fstd::handle::Handle;
 use fstd::ipc::{CallError, Channel, Client};
@@ -95,8 +96,9 @@ impl From<&str> for Fail {
     }
 }
 
-/// The controller and both devices, set up; whether the mouse has a wheel.
-fn init() -> Result<bool, Fail> {
+/// The controller and both devices, set up (TASK-072's quirks included):
+/// whether the mouse has a wheel, and how the keyboard's bytes arrive.
+fn init() -> Result<(bool, Scheme), Fail> {
     // Ports nothing decodes read as all ones.
     if fstd::sys::inb(STATUS) == 0xFF {
         return Err(Fail::Absent);
@@ -105,33 +107,56 @@ fn init() -> Result<bool, Fail> {
     command(0xA7);
     while read(5).is_some() {}
     command(0x20);
-    let mut cfg = read(100).ok_or(Fail::Absent)?;
+    let mut cfg = read(200).ok_or(Fail::Absent)?;
     cfg &= !(1 | 2 | 0x40); // no IRQs yet; translation off (set 2 as the keyboard sends it)
     command(0x60);
     write(cfg);
+    // Embedded controllers emulate the 8042, some loosely: a self-test or
+    // port test that says otherwise is told, not fatal (TASK-072).
     command(0xAA);
-    if read(500) != Some(0x55) {
-        return Err("the controller's self-test failed".into());
+    match read(1000) {
+        Some(0x55) => {}
+        other => fstd::warn!("drv-i8042: the controller's self-test said {other:02x?}; carrying on"),
     }
     // Some controllers reset their configuration on self-test: write it again.
     command(0x60);
     write(cfg);
     command(0xAB);
-    if read(100) != Some(0) {
-        return Err("the keyboard port's test failed".into());
+    match read(500) {
+        Some(0) => {}
+        other => fstd::warn!("drv-i8042: the keyboard port's test said {other:02x?}; carrying on"),
     }
     command(0xA9);
-    let mouse_port = read(100) == Some(0);
+    let mouse_port = read(500) == Some(0);
+    if !mouse_port {
+        fstd::info!("drv-i8042: no PS/2 mouse port (the keyboard alone)");
+    }
     command(0xAE);
     if mouse_port {
         command(0xA8);
     }
-    // The keyboard: reset (an ack, then 0xAA), set 2, scanning on.
-    if !device(false, 0xFF) || read(1000) != Some(0xAA) {
-        return Err("the keyboard didn't reset".into());
+    // The keyboard: reset (an ack, then 0xAA), tried twice; a missing 0xAA is
+    // only told.
+    if !device(false, 0xFF) {
+        while read(50).is_some() {}
+        if !device(false, 0xFF) {
+            return Err("the keyboard didn't answer a reset".into());
+        }
     }
-    if !(device(false, 0xF0) && device(false, 0x02) && device(false, 0xF4)) {
-        return Err("the keyboard refused scan code set 2".into());
+    if read(1000) != Some(0xAA) {
+        fstd::warn!("drv-i8042: the keyboard reset without saying so; carrying on");
+    }
+    // Set 2, then which set it says it's on (set 2 seen through translation
+    // the firmware keeps on says 0x41). A keyboard that won't change set
+    // keeps its own, which the controller then translates to set 1.
+    let took = device(false, 0xF0) && device(false, 0x02);
+    let reported = if took && device(false, 0xF0) && device(false, 0x00) { read(200) } else { None };
+    let scheme = quirks::plan(took, reported);
+    if scheme == (Scheme::TranslatedSet1 { turn_on: true }) {
+        cfg |= 0x40;
+    }
+    if !device(false, 0xF4) {
+        return Err("the keyboard wouldn't start sending keys".into());
     }
     let mut wheel = false;
     if mouse_port && device(true, 0xFF) && read(1000) == Some(0xAA) {
@@ -150,7 +175,7 @@ fn init() -> Result<bool, Fail> {
     let (ports_off, irqs) = if mouse_port { (0x30, 0x03) } else { (0x10, 0x01) };
     command(0x60);
     write((cfg & !ports_off) | irqs);
-    Ok(wheel)
+    Ok((wheel, scheme))
 }
 
 struct Resources {
@@ -200,7 +225,7 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     let _ = fstd::log::connect();
-    let (res, wheel) = match resources().and_then(|r| init().map(|w| (r, w))) {
+    let (res, (wheel, scheme)) = match resources().and_then(|r| init().map(|w| (r, w))) {
         Ok(x) => x,
         // Ending cleanly: the manifest restarts only a failure.
         Err(Fail::Absent) => {
@@ -216,12 +241,16 @@ fn run(_bootstrap: u32) -> i64 {
         fstd::error!("drv-i8042: can't bind IRQs 1 and 12");
         return 1;
     };
-    fstd::info!("drv-i8042: keyboard on set 2; mouse {}", if wheel { "with a wheel" } else { "without a wheel" });
+    fstd::info!(
+        "drv-i8042: {}; mouse {}",
+        quirks::describe(scheme),
+        if wheel { "with a wheel" } else { "without a wheel" }
+    );
     let Ok((listen, give)) = Channel::pair() else { return 1 };
     if fstd::service::register(give).is_err() {
         return 1;
     }
-    let mut set2 = finput::Set2::default();
+    let mut keyboard = Decode::new(scheme);
     // Codes no key has: each logged once, at Debug (bit: after 0xE0 × 256 + code).
     let mut unknown_told = [0u64; 8];
     let mut mods = finput::Modifiers::default();
@@ -260,8 +289,8 @@ fn run(_bootstrap: u32) -> i64 {
                             }
                         }
                     } else {
-                        let keys = [set2.feed(b), set2.pending()];
-                        if let Some((ext, code)) = set2.take_unknown() {
+                        let keys = keyboard.feed(b);
+                        if let Some((ext, code)) = keyboard.take_unknown() {
                             let bit = (ext as usize) << 8 | code as usize;
                             if unknown_told[bit / 64] & 1 << (bit % 64) == 0 {
                                 unknown_told[bit / 64] |= 1 << (bit % 64);
@@ -271,7 +300,7 @@ fn run(_bootstrap: u32) -> i64 {
                                 );
                             }
                         }
-                        for k in keys.into_iter().flatten() {
+                        for k in keys {
                             mods.update(k);
                             let ch = finput::us_char(k.usage, mods).map_or(0, |c| c as u32);
                             #[cfg(feature = "flavour-e2e")]

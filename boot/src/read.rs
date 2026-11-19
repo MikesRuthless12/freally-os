@@ -12,6 +12,11 @@ const MAX_IMAGE: u64 = 512 << 20;
 /// `\FREALLY\SYSTEM_A.FSI` and `SYSTEM_B.FSI` as NUL-terminated UTF-16.
 pub const SYSTEM_A: &[u16] = &utf16::<22>("\\FREALLY\\SYSTEM_A.FSI");
 pub const SYSTEM_B: &[u16] = &utf16::<22>("\\FREALLY\\SYSTEM_B.FSI");
+/// A stand-in display EDID (dev and e2e bootloaders only, when the firmware
+/// gives none: a VM's doesn't). It decides only the display's mode and the
+/// starting scale (TASK-071), never what's trusted.
+#[cfg(not(feature = "flavour-release"))]
+pub const TEST_EDID: &[u16] = &utf16::<18>("\\FREALLY\\EDID.BIN");
 
 /// The image isn't on the drive (the A/B rules then try the other slot).
 pub const MISSING: &str = "There’s no Freally OS system image on this drive.";

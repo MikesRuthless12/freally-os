@@ -11,7 +11,9 @@
     "e2e-crash-ud2": { "flavour": "e2e", "kernel_features": ["crash-ud2"] },
     "e2e-no-ps2": { "flavour": "e2e", "no_ps2": true },
     "e2e-ab": { "flavour": "e2e", "slot_b": "crash-test" },
-    "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" }
+    "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" },
+    "e2e-panel-16": { "flavour": "e2e", "edid": "panel-16" },
+    "e2e-8cpu": { "flavour": "e2e", "cpus": 8 }
   },
   "features": [
     {
@@ -251,6 +253,20 @@
       "setup": "e2e-ab-good",
       "spec": "e2e/os/specs/boot.rs",
       "what": "Slot B on trial with a good image: it boots with a try spent, and conductor marks it Good through UEFI SetVariable 10 s after every boot service is running."
+    },
+    {
+      "id": "display.native",
+      "task": "TASK-071",
+      "setup": "e2e-panel-16",
+      "spec": "e2e/os/specs/display.rs",
+      "what": "On a 16-inch 2560×1600 panel (the stand-in EDID, since a VM's firmware gives none) the bootloader sets the panel's own mode and stage starts at 150 %: the screen is 2560×1600."
+    },
+    {
+      "id": "monitor.devices",
+      "task": "TASK-075",
+      "setup": "e2e-8cpu",
+      "spec": "e2e/os/specs/monitor.rs",
+      "what": "Monitor → Devices: every CPU with its core type (TASK-070), the framebuffer and display controller to drv-gop-fb, the PS/2 controller to drv-i8042, COM2 and COM3 to drv-uart16550, an unclaimed device with —; the wheel and keys scroll it, never past either end."
     }
   ]
 }

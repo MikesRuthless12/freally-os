@@ -49,7 +49,11 @@ pub struct Hardware {
     pub pci: Vec<d::PciDevice>,
     pub cpus: u32,
     pub has_8042: bool,
+    pub hpet: bool,
     pub firmware: d::FirmwareTimes,
+    /// The display controller whose memory holds the framebuffer (its PCI
+    /// address), when one does.
+    pub display: Option<String>,
     framebuffer: (u64, u64, u32, u32, u32, u32),
     edid_len: u64,
     madt: Vec<u8>,
@@ -80,22 +84,27 @@ impl Hardware {
         let madt = get(&mut mem, b"APIC").unwrap_or_default();
         let cpus = facpi::madt(&madt).map_or(1, |m| m.cpus);
         let has_8042 = get(&mut mem, b"FACP").and_then(|t| facpi::fadt(&t)).is_none_or(|f| f.has_8042);
-        let firmware = get(&mut mem, b"FPDT").and_then(|t| facpi::fpdt(&mut mem, &t)).map_or(
-            d::FirmwareTimes { reset_end: 0, os_loader_start: 0 },
-            |f| d::FirmwareTimes { reset_end: f.reset_end, os_loader_start: f.os_loader_start },
-        );
+        let (reset_end, os_loader_start) = get(&mut mem, b"FPDT")
+            .and_then(|t| facpi::fpdt(&mut mem, &t))
+            .map_or((0, 0), |f| (f.reset_end, f.os_loader_start));
+        let firmware = d::FirmwareTimes { reset_end, os_loader_start, vendor: String::from(bi.firmware_vendor()) };
+        let hpet = get(&mut mem, b"HPET").and_then(|t| facpi::hpet(&t)).is_some();
         let mut pci = Vec::new();
+        let mut bars = Vec::new();
         for e in get(&mut mem, b"MCFG").map(|t| facpi::mcfg(&t)).unwrap_or_default() {
-            scan(root.raw(), &e, e.start_bus, &mut pci, 0);
+            scan(root.raw(), &e, e.start_bus, &mut pci, &mut bars, 0);
         }
         let fb = &bi.framebuffer;
+        let display = holder(&bars, fb.base);
         Ok(Hardware {
             root,
             tables,
             pci,
             cpus,
             has_8042,
+            hpet,
             firmware,
+            display,
             framebuffer: (fb.base, fb.size, fb.width, fb.height, fb.stride_px, fb.format as u32),
             edid_len: bi.edid.len,
             madt,
@@ -116,11 +125,13 @@ impl Hardware {
         Handle::from_raw(fstd::sys::resource_create(self.root.raw(), kind, base, len)?).ok_or(FErr::Internal)
     }
 
-    /// Exactly what one driver needs, by the name conductor gave its connection.
-    pub fn resources_for(&self, driver: &str) -> Result<(d::Resources, Vec<Handle>), FErr> {
+    /// Exactly what one driver needs, by the name conductor gave its
+    /// connection; and the devices that makes it the driver of.
+    pub fn resources_for(&self, driver: &str) -> Result<(d::Resources, Vec<Handle>, Vec<String>), FErr> {
         let mut handles = Vec::new();
         let mut named = Vec::new();
         let mut values: Vec<(String, u64)> = Vec::new();
+        let mut devices: Vec<String> = Vec::new();
         let mut add = |name: &str, h: Handle, handles: &mut Vec<Handle>| {
             named.push((String::from(name), HandleRef(handles.len() as u8)));
             handles.push(h);
@@ -140,6 +151,8 @@ impl Hardware {
                 ] {
                     values.push((String::from(k), v));
                 }
+                devices.push(String::from("framebuffer"));
+                devices.extend(self.display.clone());
             }
             "drv-i8042" if self.has_8042 => {
                 add("data", self.carve(resource::IO_PORT, 0x60, 1)?, &mut handles);
@@ -150,6 +163,7 @@ impl Hardware {
                     values.push((alloc::format!("{name}-gsi"), gsi as u64));
                     values.push((alloc::format!("{name}-flags"), flags as u64));
                 }
+                devices.push(String::from("PS/2 controller"));
             }
             // COM2 and COM3 with their IRQs. COM1 is the logger's (conductor
             // hands it over before any driver runs).
@@ -160,16 +174,52 @@ impl Hardware {
                     add(&alloc::format!("{name}-irq"), self.carve(resource::IRQ, gsi as u64, 1)?, &mut handles);
                     values.push((alloc::format!("{name}-gsi"), gsi as u64));
                     values.push((alloc::format!("{name}-flags"), flags as u64));
+                    devices.push(name.to_ascii_uppercase());
                 }
             }
             _ => return Err(FErr::NotFound),
         }
-        Ok((d::Resources { handles: named, values }, handles))
+        Ok((d::Resources { handles: named, values }, handles, devices))
     }
 }
 
-/// Every function on `bus` and the buses behind its bridges.
-fn scan(root: u32, e: &facpi::Ecam, bus: u8, out: &mut Vec<d::PciDevice>, depth: u32) {
+/// A PCI address as Monitor and the probe show it: `00:02.0`.
+pub fn pci_address(p: &d::PciDevice) -> String {
+    alloc::format!("{:02x}:{:02x}.{}", p.bus, p.device, p.function)
+}
+
+/// The display controller holding the framebuffer at `fb`: the one with the
+/// highest memory BAR at or below it (BARs aren't sized here: sizing writes
+/// to configuration space, and devmgr only reads it).
+fn holder(bars: &[(String, u64)], fb: u64) -> Option<String> {
+    bars.iter().filter(|(_, b)| *b != 0 && *b <= fb).max_by_key(|(_, b)| *b).map(|(a, _)| a.clone())
+}
+
+/// A function's memory BAR bases (64-bit BARs read whole).
+fn memory_bars(va: u64) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut i = 0u64;
+    while i < 6 {
+        // SAFETY: the BARs, inside the mapped configuration page.
+        let lo = unsafe { core::ptr::read_volatile((va + 0x10 + 4 * i) as *const u32) } as u64;
+        if lo & 1 == 0 {
+            if (lo >> 1) & 3 == 2 && i < 5 {
+                // SAFETY: as above.
+                let hi = unsafe { core::ptr::read_volatile((va + 0x14 + 4 * i) as *const u32) } as u64;
+                out.push((hi << 32) | (lo & !0xF));
+                i += 1;
+            } else {
+                out.push(lo & !0xF);
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Every function on `bus` and the buses behind its bridges; each display
+/// controller's memory BARs into `bars`.
+fn scan(root: u32, e: &facpi::Ecam, bus: u8, out: &mut Vec<d::PciDevice>, bars: &mut Vec<(String, u64)>, depth: u32) {
     if depth > 32 || bus < e.start_bus || bus > e.end_bus {
         return;
     }
@@ -187,7 +237,7 @@ fn scan(root: u32, e: &facpi::Ecam, bus: u8, out: &mut Vec<d::PciDevice>, depth:
             let header = cfg8(va, 0x0E);
             let present = vendor != 0xFFFF;
             if present {
-                out.push(d::PciDevice {
+                let p = d::PciDevice {
                     segment: e.segment,
                     bus,
                     device: dev as u8,
@@ -197,11 +247,16 @@ fn scan(root: u32, e: &facpi::Ecam, bus: u8, out: &mut Vec<d::PciDevice>, depth:
                     class: cfg8(va, 0x0B),
                     subclass: cfg8(va, 0x0A),
                     prog_if: cfg8(va, 0x09),
-                });
+                };
+                if p.class == 0x03 && header & 0x7F == 0 {
+                    let at = pci_address(&p);
+                    bars.extend(memory_bars(va).into_iter().map(|b| (at.clone(), b)));
+                }
+                out.push(p);
                 if header & 0x7F == 1 {
                     let secondary = cfg8(va, 0x19);
                     if secondary > bus {
-                        scan(root, e, secondary, out, depth + 1);
+                        scan(root, e, secondary, out, bars, depth + 1);
                     }
                 }
             }

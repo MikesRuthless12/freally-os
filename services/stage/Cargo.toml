@@ -23,6 +23,7 @@ flavour-e2e = []
 [dependencies]
 fcore-abi.workspace = true
 ffont = { workspace = true, features = ["raster"] }
+fedid.workspace = true
 fimage.workspace = true
 fstd.workspace = true
 fui = { workspace = true, features = ["ui"] }

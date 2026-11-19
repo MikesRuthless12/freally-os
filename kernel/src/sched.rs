@@ -479,27 +479,55 @@ pub fn pin_current(cpu: usize) -> bool {
     }
 }
 
+/// Whether a class wants a core of this type (FR-009, TASK-070): interactive
+/// and realtime threads want performance cores, background threads
+/// efficiency cores; normal threads, and any core whose type isn't known,
+/// take what's there.
+pub fn prefers(c: Class, core: u8) -> bool {
+    use fcore_abi::core_type::{EFFICIENCY, PERFORMANCE, UNKNOWN};
+    match c {
+        _ if core == UNKNOWN => true,
+        Class::Interactive | Class::Realtime => core == PERFORMANCE,
+        Class::Background => core == EFFICIENCY,
+        Class::Normal => true,
+    }
+}
+
+/// Where a woken thread of class `c` goes (not pinned, not a handoff), among
+/// `n` CPUs: an idle one of the kind it prefers, the one it last ran on
+/// first and then from `here` round; else any idle one, in the same order;
+/// else back where it last ran (if that CPU is online), else here.
+fn choose(
+    n: usize,
+    idle: impl Fn(usize) -> bool,
+    kind: impl Fn(usize) -> u8,
+    last: Option<usize>,
+    here: usize,
+    c: Class,
+) -> usize {
+    let order = || last.into_iter().chain((0..n).map(move |k| (here + k) % n));
+    order()
+        .find(|&i| idle(i) && prefers(c, kind(i)))
+        .or_else(|| order().find(|&i| idle(i)))
+        .unwrap_or(last.unwrap_or(here))
+}
+
 /// Puts a runnable thread on a queue: its pinned CPU's; here on a handoff;
-/// else an idle CPU (the one it last ran on first); else back where it last
-/// ran. Returns the CPU that should reschedule for it, if one should.
+/// else where [`choose`] says. Returns the CPU that should reschedule for
+/// it, if one should.
 fn enqueue(s: &mut Sched, t: ThreadRef, here: usize, handoff: bool) -> Option<usize> {
     let n = s.cpus.len();
     let pin = t.pin.load(Ordering::Relaxed) as usize;
     let last = t.last_cpu.load(Ordering::Relaxed) as usize;
+    let c = t.class();
     let target = if s.online(pin) {
         pin
     } else if handoff {
         here
-    } else if s.online(last) && s.cpus[last].is_idle() {
-        last
-    } else if let Some(i) = (0..n).map(|k| (here + k) % n).find(|&i| s.cpus[i].is_idle()) {
-        i
-    } else if s.online(last) {
-        last
     } else {
-        here
+        let last = s.online(last).then_some(last);
+        choose(n, |i| s.cpus[i].is_idle(), smp::core_type, last, here, c)
     };
-    let c = t.class();
     t.queued.store(true, Ordering::Relaxed);
     let q = &mut s.cpus[target];
     let preempt = q.running_class() > c as u8;
@@ -1066,4 +1094,54 @@ crate::ktest!(sched_threads_hopping_between_cpus_keep_their_registers, {
     } else {
         Ok(())
     }
+});
+
+crate::ktest!(sched_hybrid_placement_prefers_each_class_its_core, {
+    use fcore_abi::core_type::{EFFICIENCY as E, PERFORMANCE as P, UNKNOWN as U};
+    // Four efficiency cores then four performance cores, all idle.
+    let kinds = [E, E, E, E, P, P, P, P];
+    let all = |_: usize| true;
+    let kind = |i: usize| kinds[i];
+    // Interactive and realtime: a performance core, even when it last ran on
+    // an efficiency core and the search starts at one.
+    if choose(8, all, kind, Some(1), 0, Class::Interactive) != 4 {
+        return Err("an interactive thread didn't go to the first idle performance core");
+    }
+    if choose(8, all, kind, Some(6), 0, Class::Realtime) != 6 {
+        return Err("a realtime thread left the performance core it last ran on");
+    }
+    // Background: an efficiency core.
+    if choose(8, all, kind, Some(5), 0, Class::Background) != 0 {
+        return Err("a background thread didn't go to an efficiency core");
+    }
+    // Normal: wherever it last ran, if that's idle.
+    if choose(8, all, kind, Some(5), 0, Class::Normal) != 5 {
+        return Err("a normal thread left its idle CPU");
+    }
+    // No performance core idle: any idle core beats waiting.
+    let only_e = |i: usize| i < 4;
+    if choose(8, only_e, kind, Some(6), 0, Class::Interactive) != 0 {
+        return Err("an interactive thread waited for a busy performance core");
+    }
+    // Nothing idle: back where it last ran, else here.
+    let none = |_: usize| false;
+    if choose(8, none, kind, Some(6), 2, Class::Interactive) != 6 || choose(8, none, kind, None, 2, Class::Normal) != 2
+    {
+        return Err("with nothing idle, a thread didn't go back where it ran");
+    }
+    // Not hybrid (types unknown): the old rule, last CPU first if idle.
+    let unknown = |_: usize| U;
+    if choose(8, all, unknown, Some(3), 0, Class::Interactive) != 3
+        || choose(8, all, unknown, None, 2, Class::Background) != 2
+    {
+        return Err("on a CPU that isn't hybrid, placement changed");
+    }
+    // This machine's own CPUs each have a type (unknown in a VM that isn't hybrid).
+    for i in 0..crate::smp::count() {
+        let t = crate::smp::core_type(i);
+        if ![U, E, P].contains(&t) {
+            return Err("a CPU reported a core type CPUID 0x1A doesn't define");
+        }
+    }
+    Ok(())
 });

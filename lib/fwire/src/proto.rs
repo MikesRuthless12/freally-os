@@ -203,6 +203,22 @@ pub mod devmgr {
     /// A driver asks for its device's resources (devmgr knows it by the
     /// name conductor gave its connection).
     pub const RESOURCES: u32 = 4;
+    /// What else devmgr found, and which driver took each device
+    /// (TASK-069's probe, TASK-075's Monitor → Devices).
+    pub const SUMMARY: u32 = 5;
+
+    wire_struct! {
+        /// A device a driver took: `device` names it ("PS/2 controller",
+        /// "COM2", "framebuffer", or a PCI address "00:02.0"), `driver` the
+        /// service that asked for it.
+        pub struct Bound { pub device: String, pub driver: String }
+    }
+
+    wire_struct! {
+        /// The FADT's 8042 flag (no FADT: assumed present), how many CPUs the
+        /// MADT lists, whether there's an HPET, and every device bound so far.
+        pub struct Summary { pub has_8042: bool, pub madt_cpus: u32, pub hpet: bool, pub bound: Vec<Bound> }
+    }
 
     wire_struct! {
         pub struct PciDevice {
@@ -229,7 +245,9 @@ pub mod devmgr {
 
     wire_struct! {
         /// FPDT's boot record, in ns since reset (0 when the firmware has none).
-        pub struct FirmwareTimes { pub reset_end: u64, pub os_loader_start: u64 }
+        /// And the firmware's vendor (BootInfo v3; empty from an older
+        /// bootloader): Monitor says "Firmware (HP)".
+        pub struct FirmwareTimes { pub reset_end: u64, pub os_loader_start: u64, pub vendor: String }
     }
 
     wire_struct! {
@@ -744,6 +762,7 @@ pub mod inventory {
                 (d::TABLES, "tables"),
                 (d::FIRMWARE_TIMES, "firmware_times"),
                 (d::RESOURCES, "resources"),
+                (d::SUMMARY, "summary"),
             ],
         ),
         ("drv-gop-fb", &[(disp::INFO, "info"), (disp::FILL, "fill")]),

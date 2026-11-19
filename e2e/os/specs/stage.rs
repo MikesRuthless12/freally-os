@@ -119,6 +119,14 @@ pub(crate) fn button(ctx: &mut Ctx, down: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// One notch of the wheel, up (away from the user) or down.
+pub(crate) fn wheel(ctx: &mut Ctx, up: bool) -> Result<(), String> {
+    let dy = if up { -120.0 } else { 120.0 };
+    mouse(ctx, vec![("type", "mouseWheel".into()), ("deltaX", Value::from(0.0)), ("deltaY", Value::from(dy))])?;
+    std::thread::sleep(Duration::from_millis(100));
+    Ok(())
+}
+
 pub(crate) fn key(ctx: &mut Ctx, code: &str, down: bool) -> Result<(), String> {
     if down {
         ctx.note_key();

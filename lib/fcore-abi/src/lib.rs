@@ -145,7 +145,13 @@ pub struct BootStamps {
 }
 
 pub const BOOTINFO_MAGIC: u64 = u64::from_le_bytes(*b"FRLYBOOT");
-pub const BOOTINFO_VERSION: u32 = 2;
+pub const BOOTINFO_VERSION: u32 = 3;
+/// The oldest BootInfo a kernel still reads: a bootloader on a stick or an
+/// ESP outlives the images it boots (an update replaces only the image), so
+/// each new field is appended and read only when `version` says it's there.
+pub const BOOTINFO_OLDEST: u32 = 2;
+/// How many GOP modes BootInfo lists.
+pub const GOP_MODES_MAX: usize = 32;
 
 /// Handed from the bootloader to the kernel in RDI (PRD § 3).
 #[repr(C)]
@@ -166,6 +172,23 @@ pub struct BootInfo {
     /// `FreallyBootCtl` as the bootloader left it this boot (v2): conductor
     /// reads which slot is on trial and whether one fell back.
     pub bootctl: [u8; 32],
+    /// v3: every linear mode the firmware's GOP offered, each `width << 16 |
+    /// height`, 0 after the last (the probe shows them; TASK-069, TASK-071).
+    pub gop_modes: [u32; GOP_MODES_MAX],
+    /// v3: the firmware's vendor (the system table's, in ASCII, NUL-padded:
+    /// "HP", "EDK II"), for Monitor → Boot's "Firmware (HP)" (TASK-073).
+    pub firmware_vendor: [u8; 32],
+}
+
+impl BootInfo {
+    /// The firmware's vendor, when this BootInfo is new enough to say.
+    pub fn firmware_vendor(&self) -> &str {
+        if self.version < 3 {
+            return "";
+        }
+        let end = self.firmware_vendor.iter().position(|&b| b == 0).unwrap_or(32);
+        core::str::from_utf8(&self.firmware_vendor[..end]).unwrap_or("")
+    }
 }
 
 /// Error codes (negative in `rax`).
@@ -369,6 +392,24 @@ pub mod topic {
     pub const FIRMWARE_TIMES: u64 = 3;
     pub const KERNEL_LOG: u64 = 4;
     pub const FAULTS: u64 = 5;
+    /// Every CPU (TASK-070): a header (x2APIC u8, TSC-deadline u8, hybrid
+    /// u8, 0 u8, count u32), then per CPU: APIC ID u32, core type u8
+    /// ([`super::core_type`]), online u8, 0 u16.
+    pub const CPUS: u64 = 6;
+    /// The display's EDID as the firmware gave it (empty: none).
+    pub const EDID: u64 = 7;
+    /// The GOP's modes (BootInfo's `gop_modes`, u32 each, 0 after the last)
+    /// and, last, the one in use (`width << 16 | height`).
+    pub const GOP_MODES: u64 = 8;
+}
+
+/// CPUID leaf 0x1A's core types (TASK-070, FR-009).
+pub mod core_type {
+    pub const UNKNOWN: u8 = 0;
+    /// An efficiency core (Intel Atom).
+    pub const EFFICIENCY: u8 = 0x20;
+    /// A performance core (Intel Core).
+    pub const PERFORMANCE: u8 = 0x40;
 }
 
 /// `vm_map` / `vm_protect` permissions.

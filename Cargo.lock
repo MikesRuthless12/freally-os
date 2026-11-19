@@ -23,6 +23,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-probe"
+version = "0.4.0"
+dependencies = [
+ "fcore-abi",
+ "fedid",
+ "ffont",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
+
+[[package]]
 name = "app-settings"
 version = "0.4.0"
 
@@ -133,6 +146,10 @@ name = "fcrypto"
 version = "0.4.0"
 
 [[package]]
+name = "fedid"
+version = "0.4.0"
+
+[[package]]
 name = "felf"
 version = "0.4.0"
 
@@ -159,6 +176,7 @@ dependencies = [
  "fbootctl",
  "fcore-abi",
  "fcrypto",
+ "fedid",
  "fscreen",
  "fsi",
 ]
@@ -306,6 +324,7 @@ name = "svc-stage"
 version = "0.4.0"
 dependencies = [
  "fcore-abi",
+ "fedid",
  "ffont",
  "fimage",
  "fstd",
@@ -328,6 +347,7 @@ dependencies = [
  "cdp-proto",
  "fcore-abi",
  "fcrypto",
+ "fedid",
  "ffont",
  "fimage",
  "fjson",

@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: Apache-2.0
+//! What the kernel says about the machine (`system_info`, PRD § 4): every
+//! CPU and its core type (TASK-070), the display's EDID and the GOP's modes
+//! (TASK-069, TASK-071). The readers are pure and host-tested; the calls are
+//! thin.
+
+use alloc::vec::Vec;
+use fcore_abi::topic;
+
+/// One CPU as the kernel knows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cpu {
+    pub apic_id: u32,
+    /// `fcore_abi::core_type`: unknown, efficiency or performance.
+    pub core_type: u8,
+    pub online: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cpus {
+    pub x2apic: bool,
+    pub tsc_deadline: bool,
+    pub hybrid: bool,
+    pub cpus: Vec<Cpu>,
+}
+
+impl Cpus {
+    /// "8 performance + 16 efficiency cores", or "4 CPUs" when they're all alike.
+    pub fn layout(&self) -> alloc::string::String {
+        use fcore_abi::core_type::{EFFICIENCY, PERFORMANCE};
+        let p = self.cpus.iter().filter(|c| c.core_type == PERFORMANCE).count();
+        let e = self.cpus.iter().filter(|c| c.core_type == EFFICIENCY).count();
+        let n = self.cpus.len();
+        if p + e == n && p > 0 && e > 0 {
+            alloc::format!("{p} performance + {e} efficiency cores")
+        } else {
+            alloc::format!("{n} CPU{}", if n == 1 { "" } else { "s" })
+        }
+    }
+}
+
+/// A core type in words.
+pub fn core_type_name(t: u8) -> &'static str {
+    match t {
+        fcore_abi::core_type::PERFORMANCE => "performance",
+        fcore_abi::core_type::EFFICIENCY => "efficiency",
+        _ => "—",
+    }
+}
+
+/// What a PCI function is, from its class, subclass and programming
+/// interface (the PCI Code and ID Assignment specification). Short-range
+/// wireless controllers are "Wireless controller": the product name of that
+/// protocol never appears where a person reads (owner instruction 19).
+pub fn pci_class(class: u8, subclass: u8, prog_if: u8) -> &'static str {
+    match (class, subclass, prog_if) {
+        (0x01, 0x06, _) => "SATA storage",
+        (0x01, 0x08, _) => "NVMe storage",
+        (0x01, _, _) => "Storage controller",
+        (0x02, 0x00, _) => "Ethernet",
+        (0x02, 0x80, _) => "Network controller",
+        (0x02, _, _) => "Network",
+        (0x03, 0x00, _) => "Display (VGA)",
+        (0x03, 0x02, _) => "3D controller",
+        (0x03, _, _) => "Display controller",
+        (0x04, 0x03, _) => "Audio (HD Audio)",
+        (0x04, _, _) => "Multimedia",
+        (0x05, _, _) => "Memory controller",
+        (0x06, 0x00, _) => "Host bridge",
+        (0x06, 0x01, _) => "ISA bridge",
+        (0x06, 0x04, _) => "PCI bridge",
+        (0x06, _, _) => "Bridge",
+        (0x07, _, _) => "Communication controller",
+        (0x08, 0x05, _) => "SD card reader",
+        (0x08, _, _) => "System peripheral",
+        (0x09, _, _) => "Input controller",
+        (0x0C, 0x03, 0x30) => "USB (xHCI)",
+        (0x0C, 0x03, 0x40) => "USB4",
+        (0x0C, 0x03, _) => "USB (older)",
+        (0x0C, 0x05, _) => "SMBus",
+        (0x0C, 0x80, _) => "Serial bus",
+        (0x0C, _, _) => "Serial bus controller",
+        (0x0D, _, _) => "Wireless controller",
+        (0x10, _, _) => "Encryption controller",
+        (0x11, _, _) => "Signal processing",
+        (0x12, _, _) => "Processing accelerator",
+        _ => "Other device",
+    }
+}
+
+/// Reads `system_info(CPUS)`'s bytes.
+pub fn parse_cpus(b: &[u8]) -> Option<Cpus> {
+    if b.len() < 8 {
+        return None;
+    }
+    let n = u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize;
+    let recs = b.get(8..8 + n.checked_mul(8)?)?;
+    Some(Cpus {
+        x2apic: b[0] != 0,
+        tsc_deadline: b[1] != 0,
+        hybrid: b[2] != 0,
+        cpus: recs
+            .chunks_exact(8)
+            .map(|r| Cpu { apic_id: u32::from_le_bytes([r[0], r[1], r[2], r[3]]), core_type: r[4], online: r[5] != 0 })
+            .collect(),
+    })
+}
+
+/// Reads `system_info(GOP_MODES)`'s bytes: every mode, and the one in use.
+pub fn parse_gop_modes(b: &[u8]) -> (Vec<(u32, u32)>, Option<(u32, u32)>) {
+    let words: Vec<u32> = b.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+    let split = |v: u32| (v >> 16, v & 0xFFFF);
+    let end = words.iter().position(|&w| w == 0).unwrap_or(words.len());
+    let modes = words[..end].iter().map(|&w| split(w)).collect();
+    let current = words.get(end + 1).map(|&w| split(w));
+    (modes, current)
+}
+
+/// Reads a topic whole, however long it is.
+fn read(t: u64) -> Option<Vec<u8>> {
+    let mut buf = alloc::vec![0u8; 512];
+    loop {
+        let n = crate::sys::system_info(t, &mut buf).ok()?;
+        if n <= buf.len() {
+            buf.truncate(n);
+            return Some(buf);
+        }
+        buf.resize(n, 0);
+    }
+}
+
+pub fn cpus() -> Option<Cpus> {
+    parse_cpus(&read(topic::CPUS)?)
+}
+
+/// The display's EDID as the firmware gave it (empty when there's none).
+pub fn edid() -> Vec<u8> {
+    read(topic::EDID).unwrap_or_default()
+}
+
+pub fn gop_modes() -> (Vec<(u32, u32)>, Option<(u32, u32)>) {
+    read(topic::GOP_MODES).map_or((Vec::new(), None), |b| parse_gop_modes(&b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fcore_abi::core_type::{EFFICIENCY as E, PERFORMANCE as P};
+
+    fn bytes(x2apic: u8, hybrid: u8, cpus: &[(u32, u8, u8)]) -> Vec<u8> {
+        let mut b = alloc::vec![x2apic, 1, hybrid, 0];
+        b.extend_from_slice(&(cpus.len() as u32).to_le_bytes());
+        for &(id, t, on) in cpus {
+            b.extend_from_slice(&id.to_le_bytes());
+            b.extend_from_slice(&[t, on, 0, 0]);
+        }
+        b
+    }
+
+    #[test]
+    fn a_hybrid_cpu_reads_its_layout() {
+        let c = parse_cpus(&bytes(1, 1, &[(0, P, 1), (8, P, 1), (32, E, 1), (33, E, 0)])).unwrap();
+        assert!(c.x2apic && c.hybrid && c.tsc_deadline);
+        assert_eq!(c.cpus[2], Cpu { apic_id: 32, core_type: E, online: true });
+        assert!(!c.cpus[3].online);
+        assert_eq!(c.layout(), "2 performance + 2 efficiency cores");
+        assert_eq!(core_type_name(P), "performance");
+    }
+
+    #[test]
+    fn cpus_all_alike_are_just_counted() {
+        let c = parse_cpus(&bytes(1, 0, &[(0, 0, 1), (1, 0, 1)])).unwrap();
+        assert_eq!(c.layout(), "2 CPUs");
+        assert_eq!(core_type_name(0), "—");
+    }
+
+    #[test]
+    fn pci_classes_read_in_plain_words() {
+        assert_eq!(pci_class(0x0C, 0x03, 0x30), "USB (xHCI)");
+        assert_eq!(pci_class(0x01, 0x08, 0x02), "NVMe storage");
+        assert_eq!(pci_class(0x03, 0x00, 0x00), "Display (VGA)");
+        // Never the wireless protocol's trademark.
+        assert_eq!(pci_class(0x0D, 0x11, 0x00), "Wireless controller");
+        assert_eq!(pci_class(0xFF, 0, 0), "Other device");
+    }
+
+    #[test]
+    fn a_short_cpus_answer_is_refused() {
+        let mut b = bytes(1, 0, &[(0, 0, 1), (1, 0, 1)]);
+        b.truncate(b.len() - 1);
+        assert_eq!(parse_cpus(&b), None);
+        assert_eq!(parse_cpus(&[1, 0]), None);
+    }
+
+    #[test]
+    fn gop_modes_read_with_the_one_in_use() {
+        let mut b = Vec::new();
+        for v in [(1280u32 << 16) | 800, (2560 << 16) | 1600, 0, (2560 << 16) | 1600] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(parse_gop_modes(&b), (alloc::vec![(1280, 800), (2560, 1600)], Some((2560, 1600))));
+        // BootInfo v2: no list, only the mode in use.
+        let b: Vec<u8> = [0u32, (1024 << 16) | 768].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(parse_gop_modes(&b), (Vec::new(), Some((1024, 768))));
+    }
+}

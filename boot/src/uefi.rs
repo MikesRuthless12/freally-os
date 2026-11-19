@@ -197,8 +197,9 @@ pub const FILE_MODE_READ: u64 = 1;
 
 #[repr(C)]
 pub struct GraphicsOutput {
-    pub query_mode: Unused,
-    pub set_mode: Unused,
+    /// QueryMode: the mode's information, in pool memory the caller frees.
+    pub query_mode: extern "efiapi" fn(*mut GraphicsOutput, u32, *mut usize, *mut *mut GraphicsModeInfo) -> Status,
+    pub set_mode: extern "efiapi" fn(*mut GraphicsOutput, u32) -> Status,
     pub blt: extern "efiapi" fn(
         *mut GraphicsOutput,
         *mut u32,

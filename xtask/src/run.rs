@@ -37,6 +37,11 @@ pub struct VmOptions {
     pub no_ps2: bool,
     /// Slot B's image (`@boot.fallback`, `@boot.trial`); without one, the ESP has none.
     pub slot_b: Option<PathBuf>,
+    /// The probe image (TASK-069) instead of the flavour's own.
+    pub probe: bool,
+    /// A stand-in display EDID on the ESP (`\FREALLY\EDID.BIN`): a VM's
+    /// firmware gives none (TASK-071; dev and e2e bootloaders read it).
+    pub edid: Option<Vec<u8>>,
 }
 
 impl VmOptions {
@@ -53,6 +58,8 @@ impl VmOptions {
             image_override: None,
             no_ps2: false,
             slot_b: None,
+            probe: false,
+            edid: None,
         }
     }
 
@@ -61,6 +68,7 @@ impl VmOptions {
         let arg = |n: &str| args.iter().position(|a| a == n).and_then(|i| args.get(i + 1)).cloned();
         let mut o = VmOptions::new(flavour, &arg("--vm").unwrap_or_else(|| flavour.name().to_string()));
         o.headless = args.iter().any(|a| a == "--headless");
+        o.probe = args.iter().any(|a| a == "--probe");
         o.tcg = args.iter().any(|a| a == "--tcg") || !Path::new("/dev/kvm").exists();
         o.image_override = arg("--image").map(PathBuf::from);
         if let Some(b) = arg("--tamper") {
@@ -103,6 +111,13 @@ pub fn lay_out(o: &VmOptions, built: &Built) -> Result<PathBuf, String> {
         Some(b) => copy(b, &esp.join("FREALLY/SYSTEM_B.FSI"))?,
         None => {
             let _ = std::fs::remove_file(esp.join("FREALLY/SYSTEM_B.FSI"));
+        }
+    }
+    // The stand-in EDID only when asked for (a leftover would change the mode).
+    match &o.edid {
+        Some(e) => std::fs::write(esp.join("FREALLY/EDID.BIN"), e).map_err(|e| e.to_string())?,
+        None => {
+            let _ = std::fs::remove_file(esp.join("FREALLY/EDID.BIN"));
         }
     }
     let vars = dir.join("OVMF_VARS_4M.fd");
@@ -181,7 +196,7 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
 
 /// Builds the flavour, lays out the VM and starts QEMU (not waiting for it).
 pub fn start(o: &VmOptions) -> Result<Child, String> {
-    let built = build::build(o.flavour)?;
+    let built = if o.probe { build::build_probe()? } else { build::build(o.flavour)? };
     start_built(o, &built)
 }
 

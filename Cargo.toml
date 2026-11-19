@@ -30,6 +30,7 @@ fui = { path = "lib/fui" }
 fimage = { path = "lib/fimage" }
 fjson = { path = "lib/fjson" }
 facpi = { path = "lib/facpi" }
+fedid = { path = "lib/fedid" }
 felf = { path = "lib/felf" }
 finput = { path = "lib/finput" }
 fsvc = { path = "lib/fsvc" }

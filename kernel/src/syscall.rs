@@ -668,6 +668,45 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
             }
             out = crate::fault::encode_all();
         }
+        topic::CPUS => {
+            let n = crate::smp::count();
+            out.extend_from_slice(&[
+                crate::arch::apic::x2apic() as u8,
+                crate::arch::apic::tsc_deadline_supported() as u8,
+                crate::smp::hybrid() as u8,
+                0,
+            ]);
+            out.extend_from_slice(&(n as u32).to_le_bytes());
+            for c in (0..n).filter_map(crate::smp::cpu) {
+                out.extend_from_slice(&c.apic_id.load(core::sync::atomic::Ordering::Acquire).to_le_bytes());
+                out.push(c.core_type.load(core::sync::atomic::Ordering::Acquire));
+                out.push(c.online.load(core::sync::atomic::Ordering::Acquire) as u8);
+                out.extend_from_slice(&[0, 0]);
+            }
+        }
+        topic::EDID => {
+            if let Some(bi) = crate::boot_info()
+                && bi.edid.len > 0
+                && bi.edid.len <= 4096
+            {
+                // SAFETY: the bootloader's copy of the EDID, in BOOT_DATA
+                // memory the kernel keeps, at its direct-map address.
+                out.extend_from_slice(unsafe { core::slice::from_raw_parts(bi.edid.ptr, bi.edid.len as usize) });
+            }
+        }
+        topic::GOP_MODES => {
+            if let Some(bi) = crate::boot_info() {
+                // BootInfo v2 had no list.
+                if bi.version >= 3 {
+                    for &m in bi.gop_modes.iter().take_while(|&&m| m != 0) {
+                        out.extend_from_slice(&m.to_le_bytes());
+                    }
+                }
+                out.extend_from_slice(&0u32.to_le_bytes());
+                let fb = &bi.framebuffer;
+                out.extend_from_slice(&((fb.width << 16) | (fb.height & 0xFFFF)).to_le_bytes());
+            }
+        }
         _ => return Err(FErr::NotSupported),
     }
     let n = out.len().min(len as usize);

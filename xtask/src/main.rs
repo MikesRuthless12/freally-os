@@ -14,6 +14,7 @@ mod gates;
 mod keys;
 mod ktest;
 mod pack;
+mod probe;
 mod release;
 mod run;
 mod screen;
@@ -35,7 +36,9 @@ cargo xtask <command>
   doctor                         is this machine ready? (KVM, QEMU, OVMF, toolchain, keys)
   keygen --dev --staging         make the signing keys in ~/.freally-keys/ (never --release)
   build --flavour F              the bootloader and the signed image for release, dev or e2e
-  run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket
+  build --probe                  the probe image (dev, no desktop): what a new machine has, on screen
+  run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe)
+  probe                          boot the probe headless, check what it found, keep each page as a PNG
   cdp --os [--site] [--only=ids] the CDP legs: every coverage.json feature, spec by spec
   pack --flavour F [--out P]     pack an unsigned image
   sign <image> --key dev|staging sign an image in place
@@ -88,6 +91,7 @@ fn main() -> ExitCode {
         Some("atlas") => atlas::atlas_cmd(rest),
         Some("screen") => screen::screen_cmd(rest),
         Some("run") => run::run_cmd(rest),
+        Some("probe") => probe::probe_cmd(rest),
         Some("cdp") => cdp::cdp_cmd(rest),
         Some("boot-check") => boot_check::boot_check_cmd(rest),
         Some("version") => version::version_cmd(rest),

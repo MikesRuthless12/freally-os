@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 fcore-abi.workspace = true
 fcrypto.workspace = true
+fedid.workspace = true
 fsi = { workspace = true, features = ["build"] }
 fsvc.workspace = true
 ffont = { workspace = true, features = ["raster"] }

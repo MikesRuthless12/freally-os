@@ -83,13 +83,15 @@ pub fn hardware_bundle(scale: u32) -> Result<Vec<u8>, String> {
 }
 
 /// Packs the flavour's image, unsigned, with `key_id` set for its signing key.
-/// `user` lists each user program: its image path, its kind and its built ELF.
+/// `user` lists each user program: its image path, its kind and its built ELF;
+/// `extra` manifests (name, text) beyond `manifests/` (the probe's).
 pub fn pack(
     flavour: Flavour,
     out: &Path,
     kernel: &Path,
     user: &[(String, Kind, PathBuf)],
     without: &[&str],
+    extra: &[(String, String)],
 ) -> Result<(), String> {
     let (build_id, created) = build_facts()?;
     let public = keys::committed_public(signing_key(flavour))?;
@@ -117,7 +119,8 @@ pub fn pack(
         let bytes = std::fs::read(elf).map_err(|e| format!("{}: {e}", elf.display()))?;
         b.add(path, *kind, 0, bytes);
     }
-    for (name, text) in manifests(flavour)?.into_iter().filter(|(n, _)| !without.contains(&n.as_str())) {
+    let set = manifests(flavour)?.into_iter().filter(|(n, _)| !without.contains(&n.as_str()));
+    for (name, text) in set.chain(extra.iter().cloned()) {
         let m = fsvc::parse(&text).map_err(|e| format!("manifests/{name}.svc: {e}"))?;
         if !user.iter().any(|(p, ..)| *p == m.binary) {
             return Err(format!("manifests/{name}.svc names {}, which this image doesn't carry", m.binary));
@@ -189,7 +192,7 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let user = crate::build::build_user(&programs_for(flavour, &[])?, flavour)?;
-    pack(flavour, &out, &crate::build::kernel_path(), &user, &[])?;
+    pack(flavour, &out, &crate::build::kernel_path(), &user, &[], &[])?;
     println!("pack: {} (unsigned, for the {} key)", out.display(), signing_key(flavour).as_str());
     Ok(())
 }

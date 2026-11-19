@@ -9,6 +9,10 @@
 //! - **Faults:** newest first; click one to see its details.
 //! - **Log:** live; the chips choose a service and a level. "No log lines
 //!   match." when nothing does.
+//! - **Devices** (TASK-075, TASK-070): every CPU with its core type, then
+//!   what devmgr found (the screen, the PS/2 controller, the serial ports,
+//!   every PCI function) and the driver that took each; the wheel, the arrow
+//!   keys and Page Up/Down scroll it.
 //! - Super+M opens it (the desktop starts it). If conductor doesn't answer
 //!   within 500 ms: "Monitor couldn't reach the system service. It'll keep
 //!   trying."
@@ -18,7 +22,7 @@ extern crate alloc;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use app_monitor::model::{self, Boot, Column, FaultRow, Line, Log, Proc, Processes};
+use app_monitor::model::{self, Boot, Column, DeviceRow, FaultRow, Line, Log, Proc, Processes};
 use fcore_abi::{FErr, perm, signal, well_known};
 use fimage::blit::Surface;
 use fstd::handle::Handle;
@@ -30,6 +34,7 @@ use fui::text::{FontData, Fonts, words};
 use fui::theme::{Mode, TextStyle, Theme, Tok};
 use fwire::proto::ax;
 use fwire::proto::conductor as c;
+use fwire::proto::devmgr as d;
 use fwire::proto::logger as lg;
 use fwire::proto::monitor as mon;
 use fwire::proto::stage as st;
@@ -38,7 +43,7 @@ fstd::program!(run);
 
 const W: u32 = 960;
 const H: u32 = 640;
-const TABS: [&str; 4] = ["Processes", "Boot", "Faults", "Log"];
+const TABS: [&str; 5] = ["Processes", "Boot", "Faults", "Log", "Devices"];
 const TAB_H: u32 = 44;
 const ROW_H: u32 = 32;
 const PAD: u32 = 16;
@@ -98,6 +103,11 @@ struct Monitor {
     log: Log,
     log_cursor: u64,
     logger: Option<Client>,
+    devmgr: Option<Client>,
+    /// Devices: the CPUs' line, the rows, and the first row shown.
+    cpus_line: String,
+    devices: Vec<DeviceRow>,
+    devices_top: usize,
     /// Conductor didn't answer three refreshes running: the banner (one
     /// missed refresh keeps what was shown).
     unreachable: bool,
@@ -186,6 +196,10 @@ impl Monitor {
             log: Log::default(),
             log_cursor: 0,
             logger: None,
+            devmgr: None,
+            cpus_line: String::new(),
+            devices: Vec::new(),
+            devices_top: 0,
             unreachable: false,
             missed: 0,
             last_sample: 0,
@@ -225,13 +239,14 @@ impl Monitor {
                 self.unreachable = self.missed >= 3;
             }
         }
+        let vendor = self.read_devices();
         if let Ok(t) = fstd::service::ask::<_, c::BootTimeline>(c::BOOT_TIMELINE, &()) {
             let stages: Vec<(String, f64)> = t
                 .stages
                 .into_iter()
                 .map(|(id, ns)| (STAGES.get(id as usize).copied().unwrap_or("?").to_string(), ns as f64 / 1e6))
                 .collect();
-            self.boot = Some(Boot::of(&stages));
+            self.boot = Some(Boot::of(&stages).with_vendor(&vendor));
         }
         if let Ok(f) = fstd::service::ask::<_, c::Faults>(c::FAULTS, &c::Page { cursor: 0, limit: 32 }) {
             let mut rows: Vec<FaultRow> = f
@@ -252,6 +267,81 @@ impl Monitor {
         }
         self.read_log();
         self.last_sample = now;
+    }
+
+    /// Devices from the kernel (every CPU) and devmgr (what it found, and
+    /// which driver took each); returns the firmware's vendor for Boot.
+    fn read_devices(&mut self) -> String {
+        let mut rows = Vec::new();
+        if let Some(cpus) = fstd::machine::cpus() {
+            self.cpus_line = alloc::format!(
+                "{} · {} · TSC-deadline timer {}",
+                cpus.layout(),
+                if cpus.x2apic { "x2APIC" } else { "xAPIC" },
+                if cpus.tsc_deadline { "yes" } else { "no" }
+            );
+            for (i, c) in cpus.cpus.iter().enumerate() {
+                let kind = match fstd::machine::core_type_name(c.core_type) {
+                    "—" => String::from("Processor core"),
+                    k => alloc::format!("{}{} core", k[..1].to_ascii_uppercase(), &k[1..]),
+                };
+                rows.push(DeviceRow {
+                    at: alloc::format!("CPU {i}"),
+                    what: alloc::format!("{kind} (APIC {}){}", c.apic_id, if c.online { "" } else { ", off" }),
+                    driver: String::from("Freally Core"),
+                });
+            }
+        }
+        if self.devmgr.is_none() {
+            self.devmgr = fstd::service::connect("devmgr").ok().map(Client::new);
+        }
+        let mut vendor = String::new();
+        if let Some(dm) = self.devmgr.as_mut() {
+            let summary = dm.call::<_, d::Summary>(d::SUMMARY, &(), Vec::new(), deadline()).ok().map(|(s, _)| s);
+            let list = dm.call::<_, d::Devices>(d::LIST, &(), Vec::new(), deadline()).ok().map(|(l, _)| l);
+            if let Ok((t, _)) = dm.call::<_, d::FirmwareTimes>(d::FIRMWARE_TIMES, &(), Vec::new(), deadline()) {
+                vendor = t.vendor;
+            }
+            if summary.is_none() || list.is_none() {
+                // devmgr restarted: connect again next time.
+                self.devmgr = None;
+            }
+            let pci: Vec<(String, String)> = list
+                .map(|l| l.pci)
+                .unwrap_or_default()
+                .iter()
+                .map(|p| {
+                    (
+                        alloc::format!("{:02x}:{:02x}.{}", p.bus, p.device, p.function),
+                        alloc::format!(
+                            "{} ({:04x}:{:04x})",
+                            fstd::machine::pci_class(p.class, p.subclass, p.prog_if),
+                            p.vendor,
+                            p.id
+                        ),
+                    )
+                })
+                .collect();
+            let bound: Vec<(String, String)> =
+                summary.map(|s| s.bound).unwrap_or_default().into_iter().map(|b| (b.device, b.driver)).collect();
+            rows.extend(model::device_rows(&pci, &bound));
+        }
+        self.devices = rows;
+        self.devices_top = self.devices_top.min(self.devices.len().saturating_sub(1));
+        vendor
+    }
+
+    /// How many device rows the window shows at once.
+    fn device_rows_shown(&self) -> usize {
+        let t = self.theme;
+        let top = t.px(TAB_H) + t.px(12) + t.px(28) + t.px(28);
+        (self.h.saturating_sub(top) / t.px(ROW_H)).max(1) as usize
+    }
+
+    /// Scrolls Devices by `by` rows (negative: up), within the list.
+    fn scroll_devices(&mut self, by: i32) {
+        let last = self.devices.len().saturating_sub(self.device_rows_shown());
+        self.devices_top = (self.devices_top as i32 + by).clamp(0, last as i32) as usize;
     }
 
     fn read_log(&mut self) {
@@ -287,6 +377,10 @@ impl Monitor {
         let open_fault = self.open_fault;
         let shown: Vec<Line> = self.log.shown().into_iter().cloned().collect();
         let (svc, lvl) = (self.log.service.clone(), self.log.min_level);
+        let cpus_line = self.cpus_line.clone();
+        let devices: Vec<DeviceRow> =
+            self.devices.iter().skip(self.devices_top).take(self.device_rows_shown()).cloned().collect();
+        let (dev_top, dev_total) = (self.devices_top, self.devices.len());
         let unreachable = self.unreachable;
         let ring = self.focus.and_then(|i| self.controls().get(i).map(|c| c.at));
         let fonts = &mut self.fonts;
@@ -476,6 +570,39 @@ impl Monitor {
                             }
                         }
                     }
+                    4 => {
+                        words(&mut s, fonts, t, TextStyle::Body, (px(PAD), top), &cpus_line, Tok::Text);
+                        let more = if dev_total > devices.len() {
+                            alloc::format!(
+                                "{}–{} of {} · the wheel or the arrow keys show the rest",
+                                dev_top + 1,
+                                dev_top + devices.len(),
+                                dev_total
+                            )
+                        } else {
+                            alloc::format!("{dev_total} devices")
+                        };
+                        words(&mut s, fonts, t, TextStyle::Small, (px(560), top + px(3)), &more, Tok::Text2);
+                        let head = top + px(28);
+                        for (name, x) in [("Device", 16), ("What it is", 176), ("Driver", 700)] {
+                            words(&mut s, fonts, t, TextStyle::Small, (px(x), head), name, Tok::Text2);
+                        }
+                        for (i, r) in devices.iter().enumerate() {
+                            let y = head + px(28) + i as i32 * px(ROW_H);
+                            if (dev_top + i) % 2 == 1 {
+                                draw::fill(
+                                    &mut s,
+                                    Rect::new(px(8), y - px(6), w - t.px(16), t.px(ROW_H)),
+                                    t.colour(Tok::Surface2).xrgb(),
+                                );
+                            }
+                            words(&mut s, fonts, t, TextStyle::Body, (px(16), y), &r.at, Tok::Text);
+                            let what = fonts.fit(t, TextStyle::Small, &r.what, t.px(510));
+                            words(&mut s, fonts, t, TextStyle::Small, (px(176), y + px(1)), &what, Tok::Text2);
+                            let tok = if r.driver == "—" { Tok::Text3 } else { Tok::Text };
+                            words(&mut s, fonts, t, TextStyle::Small, (px(700), y + px(1)), &r.driver, tok);
+                        }
+                    }
                     _ => {
                         let chip = |name: &str| alloc::format!("[ {name} ]");
                         let svc_text = chip(&alloc::format!("Service: {}", svc.as_deref().unwrap_or("all")));
@@ -603,6 +730,28 @@ impl Monitor {
                         row.value = alloc::format!("{ms:.1} ms");
                         nodes.push(row);
                     }
+                }
+            }
+            4 => {
+                nodes.push(node(ax::ROOT, ax::TEXT, &self.cpus_line, 0, (px(PAD), top, 540, 24)));
+                let table = nodes.len() as u32;
+                let head = top + px(56);
+                let shown = self.devices.iter().skip(self.devices_top).take(self.device_rows_shown());
+                let mut tb = node(
+                    ax::ROOT,
+                    ax::TABLE,
+                    "Devices",
+                    0,
+                    (px(8), head, self.w - t.px(16), t.px(ROW_H) * self.device_rows_shown() as u32),
+                );
+                tb.testid = String::from("devices");
+                tb.value = alloc::format!("{} rows from {}", self.devices.len(), self.devices_top + 1);
+                nodes.push(tb);
+                for (i, r) in shown.enumerate() {
+                    let at = (px(8), head + i as i32 * px(ROW_H), self.w - t.px(16), t.px(ROW_H));
+                    let mut row = node(table, ax::ROW, &alloc::format!("{}: {}", r.at, r.what), 0, at);
+                    row.value = r.driver.clone();
+                    nodes.push(row);
                 }
             }
             _ => {}
@@ -762,19 +911,38 @@ impl Monitor {
     fn event(&mut self, ordinal: u32, p: &[u8]) -> bool {
         match ordinal {
             st::EV_POINTER => {
-                if let Ok(e) = fwire::from_payload::<st::Pointer>(p)
-                    && e.kind == st::PointerKind::Down
-                    && e.buttons & 1 != 0
-                {
-                    self.click(e.x, e.y);
-                    self.draw();
+                if let Ok(e) = fwire::from_payload::<st::Pointer>(p) {
+                    if e.kind == st::PointerKind::Down && e.buttons & 1 != 0 {
+                        self.click(e.x, e.y);
+                        self.draw();
+                    } else if e.kind == st::PointerKind::Wheel && self.tab == 4 && e.dy != 0 {
+                        // Up the wheel (dy positive) shows earlier rows, three at a notch.
+                        self.scroll_devices(-e.dy.signum() * 3);
+                        self.draw();
+                    }
                 }
             }
             st::EV_KEY => {
                 if let Ok(k) = fwire::from_payload::<st::Key>(p)
                     && k.down
                 {
-                    if k.usage == 0x2B && k.modifiers & 2 != 0 {
+                    // Devices scroll by the arrows, a page, or to either end.
+                    let page = self.device_rows_shown() as i32;
+                    let scroll = match k.usage {
+                        0x52 => Some(-1),
+                        0x51 => Some(1),
+                        0x4B => Some(-page),
+                        0x4E => Some(page),
+                        0x4A => Some(i32::MIN / 2),
+                        0x4D => Some(i32::MAX / 2),
+                        _ => None,
+                    };
+                    if self.tab == 4
+                        && let Some(by) = scroll
+                    {
+                        self.scroll_devices(by);
+                        self.draw();
+                    } else if k.usage == 0x2B && k.modifiers & 2 != 0 {
                         // Ctrl+Tab: the next tab.
                         self.tab = (self.tab + 1) % TABS.len();
                         self.draw();
@@ -852,7 +1020,13 @@ impl Monitor {
                 }
                 v
             }
-            _ => self.log.shown().iter().map(|l| alloc::format!("{} {}", l.service, l.msg)).collect(),
+            3 => self.log.shown().iter().map(|l| alloc::format!("{} {}", l.service, l.msg)).collect(),
+            _ => {
+                let mut v = alloc::vec![self.cpus_line.clone()];
+                v.extend(self.devices.iter().map(|r| alloc::format!("{} | {} | {}", r.at, r.what, r.driver)));
+                v.push(alloc::format!("top {}", self.devices_top));
+                v
+            }
         };
         mon::State {
             tab: String::from(TABS[self.tab]),

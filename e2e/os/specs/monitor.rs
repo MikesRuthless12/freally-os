@@ -124,12 +124,14 @@ pub fn tabs(ctx: &mut Ctx) -> Result<(), String> {
     if svc != "all" && s.lines.iter().any(|l| !l.starts_with(&format!("{svc} "))) {
         return Err(format!("the filter let others through: {:?}", s.lines));
     }
-    // Ctrl+Tab: back round to Processes.
-    key(ctx, "ControlLeft", true)?;
-    key(ctx, "Tab", true)?;
-    key(ctx, "Tab", false)?;
-    key(ctx, "ControlLeft", false)?;
-    until(ctx, "Ctrl+Tab to Processes", |s| s.tab == "Processes")?;
+    // Ctrl+Tab: on to Devices, then back round to Processes.
+    for want in ["Devices", "Processes"] {
+        key(ctx, "ControlLeft", true)?;
+        key(ctx, "Tab", true)?;
+        key(ctx, "Tab", false)?;
+        key(ctx, "ControlLeft", false)?;
+        until(ctx, &format!("Ctrl+Tab to {want}"), |s| s.tab == want)?;
+    }
     ctx.keep_shot("monitor")?;
     Ok(())
 }
@@ -151,8 +153,8 @@ pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
         until_attr(ctx, &c.sel, "aria-selected", "true")?;
         until(ctx, "the tab", |s| s.tab == c.label).map(|_| ())
     })?;
-    if tabs != 4 {
-        return Err(format!("{tabs} tabs, not 4"));
+    if tabs != 5 {
+        return Err(format!("{tabs} tabs, not 5"));
     }
     // Each tab's own controls.
     let tab = |ctx: &mut Ctx, id: &str| -> Result<(), String> {
@@ -216,4 +218,80 @@ pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
     crate::stage::key(ctx, "AltLeft", false)?;
     ctx.expect_log("monitor: closed")?;
     crate::sweep::until_gone(ctx, MON)
+}
+
+/// `@monitor.devices`: Monitor → Devices lists every CPU with its core type
+/// and every device devmgr found, each with the driver that took it: the
+/// firmware's framebuffer and the display controller holding it to
+/// drv-gop-fb, the PS/2 controller to drv-i8042, COM2 and COM3 to
+/// drv-uart16550, a device no driver took with "—". The wheel, the arrows,
+/// Home and End scroll it, never past either end (TASK-075, TASK-070; an
+/// 8-CPU VM, so the list is longer than the window).
+pub fn devices(ctx: &mut Ctx) -> Result<(), String> {
+    use crate::stage::wheel;
+    ctx.expect_log("desktop: the Rack is up")?;
+    ctx.door("monitor open")?;
+    ctx.expect_log("monitor: open")?;
+    let start = Instant::now();
+    let f = loop {
+        match frame(ctx) {
+            Ok(f) => break f,
+            Err(e) if start.elapsed() > Duration::from_secs(10) => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    click(ctx, f, 16 + 560 + 30, 20)?;
+    let s = until(ctx, "the Devices tab with every driver", |s| {
+        s.tab == "Devices" && s.lines.iter().any(|l| l.contains("| drv-uart16550"))
+    })?;
+    let has = |want: &[&str]| s.lines.iter().any(|l| want.iter().all(|w| l.contains(w)));
+    if !s.lines.first().is_some_and(|l| l.starts_with("8 CPUs") && l.contains("x2APIC")) {
+        return Err(format!("the CPUs' line: {:?}", s.lines.first()));
+    }
+    for (want, what) in [
+        (&["CPU 0 |", "| Freally Core"][..], "CPU 0"),
+        (&["CPU 7 |", "| Freally Core"][..], "CPU 7"),
+        (&["framebuffer |", "| drv-gop-fb"][..], "the framebuffer"),
+        (&["Display (VGA)", "| drv-gop-fb"][..], "the display controller"),
+        (&["PS/2 controller |", "Keyboard and mouse", "| drv-i8042"][..], "the PS/2 controller"),
+        (&["COM2 |", "Serial port", "| drv-uart16550"][..], "COM2"),
+        (&["COM3 |", "| drv-uart16550"][..], "COM3"),
+        (&["Host bridge", "| —"][..], "a device no driver took"),
+    ] {
+        if !has(want) {
+            return Err(format!("{what} isn't listed as it should be: {:?}", s.lines));
+        }
+    }
+    // Scrolling: the wheel down a notch, End, never past the
+    // last row, Home, never above the first.
+    let top = |s: &State| s.lines.last().and_then(|l| l.strip_prefix("top ")).and_then(|v| v.parse::<i64>().ok());
+    move_to(ctx, f.0 + 400, f.1 + 32 + 300)?;
+    wheel(ctx, false)?;
+    let notch = until(ctx, "a notch down", |s| top(s).is_some_and(|t| t > 0))?;
+    let after_notch = top(&notch).unwrap_or(0);
+    key(ctx, "End", true)?;
+    key(ctx, "End", false)?;
+    let end = until(ctx, "End", |s| top(s).is_some_and(|t| t >= after_notch))?;
+    let last = top(&end).unwrap_or(0);
+    key(ctx, "ArrowDown", true)?;
+    key(ctx, "ArrowDown", false)?;
+    std::thread::sleep(Duration::from_millis(400));
+    if top(&state(ctx)?) != Some(last) {
+        return Err(String::from("the list scrolled past its last row"));
+    }
+    key(ctx, "Home", true)?;
+    key(ctx, "Home", false)?;
+    until(ctx, "Home", |s| top(s) == Some(0))?;
+    wheel(ctx, true)?;
+    std::thread::sleep(Duration::from_millis(400));
+    if top(&state(ctx)?) != Some(0) {
+        return Err(String::from("the list scrolled above its first row"));
+    }
+    ctx.keep_shot("monitor-devices")?;
+    // Closed (Alt+F4), so the next spec finds Monitor as it starts.
+    key(ctx, "AltLeft", true)?;
+    key(ctx, "F4", true)?;
+    key(ctx, "F4", false)?;
+    key(ctx, "AltLeft", false)?;
+    ctx.expect_log("monitor: closed")
 }

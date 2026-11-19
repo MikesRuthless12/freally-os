@@ -225,6 +225,160 @@ impl Set2 {
     }
 }
 
+/// Scan code set 1 → set 2, for each set 1 make code below 0x80 (0: no key).
+/// It undoes the 8042's translation byte by byte: a keyboard that won't
+/// leave set 2 behind a controller that won't stop translating (laptop
+/// embedded controllers do both: TASK-072) still reads right. Extended keys
+/// (after 0xE0) use the same second byte, so this one table covers them.
+const SET1_TO_SET2: [u8; 128] = {
+    let mut t = [0u8; 128];
+    let pairs: [(u8, u8); 98] = [
+        (0x01, 0x76),
+        (0x02, 0x16),
+        (0x03, 0x1E),
+        (0x04, 0x26),
+        (0x05, 0x25),
+        (0x06, 0x2E),
+        (0x07, 0x36),
+        (0x08, 0x3D),
+        (0x09, 0x3E),
+        (0x0A, 0x46),
+        (0x0B, 0x45),
+        (0x0C, 0x4E),
+        (0x0D, 0x55),
+        (0x0E, 0x66),
+        (0x0F, 0x0D),
+        (0x10, 0x15),
+        (0x11, 0x1D),
+        (0x12, 0x24),
+        (0x13, 0x2D),
+        (0x14, 0x2C),
+        (0x15, 0x35),
+        (0x16, 0x3C),
+        (0x17, 0x43),
+        (0x18, 0x44),
+        (0x19, 0x4D),
+        (0x1A, 0x54),
+        (0x1B, 0x5B),
+        (0x1C, 0x5A),
+        (0x1D, 0x14),
+        (0x1E, 0x1C),
+        (0x1F, 0x1B),
+        (0x20, 0x23),
+        (0x21, 0x2B),
+        (0x22, 0x34),
+        (0x23, 0x33),
+        (0x24, 0x3B),
+        (0x25, 0x42),
+        (0x26, 0x4B),
+        (0x27, 0x4C),
+        (0x28, 0x52),
+        (0x29, 0x0E),
+        (0x2A, 0x12),
+        (0x2B, 0x5D),
+        (0x2C, 0x1A),
+        (0x2D, 0x22),
+        (0x2E, 0x21),
+        (0x2F, 0x2A),
+        (0x30, 0x32),
+        (0x31, 0x31),
+        (0x32, 0x3A),
+        (0x33, 0x41),
+        (0x34, 0x49),
+        (0x35, 0x4A),
+        (0x36, 0x59),
+        (0x37, 0x7C),
+        (0x38, 0x11),
+        (0x39, 0x29),
+        (0x3A, 0x58),
+        (0x3B, 0x05),
+        (0x3C, 0x06),
+        (0x3D, 0x04),
+        (0x3E, 0x0C),
+        (0x3F, 0x03),
+        (0x40, 0x0B),
+        (0x41, 0x83),
+        (0x42, 0x0A),
+        (0x43, 0x01),
+        (0x44, 0x09),
+        (0x45, 0x77),
+        (0x46, 0x7E),
+        (0x47, 0x6C),
+        (0x48, 0x75),
+        (0x49, 0x7D),
+        (0x4A, 0x7B),
+        (0x4B, 0x6B),
+        (0x4C, 0x73),
+        (0x4D, 0x74),
+        (0x4E, 0x79),
+        (0x4F, 0x69),
+        (0x50, 0x72),
+        (0x51, 0x7A),
+        (0x52, 0x70),
+        (0x53, 0x71),
+        (0x54, 0x84),
+        (0x56, 0x61),
+        (0x57, 0x78),
+        (0x58, 0x07),
+        (0x5B, 0x1F),
+        (0x5C, 0x27),
+        (0x5D, 0x2F),
+        (0x5E, 0x37),
+        (0x5F, 0x3F),
+        (0x63, 0x5E),
+        (0x70, 0x13),
+        (0x73, 0x51),
+        (0x79, 0x64),
+        (0x7B, 0x67),
+        (0x7D, 0x6A),
+    ];
+    let mut i = 0;
+    while i < pairs.len() {
+        t[pairs[i].0 as usize] = pairs[i].1;
+        i += 1;
+    }
+    t
+};
+
+/// Scan code set 1 (what a translating 8042 hands over), read by turning
+/// each byte back into set 2 and feeding [`Set2`]: one decoder, one key table.
+#[derive(Default)]
+pub struct Set1 {
+    set2: Set2,
+}
+
+impl Set1 {
+    /// Feeds one set 1 byte; returns the key events it completes (a break
+    /// becomes two set 2 bytes, so at most two).
+    pub fn feed(&mut self, b: u8) -> [Option<KeyEvent>; 2] {
+        match b {
+            // Prefixes and the keyboard's own answers pass through. Not 0xAA:
+            // in set 1 that's Left Shift's release (its self-test byte only
+            // comes during setup, read there).
+            0xE0 | 0xE1 | 0xEE | 0xFA | 0xFE | 0x00 | 0xFF => [self.set2.feed(b), None],
+            b => {
+                let code = SET1_TO_SET2[(b & 0x7F) as usize];
+                if code == 0 {
+                    // No key: as Set2 would say of a code it doesn't know.
+                    self.set2.unknown = Some((false, b));
+                    return [None, None];
+                }
+                if b & 0x80 != 0 { [self.set2.feed(0xF0), self.set2.feed(code)] } else { [self.set2.feed(code), None] }
+            }
+        }
+    }
+
+    /// As [`Set2::pending`].
+    pub fn pending(&mut self) -> Option<KeyEvent> {
+        self.set2.pending()
+    }
+
+    /// As [`Set2::take_unknown`].
+    pub fn take_unknown(&mut self) -> Option<(bool, u8)> {
+        self.set2.take_unknown()
+    }
+}
+
 /// The modifier keys held, and Caps Lock.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Modifiers {

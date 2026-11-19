@@ -110,6 +110,14 @@ pub const PROGRAMS: &[UserProgram] = &[
     },
 ];
 
+/// The probe (TASK-069, dev only): never in `PROGRAMS`, and its manifest
+/// lives beside it (`apps/probe/probe.svc`), not in `manifests/`, so only
+/// the probe image carries it.
+pub const PROBE: UserProgram =
+    UserProgram { package: "app-probe", bin: "probe", path: "/system/apps/probe", kind: fsi::Kind::App };
+/// What the probe image leaves out: the screen is the probe's alone.
+pub const PROBE_WITHOUT: &[&str] = &["stage", "desktop", "monitor", "terminal"];
+
 /// Test images (`cargo xtask test`) add these.
 pub const TEST_PROGRAMS: &[UserProgram] =
     &[UserProgram { package: "ftest", bin: "utest", path: "/system/test/utest", kind: fsi::Kind::App }];
@@ -173,7 +181,26 @@ pub fn build_with(flavour: Flavour, signed: bool) -> Result<Built, String> {
 /// `without` names services a test image leaves out (`@boot.title`'s image
 /// has no stage, so the title stays on the screen).
 pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str], without: &[&str]) -> Result<Built, String> {
-    let out = util::target_dir().join("freally").join(flavour.name());
+    build_image(flavour, signed, kernel_features, without, None, flavour.name())
+}
+
+/// The probe image (TASK-069): the dev flavour with the probe started at
+/// boot, and no stage, desktop or apps. → `target/freally/probe/`.
+pub fn build_probe() -> Result<Built, String> {
+    build_image(Flavour::Dev, true, &[], PROBE_WITHOUT, Some((&PROBE, "apps/probe/probe.svc")), "probe")
+}
+
+/// Every image: the flavour's programs less `without`, plus `extra` (a
+/// program and its manifest), into `target/freally/<dir>/`.
+fn build_image(
+    flavour: Flavour,
+    signed: bool,
+    kernel_features: &[&str],
+    without: &[&str],
+    extra: Option<(&'static UserProgram, &str)>,
+    dir: &str,
+) -> Result<Built, String> {
+    let out = util::target_dir().join("freally").join(dir);
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
 
     // 1. The bootloader, with this flavour's keys.
@@ -200,11 +227,19 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str], with
     if kernel_features.contains(&"ktest") {
         programs.extend(TEST_PROGRAMS);
     }
+    let mut manifests = Vec::new();
+    if let Some((p, svc)) = extra {
+        programs.push(p);
+        let path = util::repo_root().join(svc);
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let name = fsvc::parse(&text).map_err(|e| format!("{svc}: {e}"))?.name;
+        manifests.push((name, text));
+    }
     let user = build_user(&programs, flavour)?;
 
     // 4. The image, packed and signed.
     let image = out.join("SYSTEM_A.FSI");
-    pack::pack(flavour, &image, &kernel, &user, without)?;
+    pack::pack(flavour, &image, &kernel, &user, without, &manifests)?;
     if signed {
         pack::sign(&image, pack::signing_key(flavour))?;
     }
@@ -213,6 +248,11 @@ pub fn build_full(flavour: Flavour, signed: bool, kernel_features: &[&str], with
 
 pub fn build_cmd(args: &[String]) -> Result<(), String> {
     let flavour = pack::flavour_arg(args)?;
+    if args.iter().any(|a| a == "--probe") {
+        let b = build_probe()?;
+        println!("build: the probe (dev, no desktop: TASK-069) → {}", b.dir.display());
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--crash-test") {
         let b = crash_test(flavour)?;
         println!(

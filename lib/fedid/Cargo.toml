@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fedid"
+description = "fedid: reads a display's EDID (VESA E-EDID 1.3/1.4): its preferred mode, its size, its name; and the UI scale that suits it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

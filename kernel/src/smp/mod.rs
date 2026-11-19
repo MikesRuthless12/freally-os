@@ -26,7 +26,7 @@ use crate::arch::{apic, cpu, gdt, idt};
 use crate::sync::SpinLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// The most CPUs Freally Core runs on.
 pub const MAX_CPUS: usize = 64;
@@ -44,6 +44,8 @@ pub struct Cpu {
     /// Its place in the scheduler's list: 0 is the boot CPU.
     pub index: u32,
     pub apic_id: AtomicU32,
+    /// Its core type (CPUID leaf 0x1A on a hybrid CPU: `fcore_abi::core_type`).
+    pub core_type: AtomicU8,
     pub online: AtomicBool,
     /// Its GDT and TSS, and the tops of its #DF, NMI, #MC and entry stacks.
     pub tables: AtomicPtr<gdt::Tables>,
@@ -75,6 +77,7 @@ impl Cpu {
             this: AtomicU64::new(0),
             index,
             apic_id: AtomicU32::new(NO_APIC),
+            core_type: AtomicU8::new(0),
             online: AtomicBool::new(false),
             tables: AtomicPtr::new(core::ptr::null_mut()),
             stacks: [const { AtomicU64::new(0) }; 4],
@@ -136,6 +139,22 @@ pub fn count() -> usize {
     COUNT.load(Ordering::Acquire)
 }
 
+/// Whether the CPU mixes core types (CPUID 7's hybrid bit, with leaf 0x1A).
+pub fn hybrid() -> bool {
+    cpu::cpuid(0, 0).eax >= 0x1A && cpu::cpuid(7, 0).edx & (1 << 15) != 0
+}
+
+/// The core type of the CPU this runs on (FR-009): leaf 0x1A's top byte on a
+/// hybrid CPU, unknown otherwise.
+fn own_core_type() -> u8 {
+    if hybrid() { (cpu::cpuid(0x1A, 0).eax >> 24) as u8 } else { fcore_abi::core_type::UNKNOWN }
+}
+
+/// CPU `i`'s core type (unknown when it has no block).
+pub fn core_type(i: usize) -> u8 {
+    cpu(i).map_or(fcore_abi::core_type::UNKNOWN, |c| c.core_type.load(Ordering::Relaxed))
+}
+
 /// The CPUs running.
 pub fn online() -> usize {
     ONLINE.load(Ordering::Acquire)
@@ -162,6 +181,7 @@ pub fn init_bsp() {
     unsafe { gdt::load(&t) };
     // After the GDT: loading GS's selector cleared its base.
     set_gs(c);
+    c.core_type.store(own_core_type(), Ordering::Release);
     c.online.store(true, Ordering::Release);
     CPUS[0].store(c as *const Cpu as *mut Cpu, Ordering::Release);
     COUNT.store(1, Ordering::Release);
@@ -239,6 +259,7 @@ extern "C" fn ap_main(c: &'static Cpu) -> ! {
     idt::load();
     set_gs(c);
     c.apic_id.store(apic::init_cpu(), Ordering::Release);
+    c.core_type.store(own_core_type(), Ordering::Release);
     crate::syscall::init_cpu();
     crate::mm::aspace::init_cpu_protections();
     crate::sched::run_ap(c.index as usize)

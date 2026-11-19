@@ -8,7 +8,8 @@
 //!   followed.
 //! - Drivers connect and ask for their resources; devmgr knows each one by
 //!   the name conductor gave its connection, and carves only what that driver
-//!   needs from the root resource.
+//!   needs from the root resource. It remembers which driver took which
+//!   device (`summary`, for Monitor → Devices and the probe: TASK-069, 075).
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -55,6 +56,8 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     let mut clients: Vec<(String, Channel)> = Vec::new();
+    // Which driver took which device (Monitor → Devices, the probe).
+    let mut bound: Vec<d::Bound> = Vec::new();
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
         items.extend(clients.iter().map(|(_, ch)| [ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
@@ -71,7 +74,7 @@ fn run(_bootstrap: u32) -> i64 {
             }
             Ok(k) => {
                 let i = k - 1;
-                if !serve(&hw, &clients[i].0, &clients[i].1) {
+                if !serve(&hw, &mut bound, &clients[i].0, &clients[i].1) {
                     clients.remove(i);
                 }
             }
@@ -82,7 +85,7 @@ fn run(_bootstrap: u32) -> i64 {
 }
 
 /// Answers every request waiting from one client; false once it's gone.
-fn serve(hw: &Hardware, who: &str, ch: &Channel) -> bool {
+fn serve(hw: &Hardware, bound: &mut Vec<d::Bound>, who: &str, ch: &Channel) -> bool {
     loop {
         let mut bytes = alloc::vec![0u8; 1024];
         let mut hs = [0u32; 4];
@@ -94,8 +97,28 @@ fn serve(hw: &Hardware, who: &str, ch: &Channel) -> bool {
                     d::LIST => (fwire::reply(h.txid, h.ordinal, &d::Devices { pci: hw.pci.clone() }), Vec::new()),
                     d::TABLES => (fwire::reply(h.txid, h.ordinal, &hw.table_list()), Vec::new()),
                     d::FIRMWARE_TIMES => (fwire::reply(h.txid, h.ordinal, &hw.firmware), Vec::new()),
+                    d::SUMMARY => (
+                        fwire::reply(
+                            h.txid,
+                            h.ordinal,
+                            &d::Summary {
+                                has_8042: hw.has_8042,
+                                madt_cpus: hw.cpus,
+                                hpet: hw.hpet,
+                                bound: bound.clone(),
+                            },
+                        ),
+                        Vec::new(),
+                    ),
                     d::RESOURCES => match hw.resources_for(who) {
-                        Ok((r, hs)) => (fwire::reply(h.txid, h.ordinal, &r), hs),
+                        Ok((r, hs, devices)) => {
+                            // A restarted driver asks again: one row each.
+                            bound.retain(|b| b.driver != who);
+                            bound.extend(
+                                devices.into_iter().map(|device| d::Bound { device, driver: String::from(who) }),
+                            );
+                            (fwire::reply(h.txid, h.ordinal, &r), hs)
+                        }
                         Err(e) => (
                             fwire::error_reply(h.txid, h.ordinal, e as i32, "no resources for this driver"),
                             Vec::new(),

@@ -117,11 +117,8 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
     (bs.set_watchdog_timer)(0, 0, 0, null_mut());
     say!("freally-boot {} ({})", fcore_abi::VERSION, FLAVOUR.name());
 
-    // The display, the EDID and the memory map (the kernel's, from Phase 1).
-    let display = unsafe { video::gop(bs) };
-    if let Some((_, d)) = display {
-        say!("freally-boot: display {}x{}, stride {}, pixel format {}", d.w, d.h, d.stride, d.format);
-    }
+    // The EDID, the display in its own mode (TASK-071), and the memory map
+    // (the kernel's, from Phase 1).
     let mut edid: *mut c_void = null_mut();
     let mut edid_bytes: Option<(*const u8, usize)> = None;
     if !is_error((bs.locate_protocol)(&EDID_ACTIVE_GUID, null_mut(), &mut edid)) && !edid.is_null() {
@@ -131,6 +128,32 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
         if !e.edid.is_null() && e.size_of_edid > 0 {
             edid_bytes = Some((e.edid as *const u8, e.size_of_edid as usize));
         }
+    }
+    // Dev and e2e only, compiled out of release: a VM's firmware gives no
+    // EDID, so a stand-in on the drive lets the specs prove the native mode
+    // and the scale (TASK-071).
+    #[cfg(not(feature = "flavour-release"))]
+    if edid_bytes.is_none()
+        // SAFETY: boot services are running; `image_handle` is ours.
+        && let Ok(b) = unsafe { read::read_image(bs, image_handle, read::TEST_EDID) }
+        && (128..=512).contains(&b.len())
+    {
+        say!("freally-boot: no EDID from the firmware; using the stand-in EDID.BIN ({} bytes)", b.len());
+        edid_bytes = Some((b.as_ptr(), b.len()));
+    }
+    // SAFETY: the firmware's EDID bytes, `n` of them, while boot services run.
+    let preferred = edid_bytes
+        .and_then(|(p, n)| fedid::parse(unsafe { core::slice::from_raw_parts(p, n) }).ok())
+        .and_then(|e| e.preferred)
+        .map(|m| (m.w, m.h));
+    let mut gop_modes = [0u32; fcore_abi::GOP_MODES_MAX];
+    if let Some((g, _)) = unsafe { video::gop(bs) } {
+        // SAFETY: boot services are running; `g` is the firmware's GOP.
+        gop_modes = unsafe { video::native_mode(bs, g, preferred) };
+    }
+    let display = unsafe { video::gop(bs) };
+    if let Some((_, d)) = display {
+        say!("freally-boot: display {}x{}, stride {}, pixel format {}", d.w, d.h, d.stride, d.format);
     }
     let (mut map_size, mut key, mut desc_size, mut desc_version) = (0usize, 0usize, 0usize, 0u32);
     let st_map = (bs.get_memory_map)(&mut map_size, null_mut(), &mut key, &mut desc_size, &mut desc_version);
@@ -260,6 +283,9 @@ extern "efiapi" fn efi_main(image_handle: Handle, st: *mut SystemTable) -> Statu
             stamps,
             slot,
             bootctl: ctl.encode(),
+            gop_modes,
+            // SAFETY: the system table's own vendor string.
+            firmware_vendor: unsafe { handoff::vendor_ascii(st.firmware_vendor) },
         };
         // SAFETY: boot services are running; `st` and `image` are the firmware's.
         let why = unsafe { handoff::handoff(st, image_handle, &k, facts) };

@@ -95,7 +95,9 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
         fcore_abi::VERSION,
         K0.load(Ordering::Relaxed).saturating_sub(bi.tsc.b0)
     );
-    if bi.magic != BOOTINFO_MAGIC || bi.version != BOOTINFO_VERSION {
+    // Older bootloaders are read too (fields are only ever appended): one on a
+    // stick or an ESP outlives the images it boots.
+    if bi.magic != BOOTINFO_MAGIC || !(fcore_abi::BOOTINFO_OLDEST..=BOOTINFO_VERSION).contains(&bi.version) {
         klog!("freally-core: ERROR BootInfo has the wrong magic or version");
         cpu::halt_forever();
     }

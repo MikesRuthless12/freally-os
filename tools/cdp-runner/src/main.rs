@@ -25,6 +25,8 @@ mod boot;
 mod cdp_specs;
 #[path = "../../../e2e/os/specs/desktop.rs"]
 mod desktop;
+#[path = "../../../e2e/os/specs/display.rs"]
+mod display;
 #[path = "../../../e2e/os/specs/kernel.rs"]
 mod kernel;
 #[path = "../../../e2e/os/specs/monitor.rs"]
@@ -85,6 +87,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("monitor.sweep", monitor::sweep),
     ("a11y.keyboard", a11y::keyboard),
     ("theme.both", theme::both),
+    ("display.native", display::native),
+    ("monitor.devices", monitor::devices),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

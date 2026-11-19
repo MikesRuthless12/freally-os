@@ -124,6 +124,8 @@ pub struct Boot {
     pub total_ms: f64,
     /// The firmware's own times (F0 reset end, F1 loader start), when the FPDT has them.
     pub firmware: Option<(f64, f64)>,
+    /// The firmware's vendor ("HP"), when the bootloader passed it on.
+    pub vendor: String,
 }
 
 impl Boot {
@@ -138,7 +140,13 @@ impl Boot {
             last = *ms;
         }
         let total_ms = ours.last().map_or(0.0, |s| s.1);
-        Boot { stages: ours, total_ms, firmware }
+        Boot { stages: ours, total_ms, firmware, vendor: String::new() }
+    }
+
+    /// The same, naming the firmware's maker.
+    pub fn with_vendor(mut self, vendor: &str) -> Boot {
+        self.vendor = String::from(vendor);
+        self
     }
 
     /// A stage's span as a share of the whole boot (0..=1): its meter.
@@ -146,12 +154,21 @@ impl Boot {
         if self.total_ms <= 0.0 { 0.0 } else { (self.stages[i].2 / self.total_ms) as f32 }
     }
 
-    /// "Firmware 4.1 s · Freally OS 1.2 s" when the firmware's times are known.
+    /// "Firmware (HP) 4.1 s · Freally OS 1.2 s" when the firmware's times are
+    /// known (TASK-073), its maker in brackets when the bootloader said.
     pub fn summary(&self) -> String {
         let secs = |ms: f64| alloc::format!("{:.1} s", ms / 1000.0);
+        let maker = if self.vendor.is_empty() { String::new() } else { alloc::format!(" ({})", self.vendor) };
         match self.firmware {
-            Some((_, f1)) => alloc::format!("Firmware {} · Freally OS {}", secs(f1), secs(self.total_ms)),
-            None => alloc::format!("Freally OS {} (this firmware doesn't report its own time)", secs(self.total_ms)),
+            Some((_, f1)) => alloc::format!("Firmware{maker} {} · Freally OS {}", secs(f1), secs(self.total_ms)),
+            None if self.vendor.is_empty() => {
+                alloc::format!("Freally OS {} (this firmware doesn't report its own time)", secs(self.total_ms))
+            }
+            None => alloc::format!(
+                "Freally OS {} (the {} firmware doesn't report its own time)",
+                secs(self.total_ms),
+                self.vendor
+            ),
         }
     }
 }
@@ -199,6 +216,36 @@ impl Log {
         s.dedup();
         s
     }
+}
+
+/// One row of Devices (TASK-075): where the device is, what it is, and the
+/// driver that took it ("—" when none has yet).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceRow {
+    pub at: String,
+    pub what: String,
+    pub driver: String,
+}
+
+/// Devices, as Monitor shows them: first what isn't on PCI (the firmware's
+/// framebuffer, the PS/2 controller, the serial ports), then every PCI
+/// function by address. `bound` is devmgr's (device, driver) list; `pci` is
+/// each function's address and what it is.
+pub fn device_rows(pci: &[(String, String)], bound: &[(String, String)]) -> Vec<DeviceRow> {
+    let driver = |at: &str| bound.iter().find(|(d, _)| d == at).map_or(String::from("—"), |(_, dr)| dr.clone());
+    let platform = |d: &str| match d {
+        "framebuffer" => "The screen the firmware set up",
+        "PS/2 controller" => "Keyboard and mouse controller (8042)",
+        d if d.starts_with("COM") => "Serial port",
+        _ => "Device",
+    };
+    let mut rows: Vec<DeviceRow> = bound
+        .iter()
+        .filter(|(d, _)| !pci.iter().any(|(at, _)| at == d))
+        .map(|(d, dr)| DeviceRow { at: d.clone(), what: String::from(platform(d)), driver: dr.clone() })
+        .collect();
+    rows.extend(pci.iter().map(|(at, what)| DeviceRow { at: at.clone(), what: what.clone(), driver: driver(at) }));
+    rows
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

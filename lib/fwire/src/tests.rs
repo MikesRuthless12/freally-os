@@ -225,7 +225,16 @@ fn every_devmgr_message_round_trips() {
         },
     );
     round_trip(d::TABLES, d::Tables { tables: vec![("APIC".to_string(), (0x3fb7_d000, 120))] });
-    round_trip(d::FIRMWARE_TIMES, d::FirmwareTimes { reset_end: 1, os_loader_start: 2 });
+    round_trip(d::FIRMWARE_TIMES, d::FirmwareTimes { reset_end: 1, os_loader_start: 2, vendor: "HP".to_string() });
+    round_trip(
+        d::SUMMARY,
+        d::Summary {
+            has_8042: true,
+            madt_cpus: 24,
+            hpet: false,
+            bound: vec![d::Bound { device: "00:02.0".to_string(), driver: "drv-gop-fb".to_string() }],
+        },
+    );
     round_trip(
         d::RESOURCES,
         d::Resources {

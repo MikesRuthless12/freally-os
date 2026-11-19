@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 name        = monitor
 binary      = /system/apps/monitor
-description = Shows every process, how the boot went, what crashed, and the log.
+description = Shows every process, how the boot went, what crashed, the log, and every device.
 start       = demand
-after       = logger, stage
+after       = logger, stage, devmgr
 restart     = on-failure
 class       = interactive
 grants      = fonts

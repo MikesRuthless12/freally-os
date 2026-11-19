@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "app-probe"
+description = "The probe (dev only): shows on screen everything Freally OS finds on a new machine, to be photographed."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "probe"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fedid.workspace = true
+ffont = { workspace = true, features = ["raster"] }
+fimage.workspace = true
+fstd.workspace = true
+fui = { workspace = true, features = ["ui"] }
+fwire.workspace = true
+
+[lints]
+workspace = true

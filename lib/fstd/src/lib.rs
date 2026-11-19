@@ -18,6 +18,7 @@ pub mod handle;
 pub mod inventory;
 pub mod ipc;
 pub mod log;
+pub mod machine;
 pub mod process;
 pub mod serial_json;
 pub mod service;
