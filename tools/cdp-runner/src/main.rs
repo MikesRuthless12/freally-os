@@ -435,14 +435,14 @@ impl Ctx {
             if cursor && !(ring(cx + 16, cy) && ring(cx - 16, cy) && ring(cx, cy + 16) && ring(cx, cy - 16)) {
                 diff += 1;
             }
-            // The Rack: its faceplate's top edge, and its middle (clear of the
-            // keys at the left and the clock at the right).
+            // The Rack: its faceplate's top edge, and 6 px below it (above the
+            // line the keys, the clock and a guest's notice sit on).
             let at = |x: usize, y: usize| {
                 let i = (y * w + x) * 3;
                 (shot.pixels[i] as u32) << 16 | (shot.pixels[i + 1] as u32) << 8 | shot.pixels[i + 2] as u32
             };
             let plate = |y: usize| art::rack("dark", (w as u32, RACK_H as u32), cx as i32, y as i32);
-            if cursor && (at(cx, h - RACK_H) != plate(0) || at(cx, h - RACK_H / 2) != plate(RACK_H / 2)) {
+            if cursor && (at(cx, h - RACK_H) != plate(0) || at(cx, h - RACK_H + 6) != plate(6)) {
                 diff += 1;
             }
             if diff == 0 {

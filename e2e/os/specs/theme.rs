@@ -83,7 +83,7 @@ fn surfaces(ctx: &mut Ctx, l: &Look) -> Result<(), String> {
     until_pixels(
         ctx,
         &format!("{}: the ground and the Rack", l.name),
-        &[(5, 5, art::ground(l.name, 5, 5)), (rack.2 / 2, rack.1, plate(0)), (rack.2 / 2, rack.1 + 28, plate(28))],
+        &[(5, 5, art::ground(l.name, 5, 5)), (rack.2 / 2, rack.1, plate(0)), (rack.2 / 2, rack.1 + 6, plate(6))],
     )?;
     for (sel, inside) in [(MON, l.surface), (TERM, l.bg)] {
         let id = until_q(ctx, sel)?;

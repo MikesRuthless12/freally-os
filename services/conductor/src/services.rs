@@ -835,6 +835,7 @@ mod tests {
     fn a_data_name_reaches_its_own_file_and_no_other() {
         assert_eq!(data_path("os:150").as_deref(), Some("/system/assets/os-150.fbnd"));
         assert_eq!(data_path("os:wallpaper").as_deref(), Some("/system/assets/os-wallpaper.fbnd"));
+        assert_eq!(data_path("os:wallpaper-orbit").as_deref(), Some("/system/assets/os-wallpaper-orbit.fbnd"));
         assert_eq!(data_path("hardware:300").as_deref(), Some("/system/assets/hardware-300.fbnd"));
         assert_eq!(data_path("font:NotoSans-Regular.ttf").as_deref(), Some("/system/fonts/NotoSans-Regular.ttf"));
         for bad in [

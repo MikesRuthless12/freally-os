@@ -617,15 +617,16 @@ fn run(_bootstrap: u32) -> i64 {
         to_clear: false,
     };
     acc.load();
+    let Ok((listen, give)) = Channel::pair() else { return 1 };
+    if fstd::service::register(give).is_err() {
+        return 1;
+    }
+    // Said once registered: a spec (and anyone reading the log) may ask at once.
     fstd::info!(
         "accounts: {} account(s){}",
         acc.records.len(),
         if acc.records.is_empty() { ": the welcome screen makes the first" } else { "" }
     );
-    let Ok((listen, give)) = Channel::pair() else { return 1 };
-    if fstd::service::register(give).is_err() {
-        return 1;
-    }
     let mut clients: Vec<(String, Channel)> = Vec::new();
     loop {
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];

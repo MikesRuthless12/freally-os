@@ -22,7 +22,8 @@ struct State {
     handles: Vec<(String, Handle)>,
     /// The data files mapped so far, by name: asked for again, the same bytes.
     mapped: Vec<(String, &'static [u8])>,
-    directory: Client,
+    /// None only while [`data_serving`] waits on it.
+    directory: Option<Client>,
 }
 
 struct Global(RefCell<Option<State>>);
@@ -46,8 +47,13 @@ pub fn start() -> Result<(), CallError> {
             handles.push((name, h));
         }
     }
-    *STATE.0.borrow_mut() =
-        Some(State { name: s.name, flavour: s.flavour, handles, mapped: Vec::new(), directory: Client::new(dir) });
+    *STATE.0.borrow_mut() = Some(State {
+        name: s.name,
+        flavour: s.flavour,
+        handles,
+        mapped: Vec::new(),
+        directory: Some(Client::new(dir)),
+    });
     Ok(())
 }
 
@@ -82,7 +88,7 @@ pub fn connect_within(name: &str, wait: Duration) -> Result<Channel, CallError> 
         let r = {
             let mut st = STATE.0.borrow_mut();
             let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
-            s.directory.call::<_, Connected>(
+            directory(s)?.call::<_, Connected>(
                 c::CONNECT,
                 &ByName { name: String::from(name) },
                 Vec::new(),
@@ -106,7 +112,7 @@ pub fn register(endpoint: Channel) -> Result<(), CallError> {
     let mut st = STATE.0.borrow_mut();
     let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
     let name = s.name.clone();
-    s.directory.call::<_, ()>(
+    directory(s)?.call::<_, ()>(
         c::REGISTER,
         &Register { name, endpoint: HandleRef(0) },
         alloc::vec![endpoint.0],
@@ -120,7 +126,7 @@ pub fn register(endpoint: Channel) -> Result<(), CallError> {
 pub fn stamp(stage: u8, tsc: u64) -> Result<(), CallError> {
     let mut st = STATE.0.borrow_mut();
     let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
-    s.directory.call::<_, ()>(c::STAMP, &Stamp { stage, tsc }, Vec::new(), Instant::after(Duration::from_secs(2)))?;
+    directory(s)?.call::<_, ()>(c::STAMP, &Stamp { stage, tsc }, Vec::new(), Instant::after(Duration::from_secs(2)))?;
     Ok(())
 }
 
@@ -130,23 +136,46 @@ pub fn font(file: &str) -> Result<&'static [u8], FErr> {
 }
 
 /// A data file a grant allows (`font:<file>`, handed over at start;
-/// `hardware:<pct>`, `os:<pct>`, `os:wallpaper`, asked of conductor the first
-/// time, TASK-090A): conductor writes its length (u64, little-endian) and
+/// `hardware:<pct>`, `os:<pct>`, `os:wallpaper[-<look>]`, asked of conductor
+/// the first time, TASK-090A): conductor writes its length (u64, little-endian) and
 /// then the file; mapped read-only for as long as the service runs, once.
 pub fn data(name: &str) -> Result<&'static [u8], FErr> {
+    map_data(name, |req| ask_moving::<_, ()>(c::DATA, req, Vec::new(), Duration::from_secs(5)))
+}
+
+/// As [`data`], but while conductor answers, `serve(i)` runs whenever a
+/// message waits on `others[i]`: for a service others may be waiting on
+/// meanwhile, conductor's test door among them (stage, asking for a
+/// wallpaper when it's first chosen: PRD § 3). The directory is out of the
+/// state while it waits, so `serve` asking conductor anything gets
+/// `BadState`, never a second borrow.
+pub fn data_serving(name: &str, others: &[u32], serve: impl FnMut(usize)) -> Result<&'static [u8], FErr> {
+    map_data(name, |req| {
+        let mut dir = STATE.0.borrow_mut().as_mut().and_then(|s| s.directory.take());
+        let Some(cl) = dir.as_mut() else { return Err(CallError::Sys(FErr::BadState)) };
+        let r = cl.call_serving::<_, ()>(c::DATA, req, Instant::after(Duration::from_secs(5)), others, serve);
+        if let Some(s) = STATE.0.borrow_mut().as_mut() {
+            s.directory = dir;
+        }
+        r
+    })
+}
+
+fn map_data(
+    name: &str,
+    ask: impl FnOnce(&ByName) -> Result<((), Vec<Handle>), CallError>,
+) -> Result<&'static [u8], FErr> {
     if let Some(bytes) = STATE.0.borrow().as_ref().and_then(|s| s.mapped.iter().find(|(n, _)| n == name).map(|m| m.1)) {
         return Ok(bytes);
     }
     let h = match take_handle(name) {
         Some(h) => h,
         None => {
-            let (_, mut hs) =
-                ask_moving::<_, ()>(c::DATA, &ByName { name: String::from(name) }, Vec::new(), Duration::from_secs(5))
-                    .map_err(|e| match e {
-                        CallError::Sys(e) => e,
-                        CallError::Remote(code, _) => FErr::from_code(code as i64),
-                        CallError::Wire(_) => FErr::InvalidArgs,
-                    })?;
+            let (_, mut hs) = ask(&ByName { name: String::from(name) }).map_err(|e| match e {
+                CallError::Sys(e) => e,
+                CallError::Remote(code, _) => FErr::from_code(code as i64),
+                CallError::Wire(_) => FErr::InvalidArgs,
+            })?;
             if hs.is_empty() {
                 return Err(FErr::NotFound);
             }
@@ -179,7 +208,7 @@ pub fn data(name: &str) -> Result<&'static [u8], FErr> {
 pub fn ask<Req: fwire::Wire, Rep: fwire::Wire>(ordinal: u32, req: &Req) -> Result<Rep, CallError> {
     let mut st = STATE.0.borrow_mut();
     let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
-    Ok(s.directory.call::<_, Rep>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(2)))?.0)
+    Ok(directory(s)?.call::<_, Rep>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(2)))?.0)
 }
 
 /// As [`ask`], moving `handles` along and waiting up to `wait` (a swap hands
@@ -192,7 +221,11 @@ pub fn ask_moving<Req: fwire::Wire, Rep: fwire::Wire>(
 ) -> Result<(Rep, Vec<Handle>), CallError> {
     let mut st = STATE.0.borrow_mut();
     let s = st.as_mut().ok_or(CallError::Sys(FErr::BadState))?;
-    s.directory.call::<_, Rep>(ordinal, req, handles, Instant::after(wait))
+    directory(s)?.call::<_, Rep>(ordinal, req, handles, Instant::after(wait))
+}
+
+fn directory(s: &mut State) -> Result<&mut Client, CallError> {
+    s.directory.as_mut().ok_or(CallError::Sys(FErr::BadState))
 }
 
 /// A VMO holding `bytes`' length (u64, little-endian) and then the bytes: how

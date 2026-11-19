@@ -183,11 +183,19 @@ pub fn keys(ctx: &mut Ctx) -> Result<(), String> {
             key(ctx, "ShiftLeft", false)?;
         }
     }
+    let opened = ctx.log_count("desktop: the launcher is open");
+    let closed = ctx.log_count("desktop: the launcher is closed");
     for (code, usage) in [("ControlLeft", 0xE0), ("AltLeft", 0xE2), ("MetaLeft", 0xE3), ("ShiftRight", 0xE5)] {
         key(ctx, code, true)?;
         key(ctx, code, false)?;
         ctx.expect_log(&format!("drv-i8042: key {usage:#04x} up"))?;
     }
+    // Meta alone is Super: it opened the launcher. Closed again, so the
+    // desktop is left as found (input.mouse's click would start an app).
+    ctx.expect_log_count("desktop: the launcher is open", opened + 1)?;
+    key(ctx, "Escape", true)?;
+    key(ctx, "Escape", false)?;
+    ctx.expect_log_count("desktop: the launcher is closed", closed + 1)?;
     for c in ' '..='~' {
         let want = format!(" down U+{:04X}", c as u32);
         if ctx.log_count(&want) == 0 {

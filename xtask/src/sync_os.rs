@@ -10,11 +10,12 @@
 //! - `os_bundle(pct)`: every piece of both themes but the wallpaper as FIMG
 //!   at `pct` percent (each piece's render scale and 9-slice insets from
 //!   `os.json`), one bundle for each scale the OS offers (TASK-090A).
-//! - `wallpaper_bundle()`: both themes' wallpapers whole, at the size they
+//! - `wallpaper_bundles()`: both themes' wallpapers whole, at the size they
 //!   were rendered (2560 × 1600); stage brings them down to the screen with
-//!   an area filter, never up on a screen no larger. Beside the studio wall
-//!   (`wallpaper`), each other look Settings offers (TASK-104):
-//!   `wallpaper-<look>.png`, rendered as the wall is.
+//!   an area filter, never up on a screen no larger. One bundle a look (PRD
+//!   § 3): `wallpaper` (the studio wall), and each other look Settings offers
+//!   (TASK-104), `wallpaper-<look>.png`, rendered as the wall is, so a
+//!   service maps only the looks it shows.
 
 use crate::util;
 use fjson::Value;
@@ -127,23 +128,35 @@ pub fn os_bundle(pct: u32) -> Result<Vec<u8>, String> {
 
 /// Both themes' wallpapers, each at its render's own size: `dark/wallpaper`,
 /// `light/wallpaper`.
-pub fn wallpaper_bundle() -> Result<Vec<u8>, String> {
+pub fn wallpaper_bundles() -> Result<Vec<(String, Vec<u8>)>, String> {
     let (_, scale, slice) = pieces()?.into_iter().find(|(p, ..)| p == "wallpaper").ok_or("os.json has no wallpaper")?;
     let dir = copy_dir();
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    for theme in THEMES {
-        let mut names = vec![String::from("wallpaper")];
-        names.extend(looks(&dir.join(theme))?);
-        for piece in names {
-            let png = std::fs::read(dir.join(theme).join(format!("{piece}.png")))
-                .map_err(|e| format!("assets/os/{theme}/{piece}.png: {e}"))?;
+    let mut out = Vec::new();
+    for (stem, pieces) in wallpaper_files(looks(&dir.join(THEMES[0]))?) {
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        for piece in pieces {
+            let png =
+                std::fs::read(dir.join(format!("{piece}.png"))).map_err(|e| format!("assets/os/{piece}.png: {e}"))?;
             let fimg = fimage::fimg::from_png(&png, scale * 100, scale, slice)
-                .map_err(|e| format!("{theme}/{piece} at {} %: {e}", scale * 100))?;
-            files.push((format!("{theme}/{piece}"), fimg));
+                .map_err(|e| format!("{piece} at {} %: {e}", scale * 100))?;
+            files.push((piece, fimg));
         }
+        let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+        out.push((stem, fimage::bundle::build(&refs)));
     }
-    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
-    Ok(fimage::bundle::build(&refs))
+    Ok(out)
+}
+
+/// Each wallpaper file's stem and its pieces: the studio wall's, then one for
+/// each other look, both themes in every one.
+fn wallpaper_files(looks: Vec<String>) -> Vec<(String, Vec<String>)> {
+    core::iter::once(String::from("wallpaper"))
+        .chain(looks)
+        .map(|stem| {
+            let pieces = THEMES.iter().map(|t| format!("{t}/{stem}")).collect();
+            (stem, pieces)
+        })
+        .collect()
 }
 
 /// The other looks rendered for a theme: `wallpaper-<look>`, sorted.
@@ -176,4 +189,18 @@ fn bundle_of(which: impl Fn(&str) -> bool, at: impl Fn(u32) -> u32) -> Result<Ve
     }
     let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     Ok(fimage::bundle::build(&refs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wallpaper_files;
+
+    #[test]
+    fn each_look_is_a_file_of_its_own() {
+        let files = wallpaper_files(vec![String::from("wallpaper-circuit"), String::from("wallpaper-orbit")]);
+        let stems: Vec<&str> = files.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(stems, ["wallpaper", "wallpaper-circuit", "wallpaper-orbit"]);
+        assert_eq!(files[0].1, ["dark/wallpaper", "light/wallpaper"], "the studio wall's file holds it alone");
+        assert_eq!(files[2].1, ["dark/wallpaper-orbit", "light/wallpaper-orbit"]);
+    }
 }

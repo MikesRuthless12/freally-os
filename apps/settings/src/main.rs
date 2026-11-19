@@ -309,16 +309,17 @@ impl App {
             return v.clone();
         }
         let theme = if t.mode == Mode::Light { "light" } else { "dark" };
-        let walls = fstd::service::data("os:wallpaper").ok().and_then(|b| Bundle::parse(b).ok());
+        // One file a look (PRD § 3), each taken the first time it's drawn.
         let v: Vec<Option<Vec<u32>>> = st::WALLPAPERS
             .iter()
             .map(|look| {
-                let name = if *look == "studio" {
-                    alloc::format!("{theme}/wallpaper")
+                let (file, name) = if *look == "studio" {
+                    (String::from("os:wallpaper"), alloc::format!("{theme}/wallpaper"))
                 } else {
-                    alloc::format!("{theme}/wallpaper-{look}")
+                    (alloc::format!("os:wallpaper-{look}"), alloc::format!("{theme}/wallpaper-{look}"))
                 };
-                let f = walls.as_ref()?.get(&name)?;
+                let walls = fstd::service::data(&file).ok().and_then(|b| Bundle::parse(b).ok())?;
+                let f = walls.get(&name)?;
                 fimage::fimg::parse(f).ok().map(|img| fimage::blit::cover(&img, tw, th))
             })
             .collect();

@@ -88,6 +88,9 @@ struct Stage {
     /// The desktop's shortcuts channel, once it subscribes.
     shortcuts: Option<Channel>,
     stamped: bool,
+    /// Taking a wallpaper's file: a client that goes meanwhile is dropped
+    /// after, its channel being among those `take_look` waits on.
+    fetching: bool,
     /// The OS's renders (TASK-052), when the image carries them.
     art: Option<Art>,
     /// The screensaver's timer (TASK-077C).
@@ -137,13 +140,17 @@ fn screen() -> Result<Screen, String> {
 struct Art {
     /// Every scale's bundle, taken at start-up: conductor's test door may be
     /// waiting on stage at any moment after it registers, so stage never
-    /// waits on conductor then.
+    /// waits on conductor then (a wallpaper's file excepted: `take_look`).
     scales: Vec<(u16, Bundle<'static>)>,
     bundle: Bundle<'static>,
-    walls: Bundle<'static>,
-    /// The wallpaper chosen (TASK-104): `studio`, `circuit`, `orbit` or
-    /// `connected`, each the piece `<theme>/wallpaper[-<look>]`.
+    /// The wallpaper files taken so far, by look (PRD § 3, one file a look):
+    /// Studio's at start-up, another look's when it's first chosen.
+    walls: Vec<(String, Bundle<'static>)>,
+    /// The wallpaper on the screen (TASK-104): `studio`, `circuit`, `orbit`
+    /// or `connected`, each the piece `<theme>/wallpaper[-<look>]`.
     look: String,
+    /// A look chosen whose file stage hasn't taken yet.
+    wanted: Option<String>,
     dark: Option<compose::ThemeArt<'static>>,
     light: Option<compose::ThemeArt<'static>>,
 }
@@ -170,8 +177,9 @@ impl Art {
         Some(Art {
             scales,
             bundle,
-            walls: os_bundle("os:wallpaper")?,
+            walls: alloc::vec![(String::from("studio"), os_bundle("os:wallpaper")?)],
             look: String::from("studio"),
+            wanted: None,
             dark: None,
             light: None,
         })
@@ -195,12 +203,30 @@ impl Art {
         }
     }
 
+    /// Shows `look` if its file is taken (true); else it's wanted, and the
+    /// main loop takes it (`Stage::take_look`).
+    fn choose(&mut self, look: &str) -> bool {
+        if !self.walls.iter().any(|(l, _)| l == look) {
+            self.wanted = Some(String::from(look));
+            return false;
+        }
+        self.wanted = None;
+        self.look = String::from(look);
+        self.dark = None;
+        self.light = None;
+        true
+    }
+
     fn for_theme(&mut self, mode: Mode, w: u32, h: u32) -> Option<&compose::ThemeArt<'static>> {
         let (name, slot) = if mode == Mode::Light { ("light", &mut self.light) } else { ("dark", &mut self.dark) };
         if slot.is_none() {
             // A look this image has no render of falls back to studio.
-            let chosen = alloc::format!("wallpaper-{}", self.look);
-            let wall = piece(&self.walls, name, &chosen).or_else(|| piece(&self.walls, name, "wallpaper"))?;
+            let wall = self
+                .walls
+                .iter()
+                .find(|(l, _)| *l == self.look)
+                .and_then(|(l, b)| piece(b, name, &alloc::format!("wallpaper-{l}")))
+                .or_else(|| piece(&self.walls.first()?.1, name, "wallpaper"))?;
             let (strip, strip_focused) =
                 (piece(&self.bundle, name, "title_strip")?, piece(&self.bundle, name, "title_strip_focused")?);
             *slot = Some(compose::ThemeArt { ground: fimage::blit::cover(&wall, w, h), strip, strip_focused });
@@ -213,7 +239,11 @@ impl Art {
     #[cfg(any(feature = "flavour-dev", feature = "flavour-e2e"))]
     fn guard(&self) {
         if let Some((n, u)) = fimage::guard::take() {
-            let name = self.bundle.name_of(u.pixels).or(self.walls.name_of(u.pixels)).unwrap_or("a picture");
+            let name = self
+                .bundle
+                .name_of(u.pixels)
+                .or_else(|| self.walls.iter().find_map(|(_, b)| b.name_of(u.pixels)))
+                .unwrap_or("a picture");
             fstd::error!("stage: not crisp: {}, {n} time(s)", fimage::guard::describe(name, &u));
         }
     }
@@ -278,6 +308,7 @@ fn run(_bootstrap: u32) -> i64 {
         scale_auto: true,
         shortcuts: None,
         stamped: false,
+        fetching: false,
         art: Art::load(pct),
         screen,
     };
@@ -319,6 +350,9 @@ fn run(_bootstrap: u32) -> i64 {
             Err(FErr::TimedOut) => {}
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),
         }
+        if let Some(look) = s.art.as_ref().and_then(|a| a.wanted.clone()) {
+            s.take_look(&look, &listen, keys.as_ref());
+        }
         if s.idle.start_if_due(Instant::now().as_ns()) {
             s.saver(true);
         }
@@ -347,6 +381,7 @@ impl Stage {
             match self.conns[i].ch.try_recv() {
                 Ok(m) => self.request(i, m),
                 Err(FErr::ShouldWait) => return,
+                Err(_) if self.fetching => return,
                 Err(_) => {
                     let gone = self.conns.remove(i);
                     for id in self.desk.windows.owned_by(gone.id) {
@@ -731,16 +766,52 @@ impl Stage {
         self.apply(out);
     }
 
-    /// Another wallpaper (TASK-104): both themes' grounds made again.
+    /// Another wallpaper (TASK-104): both themes' grounds made again, once
+    /// its file is taken (`take_look`, the first time it's chosen).
     fn set_wallpaper(&mut self, name: &str) {
-        self.wallpaper = st::WALLPAPERS.iter().position(|w| *w == name).unwrap_or(0) as u8;
-        if let Some(a) = self.art.as_mut() {
-            a.look = String::from(name);
-            a.dark = None;
-            a.light = None;
+        if self.art.as_mut().is_some_and(|a| !a.choose(name)) {
+            return;
         }
+        self.wallpaper = st::WALLPAPERS.iter().position(|w| *w == name).unwrap_or(0) as u8;
         fstd::info!("stage: the wallpaper is {name}");
         self.damage(self.back.rect());
+    }
+
+    /// Asks conductor for `look`'s file (PRD § 3), answering every client
+    /// while it waits: conductor's test door may be one, waiting on stage.
+    fn take_look(&mut self, look: &str, listen: &Channel, keys: Option<&Channel>) {
+        let mut others = alloc::vec![listen.0.raw()];
+        others.extend(keys.map(|k| k.0.raw()));
+        let first_conn = others.len();
+        others.extend(self.conns.iter().map(|c| c.ch.0.raw()));
+        self.fetching = true;
+        let got = fstd::service::data_serving(&alloc::format!("os:wallpaper-{look}"), &others, |i| {
+            if i == 0 {
+                while let Ok(m) = listen.try_recv() {
+                    self.incoming(m);
+                }
+            } else if i < first_conn {
+                while let Some(Ok(m)) = keys.map(|k| k.try_recv()) {
+                    self.input(&m.bytes);
+                }
+            } else if let Some(at) = self.conns.iter().position(|c| c.ch.0.raw() == others[i]) {
+                self.serve(at);
+            }
+        });
+        self.fetching = false;
+        let Some(a) = self.art.as_mut() else { return };
+        match got.map(Bundle::parse) {
+            Ok(Ok(b)) => a.walls.push((String::from(look), b)),
+            Ok(Err(_)) => fstd::error!("stage: the {look} wallpaper's file is unreadable"),
+            Err(e) => fstd::error!("stage: the {look} wallpaper: {}", e.describe()),
+        }
+        // Chosen again meanwhile (another look, perhaps): that one's next.
+        if a.wanted.as_deref() == Some(look) {
+            a.wanted = None;
+            if a.walls.iter().any(|(l, _)| l == look) {
+                self.set_wallpaper(look);
+            }
+        }
     }
 
     /// What the screen shows now (TASK-104).

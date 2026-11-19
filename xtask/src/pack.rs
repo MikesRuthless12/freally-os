@@ -123,7 +123,9 @@ pub fn pack_as(
         b.add(&format!("/system/assets/hardware-{pct}.fbnd"), Kind::Asset, 0, hardware_bundle(pct)?);
         b.add(&format!("/system/assets/os-{pct}.fbnd"), Kind::Asset, 0, crate::sync_os::os_bundle(pct)?);
     }
-    b.add("/system/assets/os-wallpaper.fbnd", Kind::Asset, 0, crate::sync_os::wallpaper_bundle()?);
+    for (stem, bundle) in crate::sync_os::wallpaper_bundles()? {
+        b.add(&format!("/system/assets/os-{stem}.fbnd"), Kind::Asset, 0, bundle);
+    }
     let elf = std::fs::read(kernel).map_err(|e| format!("{}: {e} (build it: cargo xtask build)", kernel.display()))?;
     b.add("/system/kernel", Kind::Kernel, 0, elf);
     for (path, kind, elf) in user {
