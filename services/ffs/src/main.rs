@@ -65,6 +65,15 @@ impl Store for BlockStore {
         self.call::<_, ()>(blk::WRITE, &blk::Write { partition: String::from(PARTITION), block, bytes: buf.to_vec() })
     }
 
+    /// One message for the run (drv-nvme takes up to 15 blocks a write).
+    fn write_run(&mut self, first: u64, bufs: &[&[u8; BLOCK]]) -> Result<(), FsError> {
+        let mut bytes = Vec::with_capacity(bufs.len() * BLOCK);
+        for b in bufs {
+            bytes.extend_from_slice(&b[..]);
+        }
+        self.call::<_, ()>(blk::WRITE, &blk::Write { partition: String::from(PARTITION), block: first, bytes })
+    }
+
     fn flush(&mut self) -> Result<(), FsError> {
         self.call::<_, ()>(blk::FLUSH, &())
     }
@@ -211,6 +220,15 @@ fn handle(v: &mut Volume<BlockStore>, ordinal: u32, p: &[u8]) -> Result<Vec<u8>,
         f::RENAME => {
             let r: f::Rename = arg(p)?;
             ok(v.rename(r.sv, r.dir, &r.name, r.to_dir, &r.to_name))
+        }
+        f::CLONE => {
+            let c: f::CloneFile = arg(p)?;
+            let ino = v.clone_file(c.sv, c.src, c.dir, &c.name).map_err(ferr)?;
+            Ok(fwire::to_payload(&f::Entry { ino, kind: f::FILE }))
+        }
+        f::SET_MODIFIED => {
+            let t: f::Times = arg(p)?;
+            ok(v.set_modified(t.sv, t.ino, t.modified_ns))
         }
         f::FSYNC => ok(v.fsync()),
         f::SNAPSHOT => {

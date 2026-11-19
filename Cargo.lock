@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "app-calculator"
+version = "0.4.0"
+dependencies = [
+ "fapp",
+ "fcore-abi",
+ "fdecimal",
+ "fimage",
+ "fstd",
+ "fui",
+ "fwire",
+]
+
+[[package]]
 name = "app-editor"
 version = "0.4.0"
 
@@ -65,6 +78,7 @@ dependencies = [
  "app-session",
  "fapp",
  "fcore-abi",
+ "fedid",
  "fimage",
  "fstd",
  "fui",
@@ -194,6 +208,10 @@ version = "0.4.0"
 
 [[package]]
 name = "fcrypto"
+version = "0.4.0"
+
+[[package]]
+name = "fdecimal"
 version = "0.4.0"
 
 [[package]]
@@ -438,6 +456,7 @@ name = "svc-vfs"
 version = "0.4.0"
 dependencies = [
  "fcore-abi",
+ "fcrypto",
  "fstd",
  "fwire",
 ]
@@ -460,5 +479,6 @@ dependencies = [
  "fsvc",
  "fui",
  "fwire",
+ "svc-ffs",
  "svc-stage",
 ]

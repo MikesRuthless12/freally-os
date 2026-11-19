@@ -52,6 +52,9 @@ pub struct VmOptions {
     /// The GPT disk kept as the last start left it (the crash test's cold
     /// restarts), instead of made again from the ESP folder.
     pub keep_disk: bool,
+    /// An account carried in before the first boot (TASK-106): its bundle
+    /// taken from this disk (another VM's), for this user.
+    pub carry: Option<(PathBuf, String)>,
 }
 
 impl VmOptions {
@@ -73,6 +76,7 @@ impl VmOptions {
             cmdline: None,
             gpt: false,
             keep_disk: false,
+            carry: None,
         }
     }
 
@@ -247,6 +251,9 @@ pub fn start_built(o: &VmOptions, built: &Built) -> Result<Child, String> {
     }
     if o.gpt && !(o.keep_disk && o.dir().join("disk.img").exists()) {
         crate::image::disk_from_esp(&esp, &o.dir().join("disk.img"), crate::image::DATA_MIB)?;
+        if let Some((from, user)) = &o.carry {
+            crate::carry::carry(from, user, &o.dir().join("disk.img"))?;
+        }
     }
     let _ = std::fs::remove_file(o.qmp_socket());
     qemu(o, &esp).spawn().map_err(|e| format!("can't start QEMU: {e}"))

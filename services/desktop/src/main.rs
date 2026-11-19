@@ -344,6 +344,14 @@ impl Desktop {
                 },
                 shortcut: "Super+E",
             },
+            Known {
+                app: App {
+                    name: String::from("Calculator"),
+                    description: String::from("Exact sums, standard and scientific, with a history."),
+                    service: String::from("calculator"),
+                },
+                shortcut: "",
+            },
         ];
         let mut keys = alloc::vec![Key::Launcher];
         for (i, k) in known.iter().enumerate() {

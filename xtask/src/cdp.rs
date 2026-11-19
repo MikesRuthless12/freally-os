@@ -155,6 +155,14 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
             Some(other) => return Err(format!("setup {setup}: slot_b is crash-test or same, not {other:?}")),
             None => None,
         };
+        // An account carried from another setup's disk (TASK-106): that
+        // setup's VM ran first in this leg (or an earlier one).
+        if let Some(c) = s.get("carry") {
+            let from = c.get("from").and_then(Value::as_str).ok_or(format!("setup {setup}: carry needs from"))?;
+            let user = c.get("user").and_then(Value::as_str).ok_or(format!("setup {setup}: carry needs user"))?;
+            let disk = VmOptions::new(flavour, &format!("cdp-{from}")).dir().join("disk.img");
+            o.carry = Some((disk, String::from(user)));
+        }
         if let Some(from) = s.get("image_from").and_then(Value::as_str) {
             o.image_override = Some(build::build(crate::pack::parse_flavour(from)?)?.image);
         }

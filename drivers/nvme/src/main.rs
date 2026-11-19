@@ -17,7 +17,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use drv_nvme::interlock::Interlock;
 use drv_nvme::{Command, Completion, Ring, cq_doorbell, reg, sq_doorbell};
-use fcore_abi::{FErr, cache, perm, signal, well_known};
+use fcore_abi::{FErr, cache, perm, signal, syscall as nr, well_known};
 use fstd::handle::Handle;
 use fstd::ipc::{Channel, Client};
 use fstd::time::{Duration, Instant};
@@ -57,7 +57,12 @@ struct Queue {
     ring: Ring,
 }
 
+/// Commands whose completion woke the driver by interrupt (TASK-092A).
+static WOKEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 struct Nvme {
+    /// MSI-X's line (TASK-092A): completions wake the driver; `None`, polled.
+    irq: Option<Handle>,
     regs: u64,
     /// The function's PCI configuration page.
     config: u64,
@@ -145,6 +150,7 @@ impl Nvme {
             core::ptr::write_volatile((regs + sq_doorbell(cap, q.qid) as u64) as *mut u32, q.ring.sq_tail as u32)
         };
         let until = Instant::now().as_ns() + 5_000_000_000;
+        let irq = self.irq.as_ref().map(Handle::raw);
         let mut spins = 0u32;
         loop {
             let mut raw = [0u8; 16];
@@ -182,11 +188,23 @@ impl Nvme {
                     cmd.opcode
                 ));
             }
-            spins += 1;
-            if spins.is_multiple_of(256) {
-                fstd::time::sleep(Duration::from_millis(1));
-            } else {
-                core::hint::spin_loop();
+            match irq {
+                // The completion's interrupt wakes it (and, should one go missing, 10 ms does).
+                Some(h) => {
+                    let wake = (Instant::now().as_ns() + 10_000_000).min(until);
+                    if fstd::sys::wait_one(h, signal::SIGNALED, wake).is_ok() {
+                        WOKEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    }
+                    let _ = fstd::sys::call1(nr::INTERRUPT_ACK, [h as u64, 0, 0, 0, 0, 0]);
+                }
+                None => {
+                    spins += 1;
+                    if spins.is_multiple_of(256) {
+                        fstd::time::sleep(Duration::from_millis(1));
+                    } else {
+                        core::hint::spin_loop();
+                    }
+                }
             }
         }
     }
@@ -233,6 +251,74 @@ impl Nvme {
     }
 }
 
+/// MSI-X on (TASK-092A): the capability found in the configuration page,
+/// entry 0 of its table given the kernel's vector, legacy INTx off. Its
+/// line and vector; `None` (the driver polls, as before) if something's
+/// missing.
+fn msix(registers: &Handle, table_page: Option<&Handle>, cap: u64, bar0: u64, config: u64) -> Option<(Handle, u32)> {
+    // SAFETY: offsets inside the function's 4 KiB configuration page, mapped.
+    let rd = |o: u64, n: u32| unsafe {
+        match n {
+            1 => core::ptr::read_volatile((config + o) as *const u8) as u32,
+            2 => core::ptr::read_volatile((config + o) as *const u16) as u32,
+            _ => core::ptr::read_volatile((config + o) as *const u32),
+        }
+    };
+    // SAFETY: as above.
+    let wr16 = |o: u64, v: u16| unsafe { core::ptr::write_volatile((config + o) as *mut u16, v) };
+    // devmgr found the capability (and granted the table's page).
+    let at = cap;
+    if rd(at, 1) != 0x11 {
+        fstd::warn!("drv-nvme: no MSI-X capability at {at:#x}: completions are polled");
+        return None;
+    }
+    let control = rd(at + 2, 2) as u16;
+    let table = rd(at + 4, 4);
+    if table & 7 != 0 {
+        fstd::info!("drv-nvme: the MSI-X table isn't in BAR 0: completions are polled");
+        return None;
+    }
+    let offset = (table & !7) as u64;
+    let page = offset & !0xFFF;
+    // The table's page: inside the registers' grant, or its own.
+    let grant = if page < 0x2000 { Some(registers) } else { table_page };
+    let Some(grant) = grant else {
+        fstd::info!("drv-nvme: devmgr granted no MSI-X table: completions are polled");
+        return None;
+    };
+    let mapped = match map_mmio(grant, bar0 + page, 4096) {
+        Ok(m) => m,
+        Err(e) => {
+            fstd::warn!("drv-nvme: the MSI-X table: {e}: completions are polled");
+            return None;
+        }
+    };
+    let entry = mapped + (offset - page);
+    let (h, message) = match fstd::sys::call(nr::INTERRUPT_BIND_MSI, [registers.raw() as u64, 0, 0, 0, 0, 0]) {
+        Ok(r) => r,
+        Err(e) => {
+            fstd::warn!("drv-nvme: no MSI-X vector ({}): completions are polled", e.describe());
+            return None;
+        }
+    };
+    let Some(line) = Handle::from_raw(h as u32) else {
+        fstd::warn!("drv-nvme: the kernel gave MSI-X no handle: completions are polled");
+        return None;
+    };
+    let (address, data) = (message as u32, (message >> 32) as u32);
+    // SAFETY: entry 0 of the table (16 bytes), mapped above.
+    unsafe {
+        core::ptr::write_volatile(entry as *mut u32, address);
+        core::ptr::write_volatile((entry + 4) as *mut u32, 0);
+        core::ptr::write_volatile((entry + 8) as *mut u32, data);
+        core::ptr::write_volatile((entry + 12) as *mut u32, 0);
+    }
+    // Enabled, the function unmasked; INTx off (command bit 10).
+    wr16(at + 2, (control | 1 << 15) & !(1 << 14));
+    wr16(4, rd(4, 2) as u16 | 1 << 10);
+    Some((line, data))
+}
+
 fn open() -> Result<Nvme, String> {
     let devmgr = fstd::service::connect("devmgr").map_err(|e| alloc::format!("devmgr: {e:?}"))?;
     let mut client = Client::new(devmgr);
@@ -249,6 +335,17 @@ fn open() -> Result<Nvme, String> {
     };
     let regs = map_mmio(&handles[ri], value(&r, "bar0"), 0x2000)?;
     let config = map_mmio(&handles[ci], value(&r, "config"), 4096)?;
+    let irq = match r.values.iter().find(|(n, _)| n == "msix-cap") {
+        Some(&(_, cap)) => msix(&handles[ri], take("msix-table").map(|i| &handles[i]), cap, value(&r, "bar0"), config),
+        None => {
+            fstd::info!("drv-nvme: no MSI-X capability: completions are polled");
+            None
+        }
+    };
+    match &irq {
+        Some((_, vector)) => fstd::info!("drv-nvme: MSI-X on: completions interrupt on vector {vector}"),
+        None => fstd::info!("drv-nvme: polling completions"),
+    }
     // Memory space and bus mastering on (the command register, offset 4).
     // SAFETY: the function's configuration page, mapped.
     unsafe {
@@ -262,6 +359,7 @@ fn open() -> Result<Nvme, String> {
         Ok(Queue { qid, sq: Dma::new(4096)?, cq: Dma::new(4096)?, ring: Ring::new(entries) })
     };
     let mut n = Nvme {
+        irq: irq.map(|(h, _)| h),
         regs,
         config,
         cap,
@@ -293,7 +391,23 @@ fn open() -> Result<Nvme, String> {
     n.w32(reg::CC, drv_nvme::CC_ENABLE);
     n.wait_ready(true)?;
     let page = Dma::new(4096)?;
-    n.run(false, Command::identify(1, 0, page.phys))?;
+    // A cold start can leave QEMU's controller deaf to its first command
+    // (TASK-092A): reset once and ask again.
+    if let Err(e) = n.run(false, Command::identify(1, 0, page.phys)) {
+        fstd::warn!("drv-nvme: {e}: resetting the controller and asking again");
+        n.w32(reg::CC, 0);
+        n.wait_ready(false)?;
+        n.admin.ring = Ring::new(entries);
+        // SAFETY: the admin completion queue's page, ours: its old phase bits cleared.
+        unsafe { core::ptr::write_bytes(n.admin.cq.va as *mut u8, 0, 4096) };
+        n.w32(reg::AQA, size << 16 | size);
+        n.w64(reg::ASQ, n.admin.sq.phys);
+        n.w64(reg::ACQ, n.admin.cq.phys);
+        n.w32(reg::CC, drv_nvme::CC_ENABLE);
+        n.wait_ready(true)?;
+        n.run(false, Command::identify(1, 0, page.phys))?;
+        fstd::info!("drv-nvme: the controller answered after a reset");
+    }
     // SAFETY: the page the controller just filled.
     let id = unsafe { core::slice::from_raw_parts(page.va as *const u8, 4096) };
     let (model, serial, fw) = drv_nvme::identify_controller(id);
@@ -306,7 +420,12 @@ fn open() -> Result<Nvme, String> {
     (n.blocks, n.block) = (blocks, block);
     // One I/O queue pair: completions first.
     let io = queue(1)?;
-    n.run(false, Command::create_cq(1, entries as u32, io.cq.phys))?;
+    let cq = if n.irq.is_some() {
+        Command::create_cq_irq(1, entries as u32, io.cq.phys, 0)
+    } else {
+        Command::create_cq(1, entries as u32, io.cq.phys)
+    };
+    n.run(false, cq)?;
     n.run(false, Command::create_sq(1, entries as u32, io.sq.phys))?;
     n.io = Some(io);
     fstd::info!(
@@ -314,6 +433,12 @@ fn open() -> Result<Nvme, String> {
     );
     n.model = alloc::format!("{model} {serial}");
     (n.interlock, n.parts) = read_gpt(&mut n);
+    if n.irq.is_some() {
+        fstd::info!(
+            "drv-nvme: {} command(s) so far woken by their interrupt",
+            WOKEN.load(core::sync::atomic::Ordering::Relaxed)
+        );
+    }
     Ok(n)
 }
 

@@ -596,6 +596,15 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             let line = crate::hw::bind(a1 as u32, a2 as u16)?;
             one(add_handle(Arc::new(Object::Interrupt(line)), rights::WAIT | rights::MANAGE)?)
         }
+        nr::INTERRUPT_BIND_MSI => {
+            let r = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
+            if r.kind != crate::obj::ResourceKind::Mmio {
+                return Err(FErr::AccessDenied);
+            }
+            let (line, address, data) = crate::hw::bind_msi()?;
+            let h = add_handle(Arc::new(Object::Interrupt(line)), rights::WAIT | rights::MANAGE)?;
+            Ok((h, address as u64 | (data as u64) << 32))
+        }
         nr::INTERRUPT_ACK => {
             let h = handle(a0, rights::MANAGE)?;
             let Object::Interrupt(l) = &*h.object else { return Err(FErr::WrongType) };

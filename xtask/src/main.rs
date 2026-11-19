@@ -8,7 +8,9 @@ mod boot_check;
 mod brain_swap;
 mod brain_test;
 mod build;
+mod carry;
 mod cdp;
+mod ceremony;
 mod ci;
 mod ci_linux;
 mod crash_test;
@@ -39,7 +41,8 @@ const HELP: &str = "\
 cargo xtask <command>
 
   doctor                         is this machine ready? (KVM, QEMU, OVMF, toolchain, keys)
-  keygen --dev --staging         make the signing keys in ~/.freally-keys/ (never --release)
+  keygen --dev --staging         make the signing keys in ~/.freally-keys/
+  keygen --release --to <drive>  the key ceremony (K2): offline, onto a USB drive, sealed
   build --flavour F              the bootloader and the signed image for release, dev or e2e
   build --probe                  the probe image (dev, no desktop): what a new machine has, on screen
   run --flavour F [--headless]   build and boot it in QEMU (KVM), COM1 log, QMP socket (--probe: the probe; --gpt: a GPT disk on NVMe)

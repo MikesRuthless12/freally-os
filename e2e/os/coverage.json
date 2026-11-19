@@ -15,6 +15,7 @@
     "e2e-panel-16": { "flavour": "e2e", "edid": "panel-16" },
     "e2e-gpt": { "flavour": "e2e", "gpt": true },
     "e2e-gpt-session": { "flavour": "e2e", "gpt": true },
+    "e2e-gpt-carry": { "flavour": "e2e", "gpt": true, "carry": { "from": "e2e-gpt-session", "user": "carol" } },
     "e2e-gpt-power": { "flavour": "e2e", "gpt": true },
     "e2e-gpt-ab": { "flavour": "e2e", "gpt": true, "slot_b": "crash-test" },
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
@@ -454,6 +455,69 @@
       "setup": "e2e-gpt-session",
       "spec": "e2e/os/specs/files.rs",
       "what": "A row dragged onto a folder in its own window moves into it; Ctrl+N opens a second window; a row dragged onto the other window (stage carries it) moves into the folder it shows; Alt+F4 closes each."
+    },
+    {
+      "id": "files.copy.paste",
+      "task": "TASK-105A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "Ctrl+C a folder, Ctrl+V into another: copied whole by reflink (vfs says so); Ctrl+X and Ctrl+V move it; Ctrl+Z puts it back."
+    },
+    {
+      "id": "files.copy.conflict",
+      "task": "TASK-105A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "A folder pasted where its files are: each taken name asks; Skip; Let me decide for each file (both boxes: Keep both; only the one there: Skip); again with Do this for all conflicts and Replace."
+    },
+    {
+      "id": "settings.hardware",
+      "task": "TASK-111",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "Settings ▸ About's hardware report: Copy puts it on stage's clipboard (read back: every section, the NVMe disk's driver, the memory, the processor's features); Save writes it to Home ▸ Exports ▸ hardware-report.txt (read back through the Terminal)."
+    },
+    {
+      "id": "apps.calculator",
+      "task": "TASK-112",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/calculator.rs",
+      "what": "The Calculator from the launcher: every key of both pads pressed in sums checked on the display (0.1 + 0.2 = 0.3, 1 ÷ 3 to 32 digits, the error words), degrees and radians, the keyboard (typed, Enter, Backspace, Escape), Copy and Paste through stage's clipboard (read back from stage), the history recalled and cleared, back to standard, closed with Alt+F4."
+    },
+    {
+      "id": "files.copy.pause",
+      "task": "TASK-105A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "A 48 MiB file pasted with verify (Ctrl+Shift+V, through the buffer): the copy window, More details (the speed graph), Pause (nothing moves for 1.5 s) and Resume, done at its size; another cancelled part-way leaves no half file."
+    },
+    {
+      "id": "files.copy.drag",
+      "task": "TASK-105A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "A row dragged onto a folder with Ctrl held is copied through the engine; the source stays."
+    },
+    {
+      "id": "bench.copy",
+      "task": "TASK-105A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "cargo xtask bench copy: a 64 MiB file by reflink and through the buffer read back (MB/s), 200 files of 4 KiB both ways (files/s), through mkfile and cp, in QEMU."
+    },
+    {
+      "id": "accounts.move_out",
+      "task": "TASK-106",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "VM A: an account (carol) with a few files, exported and logged out; the leg carries its bundle to VM B's disk, as a shared disk would."
+    },
+    {
+      "id": "accounts.move",
+      "task": "TASK-106",
+      "setup": "e2e-gpt-carry",
+      "spec": "e2e/os/specs/accounts.rs",
+      "what": "VM B, a new disk holding only the carried bundle: Welcome's Import an account (the file, its password, the preview, Import); the account is the Owner, logged in, and every file it had is there, word for word."
     },
 
     {

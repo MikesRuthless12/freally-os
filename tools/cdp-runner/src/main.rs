@@ -23,6 +23,8 @@ mod a11y;
 mod accounts;
 #[path = "../../../e2e/os/specs/boot.rs"]
 mod boot;
+#[path = "../../../e2e/os/specs/calculator.rs"]
+mod calculator;
 #[path = "../../../e2e/os/specs/cdp.rs"]
 mod cdp_specs;
 #[path = "../../../e2e/os/specs/crisp.rs"]
@@ -106,11 +108,19 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("login.restart", session::login_restart),
     ("login.shutdown", session::login_shutdown),
     ("settings.look", settings::look_spec),
+    ("settings.hardware", settings::hardware),
     ("settings.keyboard", settings::keyboard),
     ("settings.accounts", settings::accounts),
     ("files.browse", files::browse),
     ("files.edit", files::edit),
     ("files.drag", files::drag_spec),
+    ("files.copy.paste", files::copy_paste),
+    ("files.copy.conflict", files::copy_conflict),
+    ("files.copy.pause", files::copy_pause),
+    ("files.copy.drag", files::copy_drag),
+    ("bench.copy", files::bench),
+    ("accounts.move_out", accounts::move_out),
+    ("accounts.move", accounts::move_in),
     ("stage.windows", stage::windows),
     ("ui.cursor", stage::cursor),
     ("stage.doors", stage::doors),
@@ -129,6 +139,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("cdp.freally", cdp_specs::freally),
     ("cdp.dom", cdp_specs::dom),
     ("desktop.sweep", desktop::sweep),
+    ("apps.calculator", calculator::calculator),
     ("crisp.scales", crisp::scales),
     ("monitor.sweep", monitor::sweep),
     ("a11y.keyboard", a11y::keyboard),

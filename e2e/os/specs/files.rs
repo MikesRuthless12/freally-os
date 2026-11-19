@@ -61,13 +61,45 @@ fn open_files(ctx: &mut Ctx) -> Result<(), String> {
     until_attr(ctx, &sel("files-path"), "aria-valuenow", "/home/mike")
 }
 
-/// The shell makes what the specs work on (each only once).
+/// The shell makes what the specs work on (each only once). A big
+/// `mkfile` keeps the Terminal busy past the door's answer: it's waited out.
 fn made(ctx: &mut Ctx, lines: &[&str]) -> Result<(), String> {
     crate::terminal::open(ctx)?;
     for l in lines {
-        once(ctx, l, &[])?;
+        if l.starts_with("mkfile") {
+            slowly(ctx, l, 240)?;
+        } else {
+            once(ctx, l, &[])?;
+        }
     }
     Ok(())
+}
+
+/// `line` run in the Terminal, waited for (`secs`) until its prompt is back:
+/// the screen's words after it.
+fn slowly(ctx: &Ctx, line: &str, secs: u64) -> Result<String, String> {
+    crate::terminal::feed(ctx, "type", b"clear\r")?;
+    std::thread::sleep(Duration::from_millis(200));
+    crate::terminal::feed(ctx, "type", format!("{line}\r").as_bytes())?;
+    let start = Instant::now();
+    let mut seen: String;
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        // Busy, the Terminal doesn't answer the door: asked again.
+        match crate::terminal::screen_text(ctx) {
+            Ok(s) => {
+                let lines: Vec<&str> = s.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+                if lines.len() >= 2 && lines.last() == Some(&"freally:~$") && s.contains(line) {
+                    return Ok(s);
+                }
+                seen = s;
+            }
+            Err(e) => seen = format!("(the screen: {e})"),
+        }
+        if start.elapsed() > Duration::from_secs(secs) {
+            return Err(format!("`{line}` didn't finish in {secs} s; the screen last:\n{seen}"));
+        }
+    }
 }
 
 /// A double-click where the pointer is.
@@ -263,4 +295,307 @@ pub fn drag_spec(ctx: &mut Ctx) -> Result<(), String> {
     let closed = ctx.log_count("files: closed");
     with(ctx, "AltLeft", "F4")?;
     ctx.expect_log_count("files: closed", closed + 1)
+}
+
+// ---- The copy engine and its window (TASK-105A) ---------------------------
+
+const COPY_RUN: &str = "WINDOW[data-owner=\"files\"] GROUP";
+
+/// The copy window's running jobs' numbers (from their `copy-run-<job>` ids).
+fn jobs(ctx: &mut Ctx) -> Result<Vec<u32>, String> {
+    let mut out = Vec::new();
+    for n in q_all(ctx, COPY_RUN)? {
+        if let Some(j) =
+            attr(ctx, n, "data-testid")?.and_then(|t| t.strip_prefix("copy-run-").and_then(|j| j.parse().ok()))
+        {
+            out.push(j);
+        }
+    }
+    Ok(out)
+}
+
+/// Waits (`secs`) for a job in the copy window; its number.
+fn a_job(ctx: &mut Ctx, secs: u64) -> Result<u32, String> {
+    let start = Instant::now();
+    loop {
+        if let Some(&j) = jobs(ctx)?.first() {
+            return Ok(j);
+        }
+        if start.elapsed() > Duration::from_secs(secs) {
+            return Err("no copy showed in the copy window".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The copy jobs vfs has said finished (done or cancelled).
+fn finished(ctx: &Ctx) -> Vec<String> {
+    ctx.log_lines_with("vfs: copy ")
+        .into_iter()
+        .filter(|l| l.contains(" done: ") || l.contains(" cancelled: "))
+        .collect()
+}
+
+/// Waits (60 s) for a copy job to finish after the `before` already said; what vfs said.
+fn copies_done(ctx: &Ctx, before: usize) -> Result<String, String> {
+    let start = Instant::now();
+    loop {
+        let f = finished(ctx);
+        if f.len() > before {
+            return Ok(f.last().cloned().unwrap_or_default());
+        }
+        if start.elapsed() > Duration::from_secs(60) {
+            return Err("vfs never said the copy finished".into());
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// `@files.copy.paste`: Ctrl+C a folder, Ctrl+V into another: copied whole,
+/// by reflink (nothing written but the new files' records); Ctrl+X and
+/// Ctrl+V move it, and Ctrl+Z puts it back.
+pub fn copy_paste(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    made(
+        ctx,
+        &[
+            "mkdir /home/mike/Src",
+            "write /home/mike/Src/a.txt alpha",
+            "write /home/mike/Src/b.txt beta",
+            "mkdir /home/mike/Dst",
+        ],
+    )?;
+    open_files(ctx)?;
+    press_id(ctx, &row("Src"))?;
+    with(ctx, "ControlLeft", "KeyC")?;
+    ctx.expect_log("files: copied /home/mike/Src")?;
+    double(ctx, &row("Dst"))?;
+    until_attr(ctx, &sel("files-path"), "aria-valuenow", "/home/mike/Dst")?;
+    let before = finished(ctx).len();
+    with(ctx, "ControlLeft", "KeyV")?;
+    let said = copies_done(ctx, before)?;
+    if !said.contains("done: 3 of 3 item(s)") || !said.contains("2 by reflink") {
+        return Err(format!("vfs said {said:?}"));
+    }
+    until_q(ctx, &row("Src"))?;
+    expect(ctx, "cat /home/mike/Dst/Src/b.txt", &["beta"])?;
+    expect(ctx, "cat /home/mike/Src/b.txt", &["beta"])?;
+    // Ctrl+X, Ctrl+V: a move; Ctrl+Z: back.
+    press_id(ctx, &sel("files-place-home"))?;
+    press_id(ctx, &row("Src"))?;
+    with(ctx, "ControlLeft", "KeyX")?;
+    ctx.expect_log("files: cut /home/mike/Src")?;
+    made(ctx, &["mkdir /home/mike/Moved"])?;
+    // Files reads the folder again (it didn't see the Terminal make one).
+    press_id(ctx, &sel("files-place-home"))?;
+    double(ctx, &row("Moved"))?;
+    let before = finished(ctx).len();
+    with(ctx, "ControlLeft", "KeyV")?;
+    copies_done(ctx, before)?;
+    expect(ctx, "ls /home/mike/Moved", &["Src/"])?;
+    expect(ctx, "ls /home/mike", &["Moved/"])?;
+    with(ctx, "ControlLeft", "KeyZ")?;
+    ctx.expect_log("files: undid the move of Src")?;
+    expect(ctx, "ls /home/mike/Moved", &["(empty)"])?;
+    expect(ctx, "cat /home/mike/Src/a.txt", &["alpha"])?;
+    Ok(())
+}
+
+/// `@files.copy.conflict`: the same folder pasted again: each taken name
+/// asks; Skip one, *Let me decide for each file* (both kept: Keep both), and
+/// another paste with *Do this for all conflicts* and Replace.
+pub fn copy_conflict(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    made(
+        ctx,
+        &[
+            "mkdir /home/mike/Clash",
+            "write /home/mike/Clash/one.txt new one",
+            "write /home/mike/Clash/two.txt new two",
+            "write /home/mike/Clash/three.txt new three",
+            "mkdir /home/mike/Shelf2",
+            "mkdir /home/mike/Shelf2/Clash",
+            "write /home/mike/Shelf2/Clash/one.txt old one",
+            "write /home/mike/Shelf2/Clash/two.txt old two",
+            "write /home/mike/Shelf2/Clash/three.txt old three",
+        ],
+    )?;
+    open_files(ctx)?;
+    press_id(ctx, &row("Clash"))?;
+    with(ctx, "ControlLeft", "KeyC")?;
+    double(ctx, &row("Shelf2"))?;
+    with(ctx, "ControlLeft", "KeyV")?;
+    let job = a_job(ctx, 10)?;
+    until_attr(ctx, &sel(&format!("copy-run-{job}")), "aria-valuenow", "conflict")?;
+    until_q(ctx, &sel("copy-conflict"))?;
+    // The folders merge; its first file (one.txt) asks first: Skip.
+    until_attr(
+        ctx,
+        &sel("copy-conflict"),
+        "aria-label",
+        "The destination already has a file named \u{201C}one.txt\u{201D}.",
+    )?;
+    press_id(ctx, &sel("copy-skip"))?;
+    until_attr(
+        ctx,
+        &sel("copy-conflict"),
+        "aria-label",
+        "The destination already has a file named \u{201C}three.txt\u{201D}.",
+    )?;
+    // Let me decide: three.txt and two.txt, each with its two boxes.
+    press_id(ctx, &sel("copy-decide"))?;
+    until_attr(ctx, &sel(&format!("copy-run-{job}")), "aria-valuenow", "deciding")?;
+    until_attr(ctx, &sel("copy-keep-new-two.txt"), "aria-checked", "true")?;
+    until_attr(ctx, &sel("copy-keep-there-two.txt"), "aria-checked", "false")?;
+    // two.txt: both kept (Keep both); three.txt: only the one there (Skip).
+    press_id(ctx, &sel("copy-keep-there-two.txt"))?;
+    until_attr(ctx, &sel("copy-keep-there-two.txt"), "aria-checked", "true")?;
+    press_id(ctx, &sel("copy-keep-new-three.txt"))?;
+    press_id(ctx, &sel("copy-keep-there-three.txt"))?;
+    ctx.keep_shot("files-let-me-decide")?;
+    let before = finished(ctx).len();
+    press_id(ctx, &sel("copy-continue"))?;
+    copies_done(ctx, before)?;
+    expect(ctx, "cat /home/mike/Shelf2/Clash/one.txt", &["old one"])?;
+    expect(ctx, "cat /home/mike/Shelf2/Clash/two.txt", &["old two"])?;
+    // "two (2).txt": a name with a space, which the shell's cat can't take.
+    expect(ctx, "ls /home/mike/Shelf2/Clash", &["two (2).txt"])?;
+    expect(ctx, "cat /home/mike/Shelf2/Clash/three.txt", &["old three"])?;
+    // Again, for all: Replace.
+    with(ctx, "ControlLeft", "KeyV")?;
+    let job = a_job(ctx, 10)?;
+    until_attr(ctx, &sel(&format!("copy-run-{job}")), "aria-valuenow", "conflict")?;
+    press_id(ctx, &sel("copy-all"))?;
+    until_attr(ctx, &sel("copy-all"), "aria-checked", "true")?;
+    let before = finished(ctx).len();
+    press_id(ctx, &sel("copy-replace"))?;
+    copies_done(ctx, before)?;
+    for (f, want) in [("one.txt", "new one"), ("two.txt", "new two"), ("three.txt", "new three")] {
+        expect(ctx, &format!("cat /home/mike/Shelf2/Clash/{f}"), &[want])?;
+    }
+    Ok(())
+}
+
+/// `@files.copy.pause`: a 48 MiB file pasted with verify (Ctrl+Shift+V: through
+/// the buffer, read back): its window's progress, More details (the speed
+/// graph), Pause (nothing moves) and Resume, done and the same size; then
+/// another, cancelled part-way: no half file left.
+pub fn copy_pause(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    made(ctx, &["mkdir /home/mike/Big", "mkfile /home/mike/Big/big.bin 48M", "mkdir /home/mike/Out"])?;
+    open_files(ctx)?;
+    double(ctx, &row("Big"))?;
+    press_id(ctx, &row("big.bin"))?;
+    until_attr(ctx, &row("big.bin"), "aria-valuenow", "50.3 MB")?;
+    with(ctx, "ControlLeft", "KeyC")?;
+    press_id(ctx, &sel("files-place-home"))?;
+    double(ctx, &row("Out"))?;
+    key(ctx, "ControlLeft", true)?;
+    with(ctx, "ShiftLeft", "KeyV")?;
+    key(ctx, "ControlLeft", false)?;
+    let job = a_job(ctx, 10)?;
+    press_id(ctx, &sel(&format!("copy-details-{job}")))?;
+    until_q(ctx, &sel(&format!("copy-graph-{job}")))?;
+    press_id(ctx, &sel(&format!("copy-pause-{job}")))?;
+    until_attr(ctx, &sel(&format!("copy-run-{job}")), "aria-valuenow", "paused")?;
+    let words = |ctx: &mut Ctx| -> Result<String, String> {
+        let n = until_q(ctx, &sel(&format!("copy-words-{job}")))?;
+        Ok(attr(ctx, n, "aria-valuenow")?.unwrap_or_default())
+    };
+    let a = words(ctx)?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let b = words(ctx)?;
+    if a != b || !b.ends_with("Paused") {
+        return Err(format!("paused, it moved on: {a:?} then {b:?}"));
+    }
+    ctx.keep_shot("files-copy-paused")?;
+    let before = finished(ctx).len();
+    press_id(ctx, &sel(&format!("copy-pause-{job}")))?;
+    let said = copies_done(ctx, before)?;
+    if !said.contains("done: 1 of 1 item(s), 50331648 bytes, 0 by reflink") {
+        return Err(format!("vfs said {said:?}"));
+    }
+    until_attr(ctx, &row("big.bin"), "aria-valuenow", "50.3 MB")?;
+    // Another, cancelled part-way.
+    press_id(ctx, &sel("files-place-home"))?;
+    made(ctx, &["mkdir /home/mike/Out2"])?;
+    press_id(ctx, &sel("files-place-home"))?;
+    double(ctx, &row("Out2"))?;
+    key(ctx, "ControlLeft", true)?;
+    with(ctx, "ShiftLeft", "KeyV")?;
+    key(ctx, "ControlLeft", false)?;
+    let job = a_job(ctx, 10)?;
+    let before = finished(ctx).len();
+    press_id(ctx, &sel(&format!("copy-cancel-{job}")))?;
+    let said = copies_done(ctx, before)?;
+    if !said.contains("cancelled") {
+        return Err(format!("vfs said {said:?}"));
+    }
+    expect(ctx, "ls /home/mike/Out2", &["(empty)"])?;
+    Ok(())
+}
+
+/// `@files.copy.drag`: a row dragged onto a folder with Ctrl held is copied
+/// (the source stays), through the engine.
+pub fn copy_drag(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    made(ctx, &["write /home/mike/keep.txt kept", "mkdir /home/mike/Copies"])?;
+    open_files(ctx)?;
+    let (kx, ky) = centre(ctx, &row("keep.txt"))?;
+    let to = centre(ctx, &row("Copies"))?;
+    let before = finished(ctx).len();
+    key(ctx, "ControlLeft", true)?;
+    drag(ctx, (kx - 60, ky), to)?;
+    key(ctx, "ControlLeft", false)?;
+    copies_done(ctx, before)?;
+    expect(ctx, "cat /home/mike/Copies/keep.txt", &["kept"])?;
+    until_q(ctx, &row("keep.txt"))?;
+    Ok(())
+}
+
+/// A `cp` run in the Terminal: what it printed.
+fn cp(ctx: &Ctx, args: &str) -> Result<String, String> {
+    let s = slowly(ctx, &format!("cp {args}"), 300)?;
+    s.lines().find(|l| l.starts_with("Copied ")).map(String::from).ok_or(format!("cp {args} said:\n{s}"))
+}
+
+/// `@bench.copy` (`cargo xtask bench copy`): MB/s for a big file (by reflink;
+/// through the buffer and read back) and files/s for many small ones, in
+/// QEMU, through `mkfile` and `cp`.
+pub fn bench(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    made(
+        ctx,
+        &[
+            "mkdir /home/mike/Bench",
+            "mkdir /home/mike/Bench/small",
+            "mkfile /home/mike/Bench/big.bin 64M",
+            "mkdir /home/mike/Bench/o1",
+            "mkdir /home/mike/Bench/o2",
+            "mkdir /home/mike/Bench/o3",
+            "mkdir /home/mike/Bench/o4",
+        ],
+    )?;
+    for i in 0..200 {
+        once(ctx, &format!("mkfile /home/mike/Bench/small/f{i:03} 4K"), &[])?;
+    }
+    for (what, args) in [
+        ("a 64 MiB file by reflink", "/home/mike/Bench/big.bin /home/mike/Bench/o1"),
+        ("a 64 MiB file through the buffer, read back", "--verify /home/mike/Bench/big.bin /home/mike/Bench/o2"),
+        ("200 files of 4 KiB by reflink", "/home/mike/Bench/small /home/mike/Bench/o3"),
+        ("200 files of 4 KiB through the buffer, read back", "--verify /home/mike/Bench/small /home/mike/Bench/o4"),
+    ] {
+        let said = cp(ctx, args)?;
+        // "Copied N item(s), X in S s (R/s)…"
+        let secs: f64 = said
+            .split(" in ")
+            .nth(1)
+            .and_then(|r| r.split(" s ").next())
+            .and_then(|s| s.parse().ok())
+            .ok_or(format!("an unreadable `cp`: {said}"))?;
+        let items: f64 = said.split_whitespace().nth(1).and_then(|n| n.parse().ok()).unwrap_or(0.0);
+        let note = format!("bench copy: {what}: {said} [{:.0} files/s]", if secs > 0.0 { items / secs } else { 0.0 });
+        ctx.note(&note);
+    }
+    Ok(())
 }

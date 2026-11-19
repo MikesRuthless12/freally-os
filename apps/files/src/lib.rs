@@ -10,12 +10,17 @@ extern crate alloc;
 
 pub mod bin;
 pub mod browser;
+pub mod copy_dialog;
 pub mod disk;
 
 /// Key usages Files reads.
 pub mod key {
     pub use app_session::key::{BACKSPACE, DOWN, ENTER, ESCAPE, SHIFT, TAB, UP};
+    pub const C: u16 = 0x06;
     pub const N: u16 = 0x11;
+    pub const V: u16 = 0x19;
+    pub const X: u16 = 0x1B;
+    pub const Z: u16 = 0x1D;
     pub const SPACE: u16 = 0x2C;
     pub const F2: u16 = 0x3B;
     pub const HOME: u16 = 0x4A;

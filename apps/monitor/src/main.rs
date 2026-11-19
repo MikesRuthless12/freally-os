@@ -1084,8 +1084,10 @@ impl Monitor {
             } else {
                 fwire::error_reply(h.txid, h.ordinal, FErr::NotSupported as i32, "not served")
             };
-            if let Ok(r) = reply {
-                let _ = ch.send(&r, Vec::new());
+            if let Ok(r) = reply
+                && let Err(e) = ch.send(&r, Vec::new())
+            {
+                fstd::warn!("monitor: the door's answer ({} bytes) couldn't be sent: {}", r.len(), e.describe());
             }
         }
     }
@@ -1132,7 +1134,12 @@ impl Monitor {
                 }
                 v
             }
-            3 => self.log.shown().iter().map(|l| alloc::format!("{} {}", l.service, l.msg)).collect(),
+            // A long log: its newest lines, as many as a message holds.
+            3 => {
+                let all: Vec<String> =
+                    self.log.shown().iter().map(|l| alloc::format!("{} {}", l.service, l.msg)).collect();
+                model::newest_that_fit(&all, model::STATE_LINES_BYTES).to_vec()
+            }
             _ => {
                 let mut v = alloc::vec![self.cpus_line.clone()];
                 v.extend(self.devices.iter().map(|r| alloc::format!("{} | {} | {}", r.at, r.what, r.driver)));

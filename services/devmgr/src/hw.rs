@@ -56,7 +56,7 @@ pub struct Hardware {
     pub display: Option<String>,
     /// The first NVMe controller (class 01, subclass 08, interface 02): its
     /// PCI address, its configuration page and its BAR0 (TASK-092).
-    nvme: Option<(String, u64, u64)>,
+    nvme: Option<Nvme>,
     framebuffer: (u64, u64, u32, u32, u32, u32),
     edid_len: u64,
     madt: Vec<u8>,
@@ -176,11 +176,20 @@ impl Hardware {
             // and one I/O queue pair: 8 KiB) and its configuration page (to
             // let it master the bus). No IRQ yet: the driver polls.
             "drv-nvme" => {
-                let (at, config, bar0) = self.nvme.clone().ok_or(FErr::NotFound)?;
+                let Nvme { at, config, bar0, msix } = self.nvme.clone().ok_or(FErr::NotFound)?;
                 add("registers", self.carve(resource::MMIO, bar0, 0x2000)?, &mut handles);
                 add("config", self.carve(resource::MMIO, config, 4096)?, &mut handles);
                 values.push((String::from("bar0"), bar0));
                 values.push((String::from("config"), config));
+                // MSI-X (TASK-092A): where its capability is, and its table's
+                // page when that lies past the registers (QEMU: BAR 0 + 8 KiB).
+                if let Some((cap, page)) = msix {
+                    values.push((String::from("msix-cap"), cap));
+                    if page >= bar0 + 0x2000 {
+                        add("msix-table", self.carve(resource::MMIO, page, 4096)?, &mut handles);
+                        values.push((String::from("msix-table"), page));
+                    }
+                }
                 devices.push(at);
             }
             "drv-uart16550" => {
@@ -212,6 +221,37 @@ fn holder(bars: &[(String, u64)], fb: u64) -> Option<String> {
 }
 
 /// A function's memory BAR bases (64-bit BARs read whole).
+/// An NVMe controller: its PCI address, configuration page, BAR 0, and its
+/// MSI-X capability's offset and table page (in BAR 0), if it has them.
+#[derive(Clone)]
+struct Nvme {
+    at: String,
+    config: u64,
+    bar0: u64,
+    msix: Option<(u64, u64)>,
+}
+
+/// The MSI-X capability (id 0x11) in the function's list: its offset, and
+/// its table's page when the table is in BAR 0 (else `None`: the driver polls).
+fn msix(va: u64, bar0: u64) -> Option<(u64, u64)> {
+    if cfg16(va, 6) & 1 << 4 == 0 {
+        return None;
+    }
+    let mut at = (cfg8(va, 0x34) & 0xFC) as u64;
+    for _ in 0..48 {
+        if at == 0 {
+            return None;
+        }
+        if cfg8(va, at) == 0x11 {
+            // SAFETY: the table register, inside the mapped configuration page.
+            let table = unsafe { core::ptr::read_volatile((va + at + 4) as *const u32) } as u64;
+            return (table & 7 == 0).then(|| (at, bar0 + (table & !0xFFF)));
+        }
+        at = (cfg8(va, at + 1) & 0xFC) as u64;
+    }
+    None
+}
+
 fn memory_bars(va: u64) -> Vec<u64> {
     let mut out = Vec::new();
     let mut i = 0u64;
@@ -242,7 +282,7 @@ fn scan(
     bus: u8,
     out: &mut Vec<d::PciDevice>,
     bars: &mut Vec<(String, u64)>,
-    storage: &mut Vec<(String, u64, u64)>,
+    storage: &mut Vec<Nvme>,
     depth: u32,
 ) {
     if depth > 32 || bus < e.start_bus || bus > e.end_bus {
@@ -282,7 +322,7 @@ fn scan(
                     && let Some(&bar0) = memory_bars(va).first()
                     && bar0 != 0
                 {
-                    storage.push((pci_address(&p), phys, bar0));
+                    storage.push(Nvme { at: pci_address(&p), config: phys, bar0, msix: msix(va, bar0) });
                 }
                 out.push(p);
                 if header & 0x7F == 1 {

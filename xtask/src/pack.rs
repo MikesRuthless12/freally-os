@@ -230,12 +230,22 @@ pub fn pack_cmd(args: &[String]) -> Result<(), String> {
 }
 
 pub fn sign_cmd(args: &[String]) -> Result<(), String> {
-    let path = args.first().ok_or("cargo xtask sign <image> --key dev|staging")?;
+    let path = args.first().ok_or("cargo xtask sign <image> --key dev|staging|release")?;
     let key = match args.iter().position(|a| a == "--key").and_then(|i| args.get(i + 1)).map(String::as_str) {
         Some("dev") => KeyName::Dev,
         Some("staging") => KeyName::Staging,
-        Some("release") => return Err("release signing comes with the key ceremony (Phase 7)".into()),
-        _ => return Err("--key dev|staging".into()),
+        // The release key, from its drive, opened with its passphrase (TASK-109).
+        Some("release") => {
+            let mut seed = crate::ceremony::load(args)?;
+            let mut image = std::fs::read(path).map_err(|e| format!("can't read {path}: {e}"))?;
+            let signed = fsi::sign(&mut image, &seed).map_err(|e| format!("can't sign {path}: {}", e.describe()));
+            seed.fill(0);
+            signed?;
+            std::fs::write(path, &image).map_err(|e| e.to_string())?;
+            println!("sign: {path} signed with the release key");
+            return Ok(());
+        }
+        _ => return Err("--key dev|staging|release".into()),
     };
     sign(Path::new(path), key)?;
     println!("sign: {path} signed with the {} key", key.as_str());

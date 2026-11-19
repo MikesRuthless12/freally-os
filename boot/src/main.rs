@@ -46,11 +46,16 @@ const FLAVOUR: Flavour = Flavour::E2e;
 /// The keys this bootloader trusts. A release bootloader trusts only the staging
 /// key until `v0.8.0`, then only the release key; dev and e2e trust dev and staging.
 #[cfg(feature = "flavour-release")]
-const TRUSTED: &[[u8; 32]] = &[keys::STAGING];
+const RELEASE_TRUST: [[u8; 32]; 1] = [match keys::RELEASE {
+    Some(k) => k,
+    None => keys::STAGING,
+}];
+#[cfg(feature = "flavour-release")]
+const TRUSTED: &[[u8; 32]] = &RELEASE_TRUST;
 #[cfg(not(feature = "flavour-release"))]
 const TRUSTED: &[[u8; 32]] = &[keys::DEV, keys::STAGING];
 #[cfg(feature = "flavour-release")]
-const KEY_NAMES: &[&str] = &["staging"];
+const KEY_NAMES: &[&str] = &[if keys::RELEASE.is_some() { "release" } else { "staging" }];
 #[cfg(not(feature = "flavour-release"))]
 const KEY_NAMES: &[&str] = &["dev", "staging"];
 

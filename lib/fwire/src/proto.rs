@@ -424,6 +424,14 @@ pub mod stage {
     /// stage carries `data` (a path, for Files); let go over another window,
     /// that one hears `EV_DROP` (TASK-105: drag between windows).
     pub const CARRY: u32 = 21;
+    /// `Clip` → `()`: text on the clipboard (TASK-112: Copy). Only from the
+    /// window that has the focus: copying is the person's own act.
+    pub const SET_CLIPBOARD: u32 = 22;
+    /// `ById` → `ClipText`: what's on the clipboard (Paste); only to the
+    /// focused window, so nothing in the background reads it.
+    pub const CLIPBOARD: u32 = 23;
+    /// The clipboard's most text.
+    pub const CLIP_MAX: usize = 64 * 1024;
     /// The e2e door's read-backs (e2e images only; conductor's door only).
     pub const LIST_WINDOWS: u32 = 100;
     pub const POINTER: u32 = 101;
@@ -665,8 +673,17 @@ pub mod stage {
     }
 
     wire_struct! {
-        /// Where it was let go (surface pixels), and what was carried.
-        pub struct DropEvent { pub x: i32, pub y: i32, pub data: String }
+        pub struct Clip { pub window_id: u32, pub text: String }
+    }
+
+    wire_struct! {
+        pub struct ClipText { pub text: String }
+    }
+
+    wire_struct! {
+        /// Where it was let go (surface pixels), what was carried, and the
+        /// modifiers held as it was (Ctrl: a copy; Shift: a move).
+        pub struct DropEvent { pub x: i32, pub y: i32, pub data: String, pub modifiers: u8 }
     }
 
     wire_struct! {
@@ -943,6 +960,11 @@ pub mod ffs {
     /// record, so nothing can read it again; its blocks are freed once
     /// FreallyFS tracks blocks by subvolume (a sealed tree can't be walked).
     pub const RETIRE: u32 = 17;
+    /// `CloneFile` → `Entry`: a reflink in one subvolume, every block shared
+    /// (vfs's copy engine; TASK-105A).
+    pub const CLONE: u32 = 18;
+    /// `Times` → `()`: a file's modified time set (a copy keeps its source's).
+    pub const SET_MODIFIED: u32 = 19;
 
     /// Inode kinds as the protocol carries them.
     pub const FILE: u8 = 1;
@@ -999,6 +1021,12 @@ pub mod ffs {
     wire_struct! {
         pub struct Unlock { pub sv: u64, pub key: [u8; 32] }
     }
+    wire_struct! {
+        pub struct CloneFile { pub sv: u64, pub src: u64, pub dir: u64, pub name: String }
+    }
+    wire_struct! {
+        pub struct Times { pub sv: u64, pub ino: u64, pub modified_ns: u64 }
+    }
 }
 
 /// The file protocol (FR-043, TASK-100): every process to vfs, by path.
@@ -1037,6 +1065,33 @@ pub mod vfs {
     pub const WHOAMI: u32 = 13;
     /// `Session` → `()`: accounts (and, in e2e images, conductor's door) sets the session.
     pub const SET_SESSION: u32 = 14;
+    /// `CopyStart` → `CopyJob`: a copy or move job (TASK-105A, FR-085),
+    /// checked and weighed; its caller steps it.
+    pub const COPY_START: u32 = 15;
+    /// `CopyRef` → `CopyState`: up to 4 MiB more done, and where it stands.
+    pub const COPY_STEP: u32 = 16;
+    /// `CopyDecide` → `()`: a conflict answered (Replace, Skip, Keep both;
+    /// for this one or all), or a failure (Try again, Skip).
+    pub const COPY_DECIDE: u32 = 17;
+    /// `CopyRef` → `CopyConflicts`: every conflict ahead (*Let me decide for
+    /// each file*).
+    pub const COPY_CONFLICTS: u32 = 18;
+    /// `CopyEach` → `()`: a choice per file.
+    pub const COPY_EACH: u32 = 19;
+    /// `CopyRef` → `()`: stopped; a half-copied file is removed.
+    pub const COPY_CANCEL: u32 = 20;
+
+    /// `CopyState::state`.
+    pub const COPY_RUNNING: u8 = 0;
+    pub const COPY_CONFLICT: u8 = 1;
+    pub const COPY_FAILED: u8 = 2;
+    pub const COPY_DONE: u8 = 3;
+    pub const COPY_CANCELLED: u8 = 4;
+    /// `CopyDecide::choice`.
+    pub const CHOOSE_REPLACE: u8 = 0;
+    pub const CHOOSE_SKIP: u8 = 1;
+    pub const CHOOSE_KEEP_BOTH: u8 = 2;
+    pub const CHOOSE_TRY_AGAIN: u8 = 3;
 
     wire_struct! {
         /// Open flags: `write`, `create` (if missing), `truncate`.
@@ -1083,6 +1138,51 @@ pub mod vfs {
     wire_struct! {
         /// The session's user (empty: none) and their home's subvolume.
         pub struct Session { pub user: String, pub sv: u64 }
+    }
+    wire_struct! {
+        /// `moving`: a move (the sources go); `verify`: read each copy back.
+        pub struct CopyStart { pub sources: Vec<String>, pub dest: String, pub moving: bool, pub verify: bool }
+    }
+    wire_struct! {
+        pub struct CopyJob { pub job: u32, pub total_items: u64, pub total_bytes: u64 }
+    }
+    wire_struct! {
+        pub struct CopyRef { pub job: u32 }
+    }
+    wire_struct! {
+        /// A conflict: the file being copied and the one in its way.
+        pub struct CopyConflict {
+            pub src: String,
+            pub dst: String,
+            pub src_size: u64,
+            pub src_modified_ns: u64,
+            pub dst_size: u64,
+            pub dst_modified_ns: u64,
+        }
+    }
+    wire_struct! {
+        /// `conflict`: when `state` is `COPY_CONFLICT`; `words`: what went
+        /// wrong (`COPY_FAILED`).
+        pub struct CopyState {
+            pub state: u8,
+            pub done_items: u64,
+            pub total_items: u64,
+            pub done_bytes: u64,
+            pub total_bytes: u64,
+            pub current: String,
+            pub conflict: CopyConflict,
+            pub words: String,
+        }
+    }
+    wire_struct! {
+        pub struct CopyDecide { pub job: u32, pub choice: u8, pub all: bool }
+    }
+    wire_struct! {
+        pub struct CopyConflicts { pub items: Vec<CopyConflict> }
+    }
+    wire_struct! {
+        /// Each source path and its choice.
+        pub struct CopyEach { pub job: u32, pub choices: Vec<(String, u8)> }
     }
 }
 
@@ -1254,6 +1354,8 @@ pub mod inventory {
                 (st::LOOK, "look"),
                 (st::SET_CLOCK, "set_clock"),
                 (st::CARRY, "carry"),
+                (st::SET_CLIPBOARD, "set_clipboard"),
+                (st::CLIPBOARD, "clipboard"),
                 (st::LIST_WINDOWS, "list_windows"),
                 (st::POINTER, "pointer"),
                 (st::AX_TREE, "ax_tree"),
@@ -1283,6 +1385,8 @@ pub mod inventory {
                 (fs::LOCK, "lock"),
                 (fs::UNMOUNT, "unmount"),
                 (fs::RETIRE, "retire"),
+                (fs::CLONE, "clone"),
+                (fs::SET_MODIFIED, "set_modified"),
             ],
         ),
         (
@@ -1302,6 +1406,12 @@ pub mod inventory {
                 (vf::SNAPSHOT, "snapshot"),
                 (vf::WHOAMI, "whoami"),
                 (vf::SET_SESSION, "set_session"),
+                (vf::COPY_START, "copy_start"),
+                (vf::COPY_STEP, "copy_step"),
+                (vf::COPY_DECIDE, "copy_decide"),
+                (vf::COPY_CONFLICTS, "copy_conflicts"),
+                (vf::COPY_EACH, "copy_each"),
+                (vf::COPY_CANCEL, "copy_cancel"),
             ],
         ),
         (

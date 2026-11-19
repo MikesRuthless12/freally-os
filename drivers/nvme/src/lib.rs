@@ -105,6 +105,18 @@ impl Command {
         Command { opcode: op::CREATE_IO_CQ, prp1: page, cdw: [size, 1, 0, 0, 0, 0], ..Default::default() }
     }
 
+    /// As `create_cq`, its completions signalled on MSI-X entry `vector`
+    /// (TASK-092A): CDW11 says physically contiguous, interrupts on, the vector.
+    pub fn create_cq_irq(qid: u16, entries: u32, page: u64, vector: u16) -> Command {
+        let size = (entries - 1) << 16 | qid as u32;
+        Command {
+            opcode: op::CREATE_IO_CQ,
+            prp1: page,
+            cdw: [size, (vector as u32) << 16 | 0b11, 0, 0, 0, 0],
+            ..Default::default()
+        }
+    }
+
     /// Create I/O Submission Queue `qid` of `entries` at `page`, completing into CQ `qid`.
     pub fn create_sq(qid: u16, entries: u32, page: u64) -> Command {
         let size = (entries - 1) << 16 | qid as u32;
@@ -249,6 +261,19 @@ pub fn identify_namespace(page: &[u8]) -> Option<(u64, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interrupting_completion_queue_says_its_vector() {
+        let c = Command::create_cq_irq(1, 32, 0x8000, 0);
+        let b = c.bytes();
+        assert_eq!(b[0], op::CREATE_IO_CQ);
+        assert_eq!(u32::from_le_bytes(b[40..44].try_into().unwrap()), 31 << 16 | 1, "32 entries, queue 1");
+        assert_eq!(u32::from_le_bytes(b[44..48].try_into().unwrap()), 0b11, "contiguous, interrupts on, vector 0");
+        let c = Command::create_cq_irq(1, 32, 0x8000, 3);
+        assert_eq!(u32::from_le_bytes(c.bytes()[44..48].try_into().unwrap()), 3 << 16 | 0b11);
+        let polled = Command::create_cq(1, 32, 0x8000);
+        assert_eq!(u32::from_le_bytes(polled.bytes()[44..48].try_into().unwrap()), 1, "polled: interrupts off");
+    }
 
     #[test]
     fn a_read_command_is_laid_out_as_the_spec_says() {

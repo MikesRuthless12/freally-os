@@ -3,10 +3,15 @@
 //! Bin) down the side, the tools across the top, and the folder's contents
 //! as a list or a grid. Ctrl+N opens another window; a row dragged onto a
 //! folder (in this window or another, through stage's carry and drop)
-//! moves it there. Double-click or Enter opens a folder.
+//! moves it there (with Ctrl held, copies it). Double-click or Enter opens a
+//! folder. Ctrl+C, Ctrl+X and Ctrl+V copy and move through the copy engine
+//! (TASK-105A), its window showing each copy; Ctrl+Z puts the last move
+//! back.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
+
+mod copies;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -54,6 +59,23 @@ struct Pane {
     last_click: Option<(usize, u64)>,
     /// The first row shown (the list scrolls).
     top: usize,
+    /// The modifiers its last key report held (Ctrl on a drop: a copy).
+    mods: u8,
+}
+
+/// What a window asks of the program.
+enum Ask {
+    Close,
+    NewWindow,
+    /// Ctrl+C (false) or Ctrl+X (true) of these.
+    Clip(Vec<String>, bool),
+    /// Ctrl+V into this folder (Ctrl+Shift+V: each copy read back).
+    Paste(String, bool),
+    /// A copy (or, `true`, a move) through the engine: sources, into.
+    Copy(Vec<String>, String, bool),
+    /// A move done here, by rename (from, to): Ctrl+Z puts it back.
+    Moved(String, String),
+    Undo,
 }
 
 fn node(role: u8, name: &str, state: u32, r: Rect, id: &str) -> ax::Node {
@@ -79,7 +101,17 @@ impl Pane {
         let win = Window::open("Files", st::Kind::Normal, SIZE)?;
         let mut b = Browser::new(home);
         b.refresh(&mut Vfs);
-        Ok(Pane { win, b, hits: Vec::new(), hovered: None, pressed: None, carrying: None, last_click: None, top: 0 })
+        Ok(Pane {
+            win,
+            b,
+            hits: Vec::new(),
+            hovered: None,
+            pressed: None,
+            carrying: None,
+            last_click: None,
+            top: 0,
+            mods: 0,
+        })
     }
 
     fn rows_shown(&self) -> usize {
@@ -382,17 +414,50 @@ impl Pane {
         }
     }
 
-    /// One event; `Some(true)` to close this window, `Some(false)` for a new one.
-    fn event(&mut self, ordinal: u32, p: &[u8]) -> Option<bool> {
+    /// A drop here (or a drag let go here) of `from` onto (x, y): a move by
+    /// rename, or with Ctrl held a copy.
+    fn dropped(&mut self, from: &str, x: i32, y: i32, mods: u8) -> Option<Ask> {
+        let to = self.target(x, y);
+        if mods & key::CTRL != 0 {
+            fstd::info!("files: copying {} into {}", split(from).1, split(&to).1);
+            return Some(Ask::Copy(alloc::vec![String::from(from)], to, false));
+        }
+        if to == split(from).0 || to == from {
+            return None;
+        }
+        self.b.move_into(&mut Vfs, from, &to);
+        if self.b.error.is_some() {
+            return None;
+        }
+        fstd::info!("files: moved {} into {}", split(from).1, split(&to).1);
+        Some(Ask::Moved(String::from(from), join(&to, split(from).1)))
+    }
+
+    /// One event, and what it asks of the program.
+    fn event(&mut self, ordinal: u32, p: &[u8]) -> Option<Ask> {
         match ordinal {
             st::EV_KEY => {
                 let k = fwire::from_payload::<st::Key>(p).ok()?;
+                self.mods = k.modifiers;
                 if !k.down {
                     return None;
                 }
                 let (ctrl, shift) = (k.modifiers & key::CTRL != 0, k.modifiers & key::SHIFT != 0);
-                if ctrl && !shift && k.usage == key::N {
-                    return Some(false);
+                if ctrl && shift && k.usage == key::V && self.b.place == Place::Home && self.b.naming.is_none() {
+                    return Some(Ask::Paste(self.b.dir.clone(), true));
+                }
+                if ctrl && !shift && self.b.naming.is_none() {
+                    let home = self.b.place == Place::Home;
+                    match k.usage {
+                        key::N => return Some(Ask::NewWindow),
+                        key::C | key::X if home => {
+                            let p = self.b.path()?;
+                            return Some(Ask::Clip(alloc::vec![p], k.usage == key::X));
+                        }
+                        key::V if home => return Some(Ask::Paste(self.b.dir.clone(), false)),
+                        key::Z => return Some(Ask::Undo),
+                        _ => {}
+                    }
                 }
                 if self.b.key(&mut Vfs, k.usage, k.ch, ctrl, shift) == Outcome::Changed {
                     if self.b.chosen.is_none() {
@@ -432,20 +497,17 @@ impl Pane {
                     }
                     st::PointerKind::Up => {
                         let pressed = self.pressed.take();
+                        let mut ask = None;
                         if let Some(from) = self.carrying.take() {
                             // Let go over this window: onto a folder here.
                             if inside(Rect::new(0, 0, self.win.w, self.win.h), e.x, e.y) {
-                                let to = self.target(e.x, e.y);
-                                if to != split(&from).0 && to != from {
-                                    self.b.move_into(&mut Vfs, &from, &to);
-                                    fstd::info!("files: moved {} into {}", split(&from).1, split(&to).1);
-                                }
+                                ask = self.dropped(&from, e.x, e.y, self.mods);
                             }
                         } else if let Some((h, ..)) = pressed.filter(|(h, ..)| Some(*h) == self.hovered) {
                             self.click(h);
                         }
                         self.draw();
-                        return None;
+                        return ask;
                     }
                     st::PointerKind::Wheel => {
                         let n = self.b.entries.len().saturating_sub(self.rows_shown());
@@ -461,21 +523,22 @@ impl Pane {
             }
             st::EV_DROP => {
                 let d = fwire::from_payload::<st::DropEvent>(p).ok()?;
+                let mut ask = None;
                 if self.b.place != Place::Home {
                     self.b.error = Some(String::from("Drop it in a folder, not the bin."));
                 } else if d.data.starts_with(&alloc::format!("{}/", self.b.home)) {
-                    let to = self.target(d.x, d.y);
-                    self.b.move_into(&mut Vfs, &d.data, &to);
-                    fstd::info!("files: dropped {} into {}", split(&d.data).1, split(&to).1);
+                    ask = self.dropped(&d.data, d.x, d.y, d.modifiers);
+                    fstd::info!("files: dropped {}", split(&d.data).1);
                 }
                 self.draw();
+                return ask;
             }
-            st::EV_CLOSE_REQUESTED => return Some(true),
+            st::EV_CLOSE_REQUESTED => return Some(Ask::Close),
             st::EV_THEME => self.draw(),
             st::EV_SCALE => {
                 if let Err(e) = self.win.reopen() {
                     fstd::error!("files: opening again at the new scale: {e}");
-                    return Some(true);
+                    return Some(Ask::Close);
                 }
                 self.draw();
             }
@@ -512,6 +575,106 @@ fn no_home() -> i64 {
     }
 }
 
+/// The program: its windows, the copy window, the clipboard, the last move.
+struct App {
+    home: String,
+    panes: Vec<Pane>,
+    copies: Option<copies::Copies>,
+    clip: Option<(Vec<String>, bool)>,
+    /// The last move's (where it went, where it was), for Ctrl+Z.
+    last_move: Vec<(String, String)>,
+}
+
+impl App {
+    /// Every window's contents read again (a copy or move changed them).
+    fn refresh(&mut self) {
+        for p in self.panes.iter_mut() {
+            p.b.refresh(&mut Vfs);
+            p.draw();
+        }
+    }
+
+    fn start_copy(&mut self, sources: Vec<String>, dest: String, moving: bool, verify: bool) {
+        match fstd::fs::copy_start(sources.clone(), &dest, moving, verify) {
+            Ok(job) => {
+                if self.copies.is_none() {
+                    match copies::Copies::open() {
+                        Ok(c) => self.copies = Some(c),
+                        Err(e) => {
+                            fstd::error!("files: the copy window: {e}");
+                            let _ = fstd::fs::copy_cancel(job.job);
+                            return;
+                        }
+                    }
+                }
+                let now = Instant::now().as_ns();
+                let run = app_files::copy_dialog::Run::new(&job, moving, &sources, &dest, &self.home, now);
+                fstd::info!("files: {} ({} item(s), {} bytes)", run.title, job.total_items, job.total_bytes);
+                if let Some(c) = self.copies.as_mut() {
+                    c.lives.push(copies::Live { run, sources, dest });
+                    c.draw();
+                }
+            }
+            Err(e) => {
+                if let Some(p) = self.panes.first_mut() {
+                    p.b.error = Some(e.text);
+                    p.draw();
+                }
+            }
+        }
+    }
+
+    fn ask(&mut self, a: Ask) {
+        match a {
+            Ask::Clip(paths, cut) => {
+                fstd::info!("files: {} {}", if cut { "cut" } else { "copied" }, paths.join(", "));
+                self.clip = Some((paths, cut));
+            }
+            Ask::Paste(dest, verify) => {
+                if let Some((paths, cut)) = self.clip.clone() {
+                    if cut {
+                        self.clip = None;
+                    }
+                    self.start_copy(paths, dest, cut, verify);
+                }
+            }
+            Ask::Copy(sources, dest, moving) => self.start_copy(sources, dest, moving, false),
+            Ask::Moved(from, to) => {
+                self.last_move = alloc::vec![(to, from)];
+                self.refresh();
+            }
+            Ask::Undo => {
+                let moves = core::mem::take(&mut self.last_move);
+                for (now, was) in &moves {
+                    match fstd::fs::rename(now, was) {
+                        Ok(()) => fstd::info!("files: undid the move of {}", split(was).1),
+                        Err(e) => fstd::warn!("files: couldn't undo the move of {}: {}", split(was).1, e.describe()),
+                    }
+                }
+                self.refresh();
+            }
+            Ask::Close | Ask::NewWindow => {}
+        }
+    }
+
+    /// A copy finished: a move's places kept for Ctrl+Z; the windows read again.
+    fn finished(&mut self, done: Vec<copies::Live>) {
+        for l in done {
+            let ok = l.run.phase == app_files::copy_dialog::Phase::Done;
+            fstd::info!("files: {} {}", l.run.title, if ok { "done" } else { "cancelled" });
+            if ok && l.run.moving {
+                self.last_move = l.sources.iter().map(|s| (join(&l.dest, split(s).1), s.clone())).collect();
+            }
+        }
+        self.refresh();
+        if self.copies.as_ref().is_some_and(|c| c.lives.is_empty())
+            && let Some(c) = self.copies.take()
+        {
+            c.win.close(self.panes.first_mut().map(|q| &mut q.win));
+        }
+    }
+}
+
 fn run(_bootstrap: u32) -> i64 {
     if fstd::service::start().is_err() {
         return 1;
@@ -522,49 +685,86 @@ fn run(_bootstrap: u32) -> i64 {
         return no_home();
     }
     let home = alloc::format!("/home/{user}");
-    let mut panes = Vec::new();
-    match Pane::open(&home) {
-        Ok(p) => panes.push(p),
+    let first = match Pane::open(&home) {
+        Ok(p) => p,
         Err(e) => {
             fstd::error!("files: {e}");
             return 1;
         }
-    }
-    panes[0].draw();
-    fstd::info!("files: open ({user}'s home, {} items)", panes[0].b.entries.len());
+    };
+    let mut app =
+        App { home: home.clone(), panes: alloc::vec![first], copies: None, clip: None, last_move: Vec::new() };
+    app.panes[0].draw();
+    fstd::info!("files: open ({user}'s home, {} items)", app.panes[0].b.entries.len());
     loop {
-        let items: Vec<[u32; 2]> =
-            panes.iter().map(|p| [p.win.events.0.raw(), signal::READABLE | signal::PEER_CLOSED]).collect();
-        let _ = fstd::sys::wait_many(&items, Instant::after(Duration::from_secs(5)));
+        let mut items: Vec<[u32; 2]> =
+            app.panes.iter().map(|p| [p.win.events.0.raw(), signal::READABLE | signal::PEER_CLOSED]).collect();
+        if let Some(c) = &app.copies {
+            items.push([c.win.events.0.raw(), signal::READABLE | signal::PEER_CLOSED]);
+        }
+        // A copy running: it's stepped between events, so no waiting.
+        let wait = if app.copies.as_ref().is_some_and(|c| c.busy()) {
+            Instant::now().as_ns()
+        } else {
+            Instant::after(Duration::from_secs(5))
+        };
+        let _ = fstd::sys::wait_many(&items, wait);
         let mut close = None;
-        let mut more = false;
-        for (i, pane) in panes.iter_mut().enumerate() {
+        let mut asks = Vec::new();
+        for (i, pane) in app.panes.iter_mut().enumerate() {
             let Ok(events) = pane.win.events() else {
                 close = Some(i);
                 continue;
             };
             for (ordinal, p) in events {
                 match pane.event(ordinal, &p) {
-                    Some(true) => close = Some(i),
-                    Some(false) => more = true,
+                    Some(Ask::Close) => close = Some(i),
+                    Some(a) => asks.push(a),
                     None => {}
                 }
             }
         }
-        if more {
-            match Pane::open(&home) {
-                Ok(mut p) => {
-                    p.draw();
-                    fstd::info!("files: another window ({})", panes.len() + 1);
-                    panes.push(p);
+        if let Some(c) = app.copies.as_mut()
+            && let Ok(events) = c.win.events()
+        {
+            for (ordinal, p) in events {
+                c.event(ordinal, &p);
+            }
+        }
+        for a in asks {
+            if matches!(a, Ask::NewWindow) {
+                match Pane::open(&home) {
+                    Ok(mut p) => {
+                        p.draw();
+                        fstd::info!("files: another window ({})", app.panes.len() + 1);
+                        app.panes.push(p);
+                    }
+                    Err(e) => fstd::error!("files: another window: {e}"),
                 }
-                Err(e) => fstd::error!("files: another window: {e}"),
+            } else {
+                app.ask(a);
+            }
+        }
+        if let Some(c) = app.copies.as_mut() {
+            let done = c.step();
+            if !done.is_empty() {
+                app.finished(done);
             }
         }
         if let Some(i) = close {
-            let p = panes.remove(i);
-            p.win.close(panes.first_mut().map(|q| &mut q.win));
-            if panes.is_empty() {
+            let p = app.panes.remove(i);
+            let heir = match app.panes.first_mut() {
+                Some(q) => Some(&mut q.win),
+                None => app.copies.as_mut().map(|c| &mut c.win),
+            };
+            p.win.close(heir);
+            if app.panes.is_empty() {
+                if let Some(c) = app.copies.take() {
+                    for l in &c.lives {
+                        let _ = fstd::fs::copy_cancel(l.run.job);
+                    }
+                    c.win.close(None);
+                }
                 fstd::info!("files: closed");
                 return 0;
             }

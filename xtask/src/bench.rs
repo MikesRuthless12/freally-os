@@ -2,6 +2,7 @@
 //! `cargo xtask bench ipc`: the channel round-trip benchmark (TASK-028). Boots a
 //! kernel built with `bench-ipc`, which ping-pongs 10,000 calls between two
 //! threads and prints the median; the target is ≤ 5 µs under KVM.
+//! `cargo xtask bench copy`: the copy engine's speeds (TASK-105A).
 
 use crate::build;
 use crate::run::{self, VmOptions};
@@ -9,11 +10,35 @@ use fcore_abi::Flavour;
 use std::time::{Duration, Instant};
 
 pub fn bench_cmd(args: &[String]) -> Result<(), String> {
-    if args.first().map(String::as_str) != Some("ipc") {
-        return Err("cargo xtask bench ipc".into());
+    match args.first().map(String::as_str) {
+        Some("ipc") => {
+            let ns = ipc()?;
+            println!("bench ipc: median {ns} ns per round trip (10,000 calls)");
+            Ok(())
+        }
+        Some("copy") => copy(),
+        _ => Err("cargo xtask bench ipc|copy".into()),
     }
-    let ns = ipc()?;
-    println!("bench ipc: median {ns} ns per round trip (10,000 calls)");
+}
+
+/// `cargo xtask bench copy` (TASK-105A): the `@bench.copy` spec, run on its
+/// own, its measurements printed (MB/s for a big file, files/s for small
+/// ones, by reflink and through the buffer).
+fn copy() -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let out = std::process::Command::new(me)
+        .args(["cdp", "--os", "--only=bench.copy"])
+        .output()
+        .map_err(|e| format!("the CDP leg: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let found: Vec<&str> = text.lines().filter(|l| l.contains("bench copy:")).collect();
+    for l in &found {
+        println!("{}", l.trim());
+    }
+    if !out.status.success() || found.len() != 4 {
+        print!("{text}");
+        return Err("the copy benchmark didn't finish".into());
+    }
     Ok(())
 }
 

@@ -96,6 +96,8 @@ struct Stage {
     /// format, as Settings last chose (TASK-104).
     wallpaper: u8,
     clock_24h: bool,
+    /// What Copy put on the clipboard (TASK-112).
+    clipboard: String,
     /// The scale the screen's EDID gives, and whether it's the one in use
     /// (Settings' *Automatic*; TASK-104).
     auto_pct: u16,
@@ -271,6 +273,7 @@ fn run(_bootstrap: u32) -> i64 {
         idle: svc_stage::idle::Idle::new(Instant::now().as_ns()),
         wallpaper: 0,
         clock_24h: false,
+        clipboard: String::new(),
         auto_pct: pct,
         scale_auto: true,
         shortcuts: None,
@@ -561,6 +564,26 @@ impl Stage {
                 }
             }
             st::LOOK => Ok((fwire::to_payload(&self.look()), Vec::new())),
+            st::SET_CLIPBOARD => {
+                fwire::from_payload::<st::Clip>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|c| {
+                    self.own_focused(conn, c.window_id)?;
+                    if c.text.len() > st::CLIP_MAX {
+                        return Err((FErr::InvalidArgs, "at most 64 KiB on the clipboard"));
+                    }
+                    self.clipboard = c.text;
+                    Ok((Vec::new(), Vec::new()))
+                })
+            }
+            st::CLIPBOARD => {
+                fwire::from_payload::<st::ById>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|b| {
+                    // The e2e door reads it back for the specs.
+                    let door = cfg!(feature = "flavour-e2e") && matches!(name.as_str(), "conductor" | "cdpd");
+                    if !door {
+                        self.own_focused(conn, b.window_id)?;
+                    }
+                    Ok((fwire::to_payload(&st::ClipText { text: self.clipboard.clone() }), Vec::new()))
+                })
+            }
             st::CARRY => {
                 fwire::from_payload::<st::Carry>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")).and_then(|c| {
                     self.own(conn, c.window_id)?;
@@ -611,6 +634,15 @@ impl Stage {
         if let Ok((m, hs)) = msg {
             let _ = self.conns[i].ch.send(&m, hs);
         }
+    }
+
+    /// The caller's window, and the one with the focus (the clipboard's rule).
+    fn own_focused(&self, conn: u32, id: u32) -> Result<(), (FErr, &'static str)> {
+        self.own(conn, id)?;
+        if self.desk.windows.focused() != Some(id) {
+            return Err((FErr::AccessDenied, "only the window with the focus uses the clipboard"));
+        }
+        Ok(())
     }
 
     fn own(&self, conn: u32, id: u32) -> Result<(), (FErr, &'static str)> {

@@ -185,6 +185,36 @@ impl<S: Store> Volume<S> {
         flush(self, &mut run)
     }
 
+    /// A reflink (TASK-105A, FR-085): file `src` copied as `name` in folder
+    /// `dir` of the same subvolume, sharing every block (each gains a
+    /// reference; a later write to either takes new blocks for itself). What's
+    /// written but not committed is committed first: a block this generation
+    /// still changes in place can't be shared. The new file's number.
+    pub fn clone_file(&mut self, sv: u64, src: u64, dir: u64, name: &str) -> Result<u64, FsError> {
+        self.writable(sv)?;
+        let from = self.stat(sv, src)?;
+        if from.kind != FileKind::File {
+            return Err(FsError::IsADirectory);
+        }
+        if !self.data.is_empty() {
+            self.commit()?;
+        }
+        let ino = self.create(sv, dir, name, FileKind::File)?;
+        if from.size > 0 {
+            let last = from.size.div_ceil(B) - 1;
+            let (map, _) = self.mapped(sv, src, 0, last)?;
+            for &(block, _) in map.values() {
+                self.inc_ref(block)?;
+            }
+            self.rewrite_extents(sv, ino, Vec::new(), map, (0, last), from.size)?;
+        }
+        let mut to = self.stat(sv, ino)?;
+        to.size = from.size;
+        to.modified_ns = from.modified_ns;
+        self.put_inode(sv, ino, &to)?;
+        Ok(ino)
+    }
+
     /// Writes `data` at byte `offset` of file `ino`.
     pub fn write(&mut self, sv: u64, ino: u64, offset: u64, data: &[u8]) -> Result<(), FsError> {
         self.writable(sv)?;

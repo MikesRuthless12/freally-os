@@ -48,6 +48,8 @@ pub struct Desk {
     grab: Option<WindowId>,
     /// What that window carries, to drop where the button's let go.
     carrying: Option<(WindowId, String)>,
+    /// The modifiers the last key report said were held.
+    mods: u8,
     /// The window whose surface the pointer is over, to tell it when it leaves.
     over: Option<WindowId>,
     shortcuts: Shortcuts,
@@ -68,6 +70,7 @@ impl Desk {
             drag: None,
             grab: None,
             carrying: None,
+            mods: 0,
             over: None,
             shortcuts: Shortcuts::default(),
             cycle: None,
@@ -143,6 +146,7 @@ impl Desk {
     }
 
     pub fn key(&mut self, k: Key, out: &mut Vec<Effect>) {
+        self.mods = k.modifiers;
         match self.shortcuts.key(k.usage, k.down, k.modifiers) {
             Outcome::Pass => {
                 if let Some(f) = self.windows.focused() {
@@ -248,7 +252,10 @@ impl Desk {
             && let Some(w) = self.windows.get(to)
         {
             let r = self.windows.surface_rect(w);
-            out.push(Effect::Send(to, Event::Drop(DropEvent { x: self.x - r.x, y: self.y - r.y, data })));
+            out.push(Effect::Send(
+                to,
+                Event::Drop(DropEvent { x: self.x - r.x, y: self.y - r.y, data, modifiers: self.mods }),
+            ));
         }
         if buttons == 0 {
             self.grab = None;

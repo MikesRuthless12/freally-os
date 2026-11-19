@@ -14,9 +14,20 @@ pub trait Store {
     fn blocks(&self) -> u64;
     fn read(&mut self, block: u64, buf: &mut [u8; BLOCK]) -> Result<(), FsError>;
     fn write(&mut self, block: u64, buf: &[u8; BLOCK]) -> Result<(), FsError>;
+    /// Blocks `first`, `first + 1` … written from `bufs`, in one go where
+    /// the store can (TASK-105A: drv-nvme takes `RUN_BLOCKS` a message).
+    fn write_run(&mut self, first: u64, bufs: &[&[u8; BLOCK]]) -> Result<(), FsError> {
+        for (i, b) in bufs.iter().enumerate() {
+            self.write(first + i as u64, b)?;
+        }
+        Ok(())
+    }
     /// Everything written so far is durable when this returns.
     fn flush(&mut self) -> Result<(), FsError>;
 }
+
+/// The most blocks one run holds (the block protocol's `MAX_BLOCKS`).
+pub const RUN_BLOCKS: usize = 15;
 
 /// A volume in memory: what's durable, and what's written but not yet
 /// flushed (which a crash may drop).
@@ -93,3 +104,4 @@ impl Store for MemStore {
         Ok(())
     }
 }
+

@@ -13,6 +13,8 @@
 
 extern crate alloc;
 
+pub mod copy;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use fcore_abi::FErr;

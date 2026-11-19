@@ -64,6 +64,37 @@ pub trait System {
     fn rename(&mut self, from: &str, to: &str) -> Result<(), String>;
     /// The session's account (empty: none).
     fn whoami(&mut self) -> Result<String, String>;
+    /// A file of `bytes` bytes (a pattern, not zeros).
+    fn make_file(&mut self, path: &str, bytes: u64) -> Result<(), String>;
+    /// A copy through the engine (TASK-105A), names taken replaced: (items,
+    /// bytes, ns it took).
+    fn copy(&mut self, sources: &[String], dest: &str, verify: bool) -> Result<(u64, u64, u64), String>;
+}
+
+/// "64M" → 67,108,864 (K, M, G are powers of 1,024); at most 1 GiB.
+pub fn size_of(s: &str) -> Option<u64> {
+    let (digits, unit) = match s.char_indices().last()? {
+        (i, c) if c.is_ascii_alphabetic() => (&s[..i], c.to_ascii_uppercase()),
+        _ => (s, ' '),
+    };
+    let n: u64 = digits.parse().ok()?;
+    let n = match unit {
+        ' ' => n,
+        'K' => n.checked_mul(1 << 10)?,
+        'M' => n.checked_mul(1 << 20)?,
+        'G' => n.checked_mul(1 << 30)?,
+        _ => return None,
+    };
+    (n <= 1 << 30).then_some(n)
+}
+
+/// "64.0 MiB", "512 bytes".
+fn bytes_words(b: u64) -> String {
+    match b {
+        0..1024 => format!("{b} bytes"),
+        1024..1_048_576 => format!("{:.1} KiB", b as f64 / 1024.0),
+        _ => format!("{:.1} MiB", b as f64 / 1_048_576.0),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +119,8 @@ pub enum Command {
     Rm { path: String },
     Mv { from: String, to: String },
     Whoami,
+    Mkfile { path: String, bytes: u64 },
+    Cp { sources: Vec<String>, dest: String, verify: bool },
 }
 
 /// Every built-in, its usage and what it does.
@@ -112,6 +145,8 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("rm", "rm <path>", "Removes a file, or an empty folder."),
     ("mv", "mv <from> <to>", "Moves or renames a file or folder."),
     ("whoami", "whoami", "Shows which account this session belongs to."),
+    ("mkfile", "mkfile <path> <size>", "Makes a file of that size (512, 64K, 8M, at most 1G), to try copies with."),
+    ("cp", "cp [--verify] <from>... <folder>", "Copies into a folder through the copy engine, and says how fast."),
 ];
 
 /// The words for `help` or `help <command>`.
@@ -213,6 +248,27 @@ pub fn parse(line: &str, dev: bool) -> Result<Option<Command>, String> {
             }
             _ => Err(usage("write")),
         },
+        "mkfile" => match args {
+            [p, n] if p.starts_with('/') => match size_of(n) {
+                Some(bytes) => Ok(Some(Command::Mkfile { path: p.to_string(), bytes })),
+                None => Err(format!("mkfile: {n} isn't a size (512, 64K, 8M, at most 1G).")),
+            },
+            _ => Err(usage("mkfile")),
+        },
+        "cp" => {
+            let verify = args.first() == Some(&"--verify");
+            let paths = if verify { &args[1..] } else { args };
+            match paths {
+                [from @ .., dest] if !from.is_empty() && paths.iter().all(|p| p.starts_with('/')) => {
+                    Ok(Some(Command::Cp {
+                        sources: from.iter().map(|s| s.to_string()).collect(),
+                        dest: dest.to_string(),
+                        verify,
+                    }))
+                }
+                _ => Err(usage("cp")),
+            }
+        }
         "mv" => match args {
             [a, b] if a.starts_with('/') && b.starts_with('/') => {
                 Ok(Some(Command::Mv { from: a.to_string(), to: b.to_string() }))
@@ -373,6 +429,23 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
         Command::Mv { from, to } => match sys.rename(from, to) {
             Ok(()) => text(String::new()),
             Err(e) => fail(format!("mv: {from}: {e}")),
+        },
+        Command::Mkfile { path, bytes } => match sys.make_file(path, *bytes) {
+            Ok(()) => text(String::new()),
+            Err(e) => fail(format!("mkfile: {path}: {e}")),
+        },
+        Command::Cp { sources, dest, verify } => match sys.copy(sources, dest, *verify) {
+            Ok((items, bytes, ns)) => {
+                let secs = ns as f64 / 1e9;
+                let speed = if secs > 0.0 { bytes as f64 / secs } else { 0.0 };
+                text(format!(
+                    "Copied {items} item(s), {} in {secs:.2} s ({}/s){}.\n",
+                    bytes_words(bytes),
+                    bytes_words(speed as u64),
+                    if *verify { ", each read back" } else { "" }
+                ))
+            }
+            Err(e) => fail(format!("cp: {e}")),
         },
         Command::Whoami => match sys.whoami() {
             Ok(u) if u.is_empty() => text(String::from("No one: no session (log in first).\n")),

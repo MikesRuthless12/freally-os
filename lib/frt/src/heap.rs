@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The user heap: size classes (16 B – 2 KiB) carved from 64 KiB chunks, and
-//! a mapping of its own for anything larger, unmapped when it's freed (a few
+//! The user heap: size classes (16 B – 4 KiB) carved from chunks of 64 KiB
+//! (128 KiB for 4 KiB objects), and a mapping of its own for anything larger, unmapped when it's freed (a few
 //! small ones kept for the next block of their size: a call's reply buffer
 //! comes and goes with every call). Each chunk is a VMO mapped read/write
 //! (never executable) into the process's own address space through `vm_map`.
@@ -10,15 +10,23 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use fcore_abi::{perm, well_known};
 
-const CLASSES: [usize; 8] = [16, 32, 64, 128, 256, 512, 1024, 2048];
-const CHUNK: usize = 64 * 1024;
+/// 4 KiB is a class (TASK-105A): FreallyFS boxes every block it holds, and
+/// a mapping per block (three system calls, and one more to give it back)
+/// made each 60 KiB write slower the more the address space held.
+const CLASSES: [usize; 9] = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+
+/// A class's chunk: 64 KiB, or 32 objects where that's more.
+const fn chunk(size: usize) -> usize {
+    let n = size * 32;
+    if n > 64 * 1024 { n } else { 64 * 1024 }
+}
 
 /// Freed large blocks kept for reuse: at most this many, each this big or less.
 const SPARES: usize = 8;
 const SPARE_MAX: usize = 64 * 1024;
 
 struct State {
-    free: [*mut u8; 8],
+    free: [*mut u8; CLASSES.len()],
     /// Freed large blocks and their lengths (0: an empty slot).
     spare: [(*mut u8, usize); SPARES],
 }
@@ -32,7 +40,7 @@ unsafe impl Sync for Heap {}
 
 #[global_allocator]
 static HEAP: Heap =
-    Heap(UnsafeCell::new(State { free: [core::ptr::null_mut(); 8], spare: [(core::ptr::null_mut(), 0); SPARES] }));
+    Heap(UnsafeCell::new(State { free: [core::ptr::null_mut(); CLASSES.len()], spare: [(core::ptr::null_mut(), 0); SPARES] }));
 
 /// Maps `bytes` (rounded up) of fresh zeroed memory.
 fn map(bytes: usize) -> *mut u8 {
@@ -63,12 +71,12 @@ unsafe impl GlobalAlloc for Heap {
             return map(len);
         };
         if s.free[c].is_null() {
-            let base = map(CHUNK);
+            let size = CLASSES[c];
+            let base = map(chunk(size));
             if base.is_null() {
                 return base;
             }
-            let size = CLASSES[c];
-            for i in (0..CHUNK / size).rev() {
+            for i in (0..chunk(size) / size).rev() {
                 // SAFETY: inside the chunk just mapped.
                 unsafe {
                     let obj = base.add(i * size);

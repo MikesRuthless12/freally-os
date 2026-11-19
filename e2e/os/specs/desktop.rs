@@ -308,8 +308,8 @@ pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
         v
     };
     // Files needs storage: listed only where the image has it (GPT, e2e and dev).
-    if !(3..=4).contains(&rows.len()) {
-        return Err(format!("the launcher lists {rows:?}, not Terminal, Monitor, Settings (and Files)"));
+    if !(4..=5).contains(&rows.len()) {
+        return Err(format!("the launcher lists {rows:?}, not Terminal, Monitor, Settings, Calculator (and Files)"));
     }
     key(ctx, "Escape", true)?;
     key(ctx, "Escape", false)?;

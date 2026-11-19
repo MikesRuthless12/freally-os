@@ -138,3 +138,13 @@ fn a_fault_expands() {
     let last = FaultRow { service: "freally-core".into(), kind: "Panic".into(), last_boot: true, ..f };
     assert_eq!(fault_details(&last)[0], "Panic in freally-core (#3): the last boot stopped here");
 }
+
+#[test]
+fn the_state_keeps_the_newest_lines_that_fit_a_message() {
+    let lines: Vec<String> = (0..5000).map(|i| alloc::format!("logger line {i} with some words in it")).collect();
+    let kept = newest_that_fit(&lines, STATE_LINES_BYTES);
+    let size: usize = kept.iter().map(|l| l.len() + 4).sum();
+    assert!(size <= STATE_LINES_BYTES && kept.len() > 100, "{} lines, {size} bytes", kept.len());
+    assert_eq!(kept.last(), lines.last(), "the newest kept");
+    assert_eq!(newest_that_fit(&lines[..3], STATE_LINES_BYTES), &lines[..3], "a short log, whole");
+}

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = calculator
+binary      = /system/apps/calculator
+description = Exact sums (0.1 + 0.2 is 0.3), standard and scientific, with a history.
+start       = demand
+after       = logger, stage
+restart     = on-failure
+class       = interactive
+grants      = fonts, hardware
+flavours    = release, dev, e2e

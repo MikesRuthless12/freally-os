@@ -111,6 +111,40 @@ impl System for Pretend {
     fn whoami(&mut self) -> Result<String, String> {
         Ok("tester".into())
     }
+    fn make_file(&mut self, path: &str, bytes: u64) -> Result<(), String> {
+        self.files.insert(path.into(), Some(vec![7; bytes as usize]));
+        Ok(())
+    }
+    fn copy(&mut self, sources: &[String], dest: &str, _verify: bool) -> Result<(u64, u64, u64), String> {
+        let mut bytes = 0;
+        for s in sources {
+            let b = self.files.get(s).cloned().flatten().ok_or("no such name (NotFound)")?;
+            bytes += b.len() as u64;
+            let name = s.rsplit('/').next().unwrap_or("");
+            self.files.insert(format!("{dest}/{name}"), Some(b));
+        }
+        Ok((sources.len() as u64, bytes, 500_000_000))
+    }
+}
+
+#[test]
+fn mkfile_and_cp() {
+    assert_eq!(size_of("64M"), Some(64 << 20));
+    assert_eq!(size_of("512"), Some(512));
+    assert_eq!(size_of("2k"), Some(2048));
+    assert_eq!((size_of("2G"), size_of("x"), size_of("5Q")), (None, None, None));
+    assert_eq!(ok("mkfile /home/tester/big 8M"), Command::Mkfile { path: "/home/tester/big".into(), bytes: 8 << 20 });
+    assert_eq!(
+        ok("cp --verify /a /b /dest"),
+        Command::Cp { sources: vec!["/a".into(), "/b".into()], dest: "/dest".into(), verify: true }
+    );
+    assert!(parse("cp /a", false).is_err(), "a source and a folder");
+    assert!(parse("mkfile /x lots", false).unwrap_err().contains("isn't a size"));
+    let mut sys = Pretend::default();
+    run(&ok("mkfile /home/tester/big 2M"), &mut sys);
+    let out = run(&ok("cp /home/tester/big /home/tester/out"), &mut sys);
+    assert_eq!(out.text, "Copied 1 item(s), 2.0 MiB in 0.50 s (4.0 MiB/s).\n");
+    assert_eq!(sys.files.get("/home/tester/out/big").map(|b| b.as_ref().map(Vec::len)), Some(Some(2 << 20)));
 }
 
 #[test]

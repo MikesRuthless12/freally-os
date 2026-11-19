@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+// The Calculator (TASK-112): exact decimals from the keyboard. 0.1 + 0.2 is
+// 0.3, a third to 32 digits, and 2^100 whole.
+Tour(
+    name: "calculator",
+    flavour: "dev",
+    steps: [
+        Record(ms: 4500),
+        Key(code: "MetaLeft"),
+        Record(ms: 600),
+        Type(text: "calc"),
+        Key(code: "Enter"),
+        Record(ms: 1500),
+        Type(text: "0.1"),
+        Key(code: "ShiftLeft+Equal"),
+        Type(text: "0.2"),
+        Record(ms: 800),
+        Key(code: "Enter"),
+        Record(ms: 2500),
+        Type(text: "1/3"),
+        Key(code: "Enter"),
+        Record(ms: 2500),
+        Type(text: "2"),
+        Key(code: "ShiftLeft+Digit6"),
+        Type(text: "100"),
+        Key(code: "Enter"),
+        Record(ms: 3000),
+    ],
+)

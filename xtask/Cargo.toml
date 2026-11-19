@@ -19,6 +19,7 @@ fscreen.workspace = true
 fimage = { workspace = true, features = ["decode"] }
 fui = { workspace = true, features = ["ui"] }
 svc-stage = { path = "../services/stage" }
+svc-ffs = { path = "../services/ffs" }
 fjson.workspace = true
 fwire.workspace = true
 brain-bridge = { path = "../tools/brain-bridge" }

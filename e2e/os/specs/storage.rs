@@ -20,5 +20,17 @@ pub fn interlock(ctx: &mut Ctx) -> Result<(), String> {
     if ctx.log_count("drv-nvme: partition EFI system partition") != 1 {
         return Err("drv-nvme didn't list the ESP once".into());
     }
+    // MSI-X (TASK-092A): completions interrupt, and the driver is woken by them.
+    ctx.expect_log("drv-nvme: MSI-X on: completions interrupt on vector")?;
+    let woken = ctx.log_lines_with("command(s) so far woken by their interrupt");
+    let n: u32 = woken
+        .last()
+        .and_then(|l| l.split("drv-nvme: ").nth(1))
+        .and_then(|l| l.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    if n == 0 {
+        return Err(format!("no command was woken by its interrupt: {woken:?}"));
+    }
     Ok(())
 }

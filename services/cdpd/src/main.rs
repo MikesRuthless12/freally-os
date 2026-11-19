@@ -303,6 +303,13 @@ impl Cdpd {
             ("stage", "theme") => format!("{:?}", self.windows()?.theme),
             ("stage", "scale") => self.windows()?.scale_pct.to_string(),
             ("stage", "look") => self.look()?,
+            ("stage", "clipboard") => {
+                let cl = self.stage()?;
+                let (c, _) = cl
+                    .call::<_, st::ClipText>(st::CLIPBOARD, &st::ById { window_id: 0 }, Vec::new(), deadline())
+                    .map_err(|e| format!("stage: {e:?}"))?;
+                c.text
+            }
             ("stage", "focused") => {
                 let ws = self.windows()?;
                 ws.windows.iter().find(|w| w.focused).map_or(String::new(), |w| w.title.clone())
@@ -317,7 +324,7 @@ impl Cdpd {
             }
             _ => {
                 return Err(format!(
-                    "cdpd reads back stage theme|scale|look|focused and conductor `state <name>`, not {service} {query}"
+                    "cdpd reads back stage theme|scale|look|focused|clipboard and conductor `state <name>`, not {service} {query}"
                 ));
             }
         };

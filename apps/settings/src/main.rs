@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use app_settings::accounts::{Dialog, Kind as DKind, Outcome as DOut};
 use app_settings::personalisation::{Kind, ROWS, Row, WALLPAPER_NAMES};
 use app_settings::shell::{BAR, Bar, Focus, Outcome, PANELS, Panel, Shell};
-use app_settings::{about, key};
+use app_settings::{about, hardware, key};
 use fapp::{Look as KeyLook, Window, inside};
 use fcore_abi::signal;
 use fimage::bundle::Bundle;
@@ -24,6 +24,8 @@ use fui::layout::Rect;
 use fui::theme::{Mode, TextStyle, Tok};
 use fwire::proto::accounts as a;
 use fwire::proto::ax;
+use fwire::proto::conductor as c;
+use fwire::proto::devmgr as d;
 use fwire::proto::stage as st;
 
 fstd::program!(run);
@@ -86,6 +88,8 @@ struct App {
     thumbs: Option<Thumbs>,
     /// A word on the bar: a save that failed.
     note: Option<String>,
+    /// What the hardware report's last key did (About).
+    report_note: Option<String>,
     /// Shown while accounts works (checking a password takes a moment).
     busy: Option<&'static str>,
 }
@@ -570,6 +574,141 @@ impl App {
             self.win.nodes.push(n);
             y += t.px(14) as i32;
         }
+        // The hardware report (TASK-111): Copy, Save, and how it begins.
+        self.win.say((x, y), TextStyle::Small, "Hardware report", Tok::Text2);
+        y += t.px(20) as i32;
+        self.win.say(
+            (x, y),
+            TextStyle::Body,
+            "What this machine is, as text you can send. Nothing is sent anywhere.",
+            Tok::Text,
+        );
+        y += t.px(30) as i32;
+        let key_h = t.px(36);
+        let mut kx = x;
+        for (k, (label, id)) in hardware::KEYS.into_iter().enumerate() {
+            let (lw, _) = self.win.measure(TextStyle::Body, label);
+            let r = Rect::new(kx, y, lw + t.px(32), key_h);
+            let look = self.look(Hit::Action(k), self.shell.focus == Focus::Control(k) && self.dialog.is_none());
+            self.win.key(r, label, false, look, id);
+            self.hits.push((r, Hit::Action(k)));
+            kx += (r.w + t.px(12)) as i32;
+        }
+        y += (key_h + t.px(12)) as i32;
+        if let Some(note) = self.report_note.clone() {
+            let (nw, nh) = self.win.measure(TextStyle::Small, &note);
+            self.win.say((x, y), TextStyle::Small, &note, Tok::Text2);
+            let mut n = node(ax::TEXT, &note, 0, Rect::new(x, y, nw, nh), "settings-report-note");
+            n.value = note;
+            self.win.nodes.push(n);
+        }
+    }
+
+    /// The report from what the kernel, devmgr and conductor say now.
+    fn report(&self) -> String {
+        let mut f = hardware::Facts {
+            image: about::lines(self.image.as_ref()).iter().take(2).map(|l| l.1.clone()).collect::<Vec<_>>().join(", "),
+            ..Default::default()
+        };
+        #[cfg(target_arch = "x86_64")]
+        {
+            use core::arch::x86_64::{__cpuid, __cpuid_count};
+            if __cpuid(0x8000_0000).eax >= 0x8000_0004 {
+                let leaf = |l: u32| {
+                    let r = __cpuid(l);
+                    [r.eax, r.ebx, r.ecx, r.edx]
+                };
+                f.cpu_name = hardware::cpu_name(&[leaf(0x8000_0002), leaf(0x8000_0003), leaf(0x8000_0004)]);
+            }
+            let l1 = __cpuid(1);
+            let ebx7 = if __cpuid(0).eax >= 7 { __cpuid_count(7, 0).ebx } else { 0 };
+            f.cpu_features = hardware::cpu_features(l1.ecx, l1.edx, ebx7);
+        }
+        if let Some(cpus) = fstd::machine::cpus() {
+            let mut b = [0u8; 16];
+            let hz = fstd::sys::system_info(fcore_abi::topic::CPU, &mut b)
+                .map_or(0, |_| u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]));
+            f.clock = fstd::machine::clock_line(hz, cpus.tsc_from);
+            f.cores = alloc::format!("{} · {}", cpus.layout(), if cpus.x2apic { "x2APIC" } else { "xAPIC" });
+        }
+        let mut m = [0u8; 16];
+        if fstd::sys::system_info(fcore_abi::topic::MEMORY, &mut m).is_ok() {
+            let word = |i: usize| {
+                u64::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3], m[i + 4], m[i + 5], m[i + 6], m[i + 7]])
+            };
+            f.memory = Some((word(0), word(8)));
+        }
+        f.display = fstd::machine::gop_modes().1;
+        let edid = fstd::machine::edid();
+        if !edid.is_empty() {
+            f.panel = Some(fedid::parse(&edid).ok().and_then(|e| e.name().map(String::from)).unwrap_or_default());
+        }
+        if let Ok(ch) = fstd::service::connect("devmgr") {
+            let mut dm = Client::new(ch);
+            if let Ok((t, _)) = dm.call::<_, d::FirmwareTimes>(d::FIRMWARE_TIMES, &(), Vec::new(), fapp::deadline()) {
+                f.firmware = t.vendor;
+            }
+            if let Ok((l, _)) = dm.call::<_, d::Devices>(d::LIST, &(), Vec::new(), fapp::deadline()) {
+                f.pci = l
+                    .pci
+                    .iter()
+                    .map(|p| {
+                        (
+                            alloc::format!("{:02x}:{:02x}.{}", p.bus, p.device, p.function),
+                            alloc::format!(
+                                "{} ({:04x}:{:04x})",
+                                fstd::machine::pci_class(p.class, p.subclass, p.prog_if),
+                                p.vendor,
+                                p.id
+                            ),
+                        )
+                    })
+                    .collect();
+            }
+            if let Ok((s, _)) = dm.call::<_, d::Summary>(d::SUMMARY, &(), Vec::new(), fapp::deadline()) {
+                f.bound = s.bound.into_iter().map(|b| (b.device, b.driver)).collect();
+            }
+        }
+        if let Ok(t) = fstd::service::ask::<_, c::BootTimeline>(c::BOOT_TIMELINE, &()) {
+            f.boot = t
+                .stages
+                .into_iter()
+                .map(|(id, ns)| (String::from(c::STAGES.get(id as usize).copied().unwrap_or("?")), ns as f64 / 1e6))
+                .collect();
+        }
+        hardware::report(&f)
+    }
+
+    /// The report's key `i` pressed: 0 copies it, 1 saves it to the home.
+    fn report_key(&mut self, i: usize) {
+        let text = self.report();
+        self.report_note = Some(if i == 0 {
+            let c = st::Clip { window_id: self.win.id, text };
+            match self.win.stage.call::<_, ()>(st::SET_CLIPBOARD, &c, Vec::new(), fapp::deadline()) {
+                Ok(_) => {
+                    fstd::info!("settings: the hardware report copied");
+                    String::from("Copied: paste it into an email, or anywhere else.")
+                }
+                Err(e) => alloc::format!("It wasn't copied: {e:?}"),
+            }
+        } else {
+            match &self.me {
+                None => String::from("A guest has no home to save it in: log in, or copy it."),
+                Some(u) => {
+                    let folder = alloc::format!("/home/{}/{}", u.username, hardware::FOLDER);
+                    let path = alloc::format!("{folder}/{}", hardware::FILE);
+                    let _ = fstd::fs::create_dir(&folder);
+                    match fstd::fs::write(&path, text.as_bytes()) {
+                        Ok(()) => {
+                            fstd::info!("settings: the hardware report saved to {path}");
+                            alloc::format!("Saved to Home ▸ {} ▸ {}.", hardware::FOLDER, hardware::FILE)
+                        }
+                        Err(e) => alloc::format!("It wasn't saved: {}", e.describe()),
+                    }
+                }
+            }
+        });
+        self.draw();
     }
 
     fn draw_dialog(&mut self) {
@@ -843,6 +982,7 @@ impl App {
                 self.cancel();
                 return true;
             }
+            Outcome::Action(i) if self.shell.panel == Panel::About => self.report_key(i),
             Outcome::Action(i) => self.open_dialog(i),
             Outcome::Nothing => {}
         }
@@ -1147,6 +1287,7 @@ fn run(_bootstrap: u32) -> i64 {
         shown,
         thumbs: None,
         note: None,
+        report_note: None,
         busy: None,
     };
     app.read_users();

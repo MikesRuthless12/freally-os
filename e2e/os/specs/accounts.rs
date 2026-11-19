@@ -5,7 +5,7 @@
 //! vfs. All on the GPT disk, after the file specs (which make no accounts).
 
 use crate::Ctx;
-use crate::terminal::{expect, open};
+use crate::terminal::{expect, once, open};
 use fjson::Value;
 use std::time::{Duration, Instant};
 
@@ -244,7 +244,11 @@ pub fn export(ctx: &mut Ctx) -> Result<(), String> {
 pub fn import(ctx: &mut Ctx) -> Result<(), String> {
     owner(ctx)?;
     ok(ctx, &format!("login {OWNER} {OWNER_PASSWORD}"))?;
+    // The bundle `@accounts.export` leaves; made here (with its file) when that didn't run.
     if !door(ctx, "bundles")?.contains(&format!("home:{OWNER}.facct")) {
+        open(ctx)?;
+        once(ctx, &format!("mkdir /home/{OWNER}/Documents"), &[])?;
+        expect(ctx, &format!("write /home/{OWNER}/Documents/plan.txt the plan, carried"), &[])?;
         door(ctx, &format!("export {OWNER_PASSWORD}"))?;
     }
     let name = format!("home:{OWNER}.facct");
@@ -277,5 +281,75 @@ pub fn import(ctx: &mut Ctx) -> Result<(), String> {
         crate::sweep::click(ctx, id)?;
         crate::sweep::until_attr(ctx, &format!("[data-testid=\"{testid}\"]"), "aria-selected", "true")?;
     }
+    Ok(())
+}
+
+/// The account carried between two VMs (TASK-106): its files, and its password.
+const CARRIED: &str = "carol";
+const CARRIED_PASSWORD: &str = "carol-pass-1";
+const CARRIED_FILES: [(&str, &str); 2] =
+    [("Carried/letter.txt", "dear world"), ("Carried/Deep/inner.txt", "all the way down")];
+
+/// `@accounts.move_out` (VM A, TASK-106): an account with a few files,
+/// exported and logged out (the home locked: everything on the disk). The
+/// leg then carries its bundle to VM B's disk, as a shared disk would.
+pub fn move_out(ctx: &mut Ctx) -> Result<(), String> {
+    owner(ctx)?;
+    if door(ctx, "who")? != [OWNER] {
+        ok(ctx, "logout")?;
+        ok(ctx, &format!("login {OWNER} {OWNER_PASSWORD}"))?;
+    }
+    if !door(ctx, "list")?.iter().any(|l| l.starts_with(&format!("{CARRIED} "))) {
+        ok(ctx, &format!("create {CARRIED} {CARRIED_PASSWORD} {OWNER_PASSWORD}"))?;
+    }
+    ok(ctx, "logout")?;
+    ok(ctx, &format!("login {CARRIED} {CARRIED_PASSWORD}"))?;
+    open(ctx)?;
+    expect(ctx, "whoami", &[CARRIED])?;
+    once(ctx, &format!("mkdir /home/{CARRIED}/Carried"), &[])?;
+    once(ctx, &format!("mkdir /home/{CARRIED}/Carried/Deep"), &[])?;
+    for (path, words) in CARRIED_FILES {
+        once(ctx, &format!("write /home/{CARRIED}/{path} {words}"), &[])?;
+    }
+    let said = door(ctx, &format!("export {CARRIED_PASSWORD}"))?;
+    if !said.iter().any(|l| l.contains(&format!("{CARRIED}.facct"))) {
+        return Err(format!("accounts export: {said:?}"));
+    }
+    ok(ctx, "logout")
+}
+
+/// `@accounts.move` (VM B, TASK-106): on a new disk holding only the carried
+/// bundle in /system/imports, Welcome's *Import an account…*: the file
+/// chosen, its password, the preview, Import; the account is the Owner,
+/// logged in, and every file it had is there, word for word.
+pub fn move_in(ctx: &mut Ctx) -> Result<(), String> {
+    use crate::session::{press, sel, typed, waits_for_log};
+    use crate::sweep::{attr, click, until_q};
+    ctx.expect_log("welcome: shown")?;
+    let n = until_q(ctx, &sel("welcome-import"))?;
+    click(ctx, n)?;
+    let file = format!("welcome-file-{CARRIED}.facct");
+    let n = until_q(ctx, &sel(&file))?;
+    click(ctx, n)?;
+    typed(ctx, CARRIED_PASSWORD)?;
+    press(ctx, "Enter")?;
+    let p = until_q(ctx, &sel("welcome-preview"))?;
+    let preview = attr(ctx, p, "aria-valuenow")?.or(attr(ctx, p, "aria-label")?).unwrap_or_default();
+    if !preview.contains(&format!("'{CARRIED}'")) {
+        return Err(format!("the preview says {preview:?}"));
+    }
+    ctx.keep_shot("welcome-import-preview")?;
+    let before = ctx.log_count("welcome: imported");
+    press(ctx, "Enter")?;
+    waits_for_log(ctx, &format!("welcome: imported {CARRIED} (the Owner) and logged in"), before)?;
+    if door(ctx, "list")? != [format!("{CARRIED} owner")] {
+        return Err(format!("accounts on VM B: {:?}", door(ctx, "list")?));
+    }
+    open(ctx)?;
+    expect(ctx, "whoami", &[CARRIED])?;
+    for (path, words) in CARRIED_FILES {
+        expect(ctx, &format!("cat /home/{CARRIED}/{path}"), &[words])?;
+    }
+    expect(ctx, &format!("ls /home/{CARRIED}/Carried"), &["Deep/", "letter.txt"])?;
     Ok(())
 }

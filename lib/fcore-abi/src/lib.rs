@@ -280,8 +280,12 @@ pub mod syscall {
     /// off (the boot-control grant: conductor; the Brain's `reboot`,
     /// TASK-084; Shut down and Restart, TASK-102).
     pub const SYSTEM_RESET: u64 = 39;
+    /// `interrupt_bind_msi(resource) → (handle, address | data << 32)`: a
+    /// vector for a device's MSI-X entry (TASK-092A); its MMIO resource
+    /// shows the caller drives it.
+    pub const INTERRUPT_BIND_MSI: u64 = 40;
     /// One past the highest number.
-    pub const COUNT: u64 = 40;
+    pub const COUNT: u64 = 41;
 }
 
 #[cfg(test)]

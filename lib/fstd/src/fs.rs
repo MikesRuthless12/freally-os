@@ -161,3 +161,35 @@ pub fn snapshot(name: &str) -> Result<(), FsError> {
 pub fn whoami() -> Result<String, FsError> {
     Ok(call::<_, v::Who>(v::WHOAMI, &())?.user)
 }
+
+/// A copy (or, `moving`, a move) of `sources` into folder `dest`
+/// (TASK-105A): checked and weighed by vfs; then step it till it's done.
+pub fn copy_start(sources: Vec<String>, dest: &str, moving: bool, verify: bool) -> Result<v::CopyJob, FsError> {
+    call(v::COPY_START, &v::CopyStart { sources, dest: String::from(dest), moving, verify })
+}
+
+/// Up to 4 MiB more of job `job`, and where it stands.
+pub fn copy_step(job: u32) -> Result<v::CopyState, FsError> {
+    call(v::COPY_STEP, &v::CopyRef { job })
+}
+
+/// A conflict answered (`v::CHOOSE_*`; `all`: for every one), or a failure
+/// (`CHOOSE_TRY_AGAIN`, `CHOOSE_SKIP`).
+pub fn copy_decide(job: u32, choice: u8, all: bool) -> Result<(), FsError> {
+    call(v::COPY_DECIDE, &v::CopyDecide { job, choice, all })
+}
+
+/// Every conflict still ahead (*Let me decide for each file*).
+pub fn copy_conflicts(job: u32) -> Result<Vec<v::CopyConflict>, FsError> {
+    Ok(call::<_, v::CopyConflicts>(v::COPY_CONFLICTS, &v::CopyRef { job })?.items)
+}
+
+/// A choice per source path.
+pub fn copy_each(job: u32, choices: Vec<(String, u8)>) -> Result<(), FsError> {
+    call(v::COPY_EACH, &v::CopyEach { job, choices })
+}
+
+/// Job `job` stopped; a half-copied file is removed.
+pub fn copy_cancel(job: u32) -> Result<(), FsError> {
+    call(v::COPY_CANCEL, &v::CopyRef { job })
+}

@@ -166,6 +166,12 @@ impl Window {
         Ok(())
     }
 
+    /// The window made again at another `size` (unscaled), as `reopen` does.
+    pub fn resize(&mut self, size: (u32, u32)) -> Result<(), String> {
+        self.size = size;
+        self.reopen()
+    }
+
     /// The window closed (the program goes on). The endpoint it holds, if
     /// it's the program's first, goes to `heir`.
     pub fn close(mut self, heir: Option<&mut Window>) {

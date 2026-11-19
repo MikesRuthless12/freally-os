@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "app-calculator"
+description = "Calculator: exact decimal sums, standard and scientific, with a history."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "calculator"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = ["fimage/guard"]
+flavour-e2e = ["fimage/guard"]
+
+[dependencies]
+fapp.workspace = true
+fcore-abi.workspace = true
+fdecimal.workspace = true
+fimage.workspace = true
+fstd.workspace = true
+fui = { workspace = true, features = ["ui"] }
+fwire.workspace = true
+
+[lints]
+workspace = true

@@ -142,7 +142,7 @@ impl Shell {
         match self.panel {
             Panel::Personalisation => (0..ROWS.len()).filter(|&i| ROWS[i].enabled(&self.pending)).collect(),
             Panel::Accounts => (0..self.actions).collect(),
-            Panel::About => alloc::vec::Vec::new(),
+            Panel::About => (0..crate::hardware::KEYS.len()).collect(),
         }
     }
 
@@ -333,11 +333,15 @@ mod tests {
         assert_eq!(s.panel, Panel::Personalisation);
         s.key(key::END, false);
         assert_eq!(s.panel, Panel::About);
-        // About: the tab list, then the bar (OK, Cancel), then round again.
-        assert_eq!(s.stops(), [Focus::Tabs, Focus::Bar(Bar::Ok), Focus::Bar(Bar::Cancel)]);
-        s.key(key::TAB, false);
-        s.key(key::TAB, false);
-        s.key(key::TAB, false);
+        // About: the tab list, the hardware report's two keys, then the bar
+        // (OK, Cancel), then round again.
+        assert_eq!(
+            s.stops(),
+            [Focus::Tabs, Focus::Control(0), Focus::Control(1), Focus::Bar(Bar::Ok), Focus::Bar(Bar::Cancel)]
+        );
+        for _ in 0..5 {
+            s.key(key::TAB, false);
+        }
         assert_eq!(s.focus, Focus::Tabs);
         s.key(key::TAB, true);
         assert_eq!(s.focus, Focus::Bar(Bar::Cancel), "Shift+Tab goes back");

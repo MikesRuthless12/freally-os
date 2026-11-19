@@ -200,7 +200,7 @@ fn what_a_window_carries_is_dropped_on_the_window_under_the_pointer() {
     d.mouse(-440, -340, 0, 1, &mut out); // (60, 60): over b
     d.mouse(0, 0, 0, 0, &mut out); // let go over b
     let s = sends(&out);
-    let dropped = DropEvent { x: 50, y: 50, data: String::from("/home/mike/x") };
+    let dropped = DropEvent { x: 50, y: 50, data: String::from("/home/mike/x"), modifiers: 0 };
     assert!(s.contains(&(b, Event::Drop(dropped))), "{s:?}");
     assert!(s.iter().any(|(id, e)| *id == a && matches!(e, Event::Pointer(Pointer { kind: PointerKind::Up, .. }))));
     // Carried and let go over its own window: no drop; nothing carried after.

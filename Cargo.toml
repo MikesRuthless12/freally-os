@@ -39,6 +39,7 @@ fsvc = { path = "lib/fsvc" }
 frt = { path = "lib/frt" }
 fstd = { path = "lib/fstd" }
 fapp = { path = "lib/fapp" }
+fdecimal = { path = "lib/fdecimal" }
 fwire = { path = "lib/fwire" }
 cdp-proto = { path = "tools/cdp-proto" }
 

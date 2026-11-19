@@ -4,8 +4,9 @@
 //! - A key file holds a 32-byte Ed25519 seed as hex, mode 0600, in a 0700 folder.
 //! - Keys are never overwritten (`--force` to replace one, which breaks every image
 //!   signed with the old one) and never written inside the repository.
-//! - `--release` is refused: the release key is made only in Phase 7's key
-//!   ceremony, offline, onto its own USB drives (TASK-109).
+//! - `--release` is the key ceremony's (TASK-109, `ceremony.rs`): offline,
+//!   onto its own USB drive only, sealed with a passphrase; its public half
+//!   joins `boot/src/keys.rs` as `RELEASE`.
 //! - The public halves are written to `boot/src/keys.rs`, which is committed, so
 //!   every machine builds the same bootloader.
 
@@ -45,9 +46,7 @@ impl KeyName {
 
 pub fn keygen(args: &[String]) -> Result<(), String> {
     if args.iter().any(|a| a == "--release") {
-        return Err("the release key is made only in Phase 7's key ceremony (TASK-109), offline, \
-                    onto its own USB drives; never here"
-            .into());
+        return crate::ceremony::keygen(args);
     }
     let force = args.iter().any(|a| a == "--force");
     let mut names = Vec::new();
@@ -120,8 +119,25 @@ pub fn load_public(name: KeyName) -> Result<[u8; 32], String> {
 }
 
 fn read_public(name: KeyName) -> Option<[u8; 32]> {
-    let text = fs::read_to_string(name.public_path()).ok()?;
+    read_hex(&name.public_path())
+}
+
+fn read_hex(path: &std::path::Path) -> Option<[u8; 32]> {
+    let text = fs::read_to_string(path).ok()?;
     util::unhex(text.trim()).ok()?.try_into().ok()
+}
+
+/// The release key's public half (public: kept beside the others; its
+/// secret half lives only on its drives).
+fn release_public_path() -> PathBuf {
+    util::keys_dir().join("release.pub")
+}
+
+/// The ceremony's public key recorded, and `boot/src/keys.rs` written with it.
+pub fn set_release_public(public: &[u8; 32]) -> Result<(), String> {
+    fs::create_dir_all(util::keys_dir()).map_err(|e| e.to_string())?;
+    fs::write(release_public_path(), format!("{}\n", util::hex(public))).map_err(|e| e.to_string())?;
+    write_keys_rs()
 }
 
 fn rust_array(k: &[u8; 32]) -> String {
@@ -140,6 +156,10 @@ fn rust_array(k: &[u8; 32]) -> String {
 pub fn write_keys_rs() -> Result<(), String> {
     let dev = read_public(KeyName::Dev).ok_or("no dev public key; run cargo xtask keygen --dev")?;
     let staging = read_public(KeyName::Staging).ok_or("no staging public key; run cargo xtask keygen --staging")?;
+    let release = match read_hex(&release_public_path()) {
+        Some(k) => format!("Some({})", rust_array(&k)),
+        None => String::from("None"),
+    };
     let text = format!(
         "// SPDX-License-Identifier: Apache-2.0
 //! The public keys a bootloader may trust. Written by `cargo xtask keygen`; the
@@ -155,9 +175,14 @@ pub const DEV: [u8; 32] = {dev};
 
 /// The staging key: signs release-flavour images until the release key exists.
 pub const STAGING: [u8; 32] = {staging};
+
+/// The release key, from the key ceremony (TASK-109): `None` until then.
+/// Once it's here, a release bootloader trusts it alone.
+pub const RELEASE: Option<[u8; 32]> = {release};
 ",
         dev = rust_array(&dev),
-        staging = rust_array(&staging)
+        staging = rust_array(&staging),
+        release = release
     );
     let path = util::repo_root().join("boot/src/keys.rs");
     if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {

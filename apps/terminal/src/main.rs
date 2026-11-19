@@ -171,6 +171,41 @@ impl System for Sys {
     fn whoami(&mut self) -> Result<String, String> {
         fstd::fs::whoami().map_err(|e| e.describe())
     }
+
+    fn make_file(&mut self, path: &str, bytes: u64) -> Result<(), String> {
+        let mut f = fstd::fs::File::create(path).map_err(|e| e.describe())?;
+        let block: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+        let mut left = bytes;
+        while left > 0 {
+            let n = left.min(block.len() as u64) as usize;
+            f.write(&block[..n]).map_err(|e| e.describe())?;
+            left -= n as u64;
+        }
+        f.sync().map_err(|e| e.describe())
+    }
+
+    fn copy(&mut self, sources: &[String], dest: &str, verify: bool) -> Result<(u64, u64, u64), String> {
+        use fwire::proto::vfs as v;
+        let start = fstd::time::Instant::now().as_ns();
+        let job = fstd::fs::copy_start(sources.to_vec(), dest, false, verify).map_err(|e| e.describe())?;
+        loop {
+            let s = fstd::fs::copy_step(job.job).map_err(|e| e.describe())?;
+            match s.state {
+                v::COPY_DONE => {
+                    return Ok((s.done_items, s.done_bytes, fstd::time::Instant::now().as_ns() - start));
+                }
+                v::COPY_CONFLICT => {
+                    fstd::fs::copy_decide(job.job, v::CHOOSE_REPLACE, true).map_err(|e| e.describe())?;
+                }
+                v::COPY_FAILED => {
+                    let _ = fstd::fs::copy_cancel(job.job);
+                    return Err(s.words);
+                }
+                v::COPY_CANCELLED => return Err(String::from("cancelled")),
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Sys {
@@ -371,6 +406,17 @@ impl Term {
             }
             return;
         }
+        // A character at a time: each redraw drawn while the editor still
+        // holds that line (a paste's Enter would otherwise clear it first,
+        // and the line run would never show).
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        for ch in text.chars() {
+            let mut b = [0u8; 4];
+            self.input_events(ch.encode_utf8(&mut b).as_bytes());
+        }
+    }
+
+    fn input_events(&mut self, bytes: &[u8]) {
         for e in self.editor.feed(bytes) {
             match e {
                 LineEvent::Nothing => {}

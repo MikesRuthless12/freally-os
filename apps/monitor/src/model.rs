@@ -278,5 +278,21 @@ pub fn fault_details(f: &FaultRow) -> Vec<String> {
     out
 }
 
+/// The bytes of lines the test door's state may carry: a message holds
+/// 64 KiB, and the rest of the state rides with them.
+pub const STATE_LINES_BYTES: usize = 48 * 1024;
+
+/// The newest of `lines` whose wire form (each with its 4-byte length) fits
+/// in `max` bytes, oldest first: a long log's state still fits a message.
+pub fn newest_that_fit(lines: &[String], max: usize) -> &[String] {
+    let mut size = 0;
+    let mut from = lines.len();
+    while from > 0 && size + lines[from - 1].len() + 4 <= max {
+        from -= 1;
+        size += lines[from].len() + 4;
+    }
+    &lines[from..]
+}
+
 #[cfg(test)]
 mod tests;

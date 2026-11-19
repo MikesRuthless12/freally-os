@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fdecimal"
+description = "Freally's own exact decimal arithmetic and sum parser: no_std with alloc, for the Calculator (0.1 + 0.2 = 0.3)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

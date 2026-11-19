@@ -107,11 +107,16 @@ pub struct IrqLine {
     pub header: Header,
     pub gsi: u32,
     pub vector: u8,
+    /// A message-signalled line (MSI-X, TASK-092A): no IOAPIC pin to mask;
+    /// the device writes the vector, edge-triggered.
+    pub msi: bool,
 }
 
 impl Drop for IrqLine {
     fn drop(&mut self) {
-        crate::arch::ioapic::mask(self.gsi);
+        if !self.msi {
+            crate::arch::ioapic::mask(self.gsi);
+        }
         LINES.lock()[self.vector as usize] = None;
     }
 }
@@ -124,7 +129,9 @@ fn irq_handler(f: &mut crate::arch::idt::Frame) {
     let line = LINES.lock()[f.vector as usize].as_ref().and_then(alloc::sync::Weak::upgrade);
     if let Some(l) = line {
         // Masked until the driver acks: a level-triggered line would fire again at once.
-        crate::arch::ioapic::mask(l.gsi);
+        if !l.msi {
+            crate::arch::ioapic::mask(l.gsi);
+        }
         l.header.update(0, signal::SIGNALED);
     }
     crate::arch::apic::eoi();
@@ -139,7 +146,7 @@ pub fn bind(gsi: u32, flags: u16) -> Result<Arc<IrqLine>, FErr> {
     let vector = (FIRST_VECTOR..=LAST_VECTOR)
         .find(|v| lines[*v as usize].as_ref().is_none_or(|w| w.upgrade().is_none()))
         .ok_or(FErr::NoMemory)?;
-    let line = Arc::new(IrqLine { header: Header::new(), gsi, vector });
+    let line = Arc::new(IrqLine { header: Header::new(), gsi, vector, msi: false });
     lines[vector as usize] = Some(Arc::downgrade(&line));
     drop(lines);
     crate::exceptions::route(vector, irq_handler);
@@ -150,5 +157,50 @@ pub fn bind(gsi: u32, flags: u16) -> Result<Arc<IrqLine>, FErr> {
 /// The driver is done with the last interrupt: clear the signal and unmask.
 pub fn ack(l: &IrqLine) {
     l.header.update(signal::SIGNALED, 0);
-    crate::arch::ioapic::unmask(l.gsi);
+    if !l.msi {
+        crate::arch::ioapic::unmask(l.gsi);
+    }
 }
+
+/// A vector for a device's MSI-X entry (TASK-092A): the line, and the
+/// message its table entry takes (the address: this CPU's local APIC,
+/// physical destination; the data: the vector, fixed delivery, edge).
+pub fn bind_msi() -> Result<(Arc<IrqLine>, u32, u32), FErr> {
+    let dest = crate::arch::apic::id();
+    // Past 255 an x2APIC destination needs interrupt remapping (not yet).
+    if dest > 255 {
+        return Err(FErr::NotSupported);
+    }
+    let mut lines = LINES.lock();
+    let vector = (FIRST_VECTOR..=LAST_VECTOR)
+        .find(|v| lines[*v as usize].as_ref().is_none_or(|w| w.upgrade().is_none()))
+        .ok_or(FErr::NoMemory)?;
+    let line = Arc::new(IrqLine { header: Header::new(), gsi: u32::MAX, vector, msi: true });
+    lines[vector as usize] = Some(Arc::downgrade(&line));
+    drop(lines);
+    crate::exceptions::route(vector, irq_handler);
+    Ok((line, 0xFEE0_0000 | (dest << 12), vector as u32))
+}
+
+ktest!(msi_a_bound_vector_fires_its_line, {
+    let (line, address, data) = bind_msi().map_err(|_| "bind_msi refused")?;
+    if address & 0xFFF0_0000 != 0xFEE0_0000 || !(FIRST_VECTOR as u32..=LAST_VECTOR as u32).contains(&data) {
+        return Err("the message isn't a local APIC's");
+    }
+    // What the device would write: the vector, to this CPU.
+    crate::arch::apic::send_ipi(crate::arch::apic::id(), data as u8);
+    let give_up = crate::time::now_ns() + 100_000_000;
+    crate::arch::cpu::interrupts_on();
+    while line.header.get() & signal::SIGNALED == 0 && crate::time::now_ns() < give_up {
+        core::hint::spin_loop();
+    }
+    crate::arch::cpu::interrupts_off();
+    if line.header.get() & signal::SIGNALED == 0 {
+        return Err("the vector never signalled its line");
+    }
+    ack(&line);
+    if line.header.get() & signal::SIGNALED != 0 {
+        return Err("ack didn't clear it");
+    }
+    Ok(())
+});

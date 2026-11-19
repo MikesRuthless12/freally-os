@@ -37,7 +37,7 @@ pub(crate) fn open(ctx: &Ctx) -> Result<Vec<String>, String> {
     }
 }
 
-fn feed(ctx: &Ctx, op: &str, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn feed(ctx: &Ctx, op: &str, bytes: &[u8]) -> Result<(), String> {
     let r = ctx.door(&format!("terminal {op} {}", hex(bytes)))?;
     if r != ["ok"] {
         return Err(format!("terminal {op}: {r:?}"));
@@ -55,7 +55,7 @@ fn rows(ctx: &Ctx) -> Result<Vec<(usize, String)>, String> {
         .collect())
 }
 
-fn screen_text(ctx: &Ctx) -> Result<String, String> {
+pub(crate) fn screen_text(ctx: &Ctx) -> Result<String, String> {
     Ok(rows(ctx)?.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n"))
 }
 

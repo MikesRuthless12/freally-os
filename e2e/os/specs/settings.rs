@@ -9,7 +9,7 @@
 //! (from the list, renamed), remove, each through its dialog.
 
 use crate::Ctx;
-use crate::session::{expect_error, expect_focus, press, sel, typed, waits_for_log};
+use crate::session::{expect_error, expect_focus, expect_value, press, sel, typed, waits_for_log};
 use crate::stage::key;
 use crate::sweep::{attr, click, q, until_attr, until_gone, until_q};
 use fjson::Value;
@@ -424,4 +424,57 @@ pub fn accounts(ctx: &mut Ctx) -> Result<(), String> {
     ctx.keep_shot("settings-accounts")?;
     press(ctx, "Escape")?;
     closed(ctx)
+}
+
+/// What stage's clipboard holds (cdpd's read-back).
+fn clipboard(ctx: &mut Ctx) -> Result<String, String> {
+    let v = ctx
+        .cdp
+        .call("Freally.readBack", Value::obj([("service", "stage".into()), ("query", "clipboard".into())]))
+        .map_err(|e| format!("Freally.readBack: {e}"))?;
+    Ok(v.get("value").and_then(Value::as_str).unwrap_or("").to_string())
+}
+
+/// `@settings.hardware` (TASK-111, FR-053): About's hardware report copied
+/// (read back from stage's clipboard: every section, the driver that took
+/// the NVMe disk, the image's version) and saved to Home ▸ Exports (read
+/// back through the Terminal).
+pub fn hardware(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    open(ctx)?;
+    press_id(ctx, "settings-tab-about")?;
+    chosen(ctx, "settings-tab-about")?;
+    let copied = ctx.log_count("settings: the hardware report copied");
+    press_id(ctx, "settings-report-copy")?;
+    ctx.expect_log_count("settings: the hardware report copied", copied + 1)?;
+    let report = clipboard(ctx)?;
+    let mut want: Vec<String> =
+        ["Freally OS", "Processor", "Memory", "Firmware", "Display", "PCI devices", "Drivers", "Boot"]
+            .iter()
+            .map(|s| format!("\n{s}\n"))
+            .collect();
+    want.extend(
+        ["Freally OS hardware report", "Nothing in it is sent anywhere", ": drv-nvme", "MiB at boot", "Features: "]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    for w in &want {
+        if !report.contains(w.as_str()) {
+            return Err(format!("the report has no {w:?}:\n{report}"));
+        }
+    }
+    expect_value(ctx, "settings-report-note", "Copied: paste it into an email, or anywhere else.")?;
+    let saved = ctx.log_count("settings: the hardware report saved to /home/mike/Exports/hardware-report.txt");
+    press_id(ctx, "settings-report-save")?;
+    ctx.expect_log_count("settings: the hardware report saved to /home/mike/Exports/hardware-report.txt", saved + 1)?;
+    expect_value(ctx, "settings-report-note", "Saved to Home ▸ Exports ▸ hardware-report.txt.")?;
+    press_id(ctx, "settings-cancel")?;
+    closed(ctx)?;
+    crate::terminal::open(ctx)?;
+    crate::terminal::expect(
+        ctx,
+        "cat /home/mike/Exports/hardware-report.txt",
+        &["Freally OS hardware report", "Drivers"],
+    )?;
+    Ok(())
 }

@@ -247,6 +247,16 @@ impl<S: Store> Volume<S> {
         Ok(BlockPtr { block: p.block, generation: p.generation, check })
     }
 
+    /// A run of consecutive data blocks written, and emptied.
+    #[cfg(not(feature = "plant-data-after-superblock"))]
+    fn put_run(&mut self, run: &mut alloc::vec::Vec<(u64, alloc::boxed::Box<[u8; BLOCK]>)>) -> Result<(), FsError> {
+        let Some(&(first, _)) = run.first() else { return Ok(()) };
+        let bufs: alloc::vec::Vec<&[u8; BLOCK]> = run.iter().map(|(_, d)| &**d).collect();
+        self.store.write_run(first, &bufs)?;
+        run.clear();
+        Ok(())
+    }
+
     /// Commits this generation (§ 13).
     pub fn commit(&mut self) -> Result<(), FsError> {
         self.commit_with(0)
@@ -257,6 +267,9 @@ impl<S: Store> Volume<S> {
         // 1. Data first.
         #[cfg(feature = "plant-data-after-superblock")]
         let mut late = alloc::vec::Vec::new();
+        // Consecutive blocks go in runs (one disk command each, not one a block).
+        #[cfg(not(feature = "plant-data-after-superblock"))]
+        let mut run: alloc::vec::Vec<(u64, alloc::boxed::Box<[u8; BLOCK]>)> = alloc::vec::Vec::new();
         for (b, mut d) in core::mem::take(&mut self.data) {
             // An encrypted subvolume's data, sealed as its extent's tag says.
             if let Some(sv) = self.data_sv.remove(&b)
@@ -268,8 +281,15 @@ impl<S: Store> Volume<S> {
             #[cfg(feature = "plant-data-after-superblock")]
             late.push((b, d));
             #[cfg(not(feature = "plant-data-after-superblock"))]
-            self.store.write(b, &d)?;
+            {
+                if run.last().is_some_and(|(l, _)| *l + 1 != b) || run.len() == crate::store::RUN_BLOCKS {
+                    self.put_run(&mut run)?;
+                }
+                run.push((b, d));
+            }
         }
+        #[cfg(not(feature = "plant-data-after-superblock"))]
+        self.put_run(&mut run)?;
         self.data_sv.clear();
         // 2. Each changed subvolume's tree, then its record in the root tree.
         self.write_subvols()?;

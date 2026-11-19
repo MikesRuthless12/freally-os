@@ -3,7 +3,9 @@
 //! process, by path, through ffs. Each request is checked against the
 //! rules in the library (the caller conductor named, and the session's
 //! account): `/system` read-only, each home its account's alone. Open
-//! files are handles with a place, per connection.
+//! files are handles with a place, per connection; so are copy jobs
+//! (TASK-105A, `svc_vfs::copy`), stepped by their caller, each path they
+//! touch checked as the caller's.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -16,6 +18,7 @@ use fstd::time::{Duration, Instant};
 use fwire::proto::conductor as c;
 use fwire::proto::ffs as f;
 use fwire::proto::vfs as v;
+use svc_vfs::copy::{self, Choice, Job, Meta, Mode, Said, State, Tree};
 use svc_vfs::{Access, Caller, Place, check, homes_listed, parse};
 
 fstd::program!(run);
@@ -40,6 +43,157 @@ struct Conn {
     ch: Channel,
     files: Vec<Open>,
     next: u32,
+    /// Copy jobs, by id.
+    jobs: Vec<(u32, Job)>,
+}
+
+/// What a copy step may do: 4 MiB (or 256 small files), then vfs answers
+/// everyone else.
+const STEP_BYTES: u64 = 4 << 20;
+/// What one ffs message carries.
+const CHUNK: u64 = 60 * 1024;
+
+/// The copy engine's view of the files: every path checked as `who`'s.
+struct Files<'a> {
+    vfs: &'a mut Vfs,
+    who: &'a str,
+}
+
+fn said(e: (FErr, String)) -> Said {
+    e.1
+}
+
+impl Tree for Files<'_> {
+    fn meta(&mut self, path: &str) -> Result<Option<Meta>, Said> {
+        match self.vfs.resolve(self.who, path, Access::Read) {
+            Ok((sv, ino, _)) => {
+                let s: f::Stat = self.vfs.ffs(f::STAT, &f::Ino { sv, ino }).map_err(said)?;
+                Ok(Some(Meta { dir: s.kind == f::DIR, size: s.size, modified_ns: s.modified_ns }))
+            }
+            Err((FErr::NotFound, _)) => Ok(None),
+            Err(e) => Err(said(e)),
+        }
+    }
+    fn list(&mut self, path: &str) -> Result<Vec<String>, Said> {
+        let (sv, ino, _) = self.vfs.resolve(self.who, path, Access::Read).map_err(said)?;
+        let es: f::Entries = self.vfs.ffs(f::READDIR, &f::Ino { sv, ino }).map_err(said)?;
+        Ok(es.entries.into_iter().map(|(n, _)| n).collect())
+    }
+    fn mkdir(&mut self, path: &str) -> Result<(), Said> {
+        let (sv, dir, name) = self.vfs.parent(self.who, path).map_err(said)?;
+        self.vfs.ffs::<_, f::Entry>(f::CREATE, &f::Create { sv, dir, name, kind: f::DIR }).map(|_| ()).map_err(said)
+    }
+    fn reflink(&mut self, from: &str, to: &str) -> Result<bool, Said> {
+        let (sv, src, _) = self.vfs.resolve(self.who, from, Access::Read).map_err(said)?;
+        let (to_sv, dir, name) = self.vfs.parent(self.who, to).map_err(said)?;
+        if sv != to_sv {
+            return Ok(false);
+        }
+        self.vfs.ffs::<_, f::Entry>(f::CLONE, &f::CloneFile { sv, src, dir, name }).map(|_| true).map_err(said)
+    }
+    fn read(&mut self, path: &str, offset: u64, len: u64) -> Result<Vec<u8>, Said> {
+        let (sv, ino, _) = self.vfs.resolve(self.who, path, Access::Read).map_err(said)?;
+        let mut out = Vec::with_capacity(len as usize);
+        while (out.len() as u64) < len {
+            let at = offset + out.len() as u64;
+            let n = CHUNK.min(len - out.len() as u64) as u32;
+            let d: f::Data = self.vfs.ffs(f::READ, &f::Read { sv, ino, offset: at, len: n }).map_err(said)?;
+            if d.bytes.is_empty() {
+                break;
+            }
+            out.extend_from_slice(&d.bytes);
+        }
+        Ok(out)
+    }
+    fn write(&mut self, path: &str, offset: u64, bytes: &[u8]) -> Result<(), Said> {
+        let (sv, ino) = match self.vfs.resolve(self.who, path, Access::Write) {
+            Ok((sv, ino, _)) => {
+                if offset == 0 {
+                    self.vfs.ffs::<_, ()>(f::TRUNCATE, &f::Truncate { sv, ino, size: 0 }).map_err(said)?;
+                }
+                (sv, ino)
+            }
+            Err((FErr::NotFound, _)) if offset == 0 => {
+                let (sv, dir, name) = self.vfs.parent(self.who, path).map_err(said)?;
+                let e: f::Entry = self.vfs.ffs(f::CREATE, &f::Create { sv, dir, name, kind: f::FILE }).map_err(said)?;
+                (sv, e.ino)
+            }
+            Err(e) => return Err(said(e)),
+        };
+        for (i, chunk) in bytes.chunks(CHUNK as usize).enumerate() {
+            let at = offset + i as u64 * CHUNK;
+            self.vfs.ffs::<_, ()>(f::WRITE, &f::Write { sv, ino, offset: at, bytes: chunk.to_vec() }).map_err(said)?;
+        }
+        Ok(())
+    }
+    fn set_modified(&mut self, path: &str, ns: u64) -> Result<(), Said> {
+        let (sv, ino, _) = self.vfs.resolve(self.who, path, Access::Write).map_err(said)?;
+        self.vfs.ffs::<_, ()>(f::SET_MODIFIED, &f::Times { sv, ino, modified_ns: ns }).map_err(said)
+    }
+    fn rename(&mut self, from: &str, to: &str) -> Result<bool, Said> {
+        let (sv, dir, name) = self.vfs.parent(self.who, from).map_err(said)?;
+        let (to_sv, to_dir, to_name) = self.vfs.parent(self.who, to).map_err(said)?;
+        if sv != to_sv {
+            return Ok(false);
+        }
+        self.vfs.ffs::<_, ()>(f::RENAME, &f::Rename { sv, dir, name, to_dir, to_name }).map(|_| true).map_err(said)
+    }
+    fn remove(&mut self, path: &str) -> Result<(), Said> {
+        let (sv, dir, name) = self.vfs.parent(self.who, path).map_err(said)?;
+        self.vfs.ffs::<_, ()>(f::UNLINK, &f::Name { sv, dir, name }).map_err(said)
+    }
+}
+
+/// Where a job stands, as the protocol says it.
+fn state_of(job: &Job) -> v::CopyState {
+    let mut conflict = v::CopyConflict {
+        src: String::new(),
+        dst: String::new(),
+        src_size: 0,
+        src_modified_ns: 0,
+        dst_size: 0,
+        dst_modified_ns: 0,
+    };
+    let (state, words) = match &job.state {
+        State::Running => (v::COPY_RUNNING, String::new()),
+        State::Conflict(c) => {
+            conflict = wire_conflict(c);
+            (v::COPY_CONFLICT, String::new())
+        }
+        State::Failed(path, w) => (v::COPY_FAILED, alloc::format!("{path}: {w}")),
+        State::Done => (v::COPY_DONE, String::new()),
+        State::Cancelled => (v::COPY_CANCELLED, String::new()),
+    };
+    v::CopyState {
+        state,
+        done_items: job.done_items,
+        total_items: job.total_items,
+        done_bytes: job.done_bytes,
+        total_bytes: job.total_bytes,
+        current: job.current.clone(),
+        conflict,
+        words,
+    }
+}
+
+fn wire_conflict(c: &copy::Conflict) -> v::CopyConflict {
+    v::CopyConflict {
+        src: c.src.clone(),
+        dst: c.dst.clone(),
+        src_size: c.src_meta.size,
+        src_modified_ns: c.src_meta.modified_ns,
+        dst_size: c.dst_meta.size,
+        dst_modified_ns: c.dst_meta.modified_ns,
+    }
+}
+
+fn choice(c: u8) -> Option<Choice> {
+    match c {
+        v::CHOOSE_REPLACE => Some(Choice::Replace),
+        v::CHOOSE_SKIP => Some(Choice::Skip),
+        v::CHOOSE_KEEP_BOTH => Some(Choice::KeepBoth),
+        _ => None,
+    }
 }
 
 struct Vfs {
@@ -272,6 +426,76 @@ impl Vfs {
                 fstd::info!("vfs: session {}", if s.user.is_empty() { "ended" } else { s.user.as_str() });
                 unit()
             }
+            v::COPY_START => {
+                let c: v::CopyStart = arg(p)?;
+                let mode = if c.moving { Mode::Move } else { Mode::Copy };
+                let job = Job::new(&mut Files { vfs: self, who: &who }, &c.sources, &c.dest, mode, c.verify)
+                    .map_err(|w| (FErr::InvalidArgs, w))?;
+                let id = conn.next;
+                conn.next += 1;
+                let reply = v::CopyJob { job: id, total_items: job.total_items, total_bytes: job.total_bytes };
+                fstd::info!(
+                    "vfs: {} {id} for {who}: {} item(s), {} bytes into {}",
+                    if c.moving { "move" } else { "copy" },
+                    job.total_items,
+                    job.total_bytes,
+                    c.dest
+                );
+                conn.jobs.push((id, job));
+                Ok(fwire::to_payload(&reply))
+            }
+            v::COPY_STEP | v::COPY_CONFLICTS | v::COPY_DECIDE | v::COPY_EACH | v::COPY_CANCEL => {
+                let id = match ordinal {
+                    v::COPY_DECIDE => arg::<v::CopyDecide>(p)?.job,
+                    v::COPY_EACH => arg::<v::CopyEach>(p)?.job,
+                    _ => arg::<v::CopyRef>(p)?.job,
+                };
+                let i = conn.jobs.iter().position(|(j, _)| *j == id).ok_or(denied(FErr::BadHandle))?;
+                let job = &mut conn.jobs[i].1;
+                let mut t = Files { vfs: self, who: &who };
+                let out = match ordinal {
+                    v::COPY_STEP => {
+                        job.step(&mut t, STEP_BYTES);
+                        fwire::to_payload(&state_of(job))
+                    }
+                    v::COPY_CONFLICTS => {
+                        let all = job.conflicts(&mut t).map_err(|w| (FErr::Internal, w))?;
+                        fwire::to_payload(&v::CopyConflicts { items: all.iter().map(wire_conflict).collect() })
+                    }
+                    v::COPY_DECIDE => {
+                        let d: v::CopyDecide = arg(p)?;
+                        match (&job.state, choice(d.choice)) {
+                            (State::Failed(..), _) => job.retry(d.choice != v::CHOOSE_TRY_AGAIN, &mut t),
+                            (State::Conflict(_), Some(c)) => job.decide(c, d.all),
+                            _ => return Err((FErr::BadState, String::from("nothing to decide"))),
+                        }
+                        fwire::to_payload(&())
+                    }
+                    v::COPY_EACH => {
+                        let e: v::CopyEach = arg(p)?;
+                        let each: Vec<(String, Choice)> =
+                            e.choices.into_iter().filter_map(|(path, c)| choice(c).map(|c| (path, c))).collect();
+                        job.decide_each(&each);
+                        fwire::to_payload(&())
+                    }
+                    _ => {
+                        job.cancel(&mut t);
+                        fwire::to_payload(&())
+                    }
+                };
+                if matches!(conn.jobs[i].1.state, State::Done | State::Cancelled) {
+                    let (id, job) = conn.jobs.remove(i);
+                    fstd::info!(
+                        "vfs: copy {id} {}: {} of {} item(s), {} bytes, {} by reflink",
+                        if job.state == State::Done { "done" } else { "cancelled" },
+                        job.done_items,
+                        job.total_items,
+                        job.done_bytes,
+                        job.reflinked
+                    );
+                }
+                Ok(out)
+            }
             _ => Err((FErr::NotSupported, String::from("vfs doesn't serve that"))),
         }
     }
@@ -308,12 +532,16 @@ fn run(_bootstrap: u32) -> i64 {
                     && let Ok(inc) = fwire::from_payload::<c::Incoming>(p)
                     && let Some(ch) = m.handles.into_iter().next()
                 {
-                    conns.push(Conn { who: inc.client, ch: Channel(ch), files: Vec::new(), next: 1 });
+                    conns.push(Conn { who: inc.client, ch: Channel(ch), files: Vec::new(), next: 1, jobs: Vec::new() });
                 }
             }
             Ok(k) => {
                 if !serve(&mut vfs, &mut conns[k - 1]) {
-                    conns.remove(k - 1);
+                    // Gone with copies part-way: each stopped, no half file left.
+                    let mut gone = conns.remove(k - 1);
+                    for (_, mut job) in gone.jobs.drain(..) {
+                        job.cancel(&mut Files { vfs: &mut vfs, who: &gone.who });
+                    }
                 }
             }
             Err(_) => fstd::time::sleep(Duration::from_millis(10)),

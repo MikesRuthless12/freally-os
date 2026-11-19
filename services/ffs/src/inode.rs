@@ -89,6 +89,14 @@ impl<S: Store> Volume<S> {
         self.sv_insert(sv, Key::new(ino, kind::INODE, 0), &i.encode())
     }
 
+    /// File `ino`'s modified time set (a copy keeps its source's; TASK-105A).
+    pub fn set_modified(&mut self, sv: u64, ino: u64, ns: u64) -> Result<(), FsError> {
+        self.writable(sv)?;
+        let mut i = self.stat(sv, ino)?;
+        i.modified_ns = ns;
+        self.put_inode(sv, ino, &i)
+    }
+
     /// The next inode number of subvolume `sv`, taken.
     pub(crate) fn take_ino(&mut self, sv: u64) -> Result<u64, FsError> {
         let s = self.subvol(sv)?;
