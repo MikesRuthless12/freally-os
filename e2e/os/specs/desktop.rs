@@ -184,6 +184,24 @@ pub fn launcher(ctx: &mut Ctx) -> Result<(), String> {
     if !line.contains("focused=true") {
         return Err(format!("the launcher doesn't have focus: {line}"));
     }
+    // The OS's own mark (TASK-077A): the green F, drawn from the owner's master.
+    let mark = crate::sweep::until_q(ctx, "IMG[data-testid=\"launcher-mark\"]")?;
+    let (mx0, my0, mx1, my1) = crate::sweep::box_of(ctx, mark)?;
+    let shot = ctx.screenshot()?;
+    let (mut green, mut all) = (0, 0);
+    for py in my0..my1 {
+        for px in mx0..mx1 {
+            let i = (py as usize * shot.w as usize + px as usize) * 3;
+            let (r, g, b) = (shot.pixels[i] as i32, shot.pixels[i + 1] as i32, shot.pixels[i + 2] as i32);
+            all += 1;
+            if g > 120 && g > r + 40 && g > b + 40 {
+                green += 1;
+            }
+        }
+    }
+    if mx1 - mx0 != 28 || my1 - my0 != 28 || green * 5 < all {
+        return Err(format!("the launcher's mark: {}x{}, {green} of {all} pixels the F's green", mx1 - mx0, my1 - my0));
+    }
     // Typing shows in the well, and "No app called 'xyz'." below it.
     let row = |ctx: &mut Ctx, ry: i32, x0: i32, x1: i32| -> Result<Vec<u32>, String> {
         let shot = ctx.screenshot()?;

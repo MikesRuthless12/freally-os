@@ -71,8 +71,8 @@ pub fn attr(ctx: &mut Ctx, id: i64, k: &str) -> Result<Option<String>, String> {
     Ok(a.chunks(2).find(|p| p[0].as_str() == Some(k)).and_then(|p| p.get(1)?.as_str().map(String::from)))
 }
 
-/// A click in the middle of node `id`, with the real mouse.
-pub fn click(ctx: &mut Ctx, id: i64) -> Result<(), String> {
+/// Node `id`'s box on screen: (x0, y0, x1, y1).
+pub fn box_of(ctx: &mut Ctx, id: i64) -> Result<(i64, i64, i64, i64), String> {
     let m = call(ctx, "DOM.getBoxModel", Value::obj([("nodeId", id.into())]))?;
     let quad: Vec<i64> = m
         .get("model")
@@ -83,6 +83,12 @@ pub fn click(ctx: &mut Ctx, id: i64) -> Result<(), String> {
         .filter_map(Value::as_i64)
         .collect();
     let [x0, y0, x1, _, _, y1, ..] = quad[..] else { return Err(format!("no box for node {id}")) };
+    Ok((x0, y0, x1, y1))
+}
+
+/// A click in the middle of node `id`, with the real mouse.
+pub fn click(ctx: &mut Ctx, id: i64) -> Result<(), String> {
+    let (x0, y0, x1, y1) = box_of(ctx, id)?;
     crate::stage::move_to(ctx, ((x0 + x1) / 2) as i32, ((y0 + y1) / 2) as i32)?;
     crate::stage::button(ctx, true)?;
     crate::stage::button(ctx, false)

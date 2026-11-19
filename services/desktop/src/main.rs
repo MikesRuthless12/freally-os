@@ -563,9 +563,16 @@ impl Desktop {
         let mut s = win.surface();
         fill(&mut s, Rect::new(0, 0, w, h), t.colour(Tok::Border).xrgb());
         fill(&mut s, Rect::new(1, 1, w - 2, h - 2), t.colour(Tok::Surface).xrgb());
-        // The well: what's typed, with its caret.
+        // The OS's own mark (TASK-077A), and beside it the well: what's
+        // typed, with its caret.
         let pad = t.px(16) as i32;
-        let well = Rect::new(pad, pad, w - 2 * pad as u32, t.px(40));
+        let mark = art(self.os.as_ref(), t, "mark");
+        let mark_w = mark.as_ref().map_or(0, |m| m.width as i32 + t.px(12) as i32);
+        let well = Rect::new(pad + mark_w, pad, w - 2 * pad as u32 - mark_w as u32, t.px(40));
+        let mark_at = mark.as_ref().map(|m| (pad, well.y + (well.h as i32 - m.height as i32) / 2, m.width, m.height));
+        if let (Some(m), Some((x, y, _, _))) = (&mark, mark_at) {
+            s.draw(m, x, y);
+        }
         draw::round_rect(&mut s, well, 6.0 * t.scale, t.colour(Tok::Border));
         draw::round_rect(
             &mut s,
@@ -648,6 +655,11 @@ impl Desktop {
         );
         list.testid = String::from("launcher-list");
         let mut nodes = alloc::vec![search, list];
+        if let Some((x, y, mw, mh)) = mark_at {
+            let mut m = fstd::ax::node(ax::ROOT, ax::IMG, "Freally OS", 0, (x, y, mw, mh));
+            m.testid = String::from("launcher-mark");
+            nodes.push(m);
+        }
         for (row, &i) in matches.iter().take(LAUNCHER_ROWS).enumerate() {
             let y = top + row as i32 * row_h;
             let state = if row == selected { ax::SELECTED } else { 0 };
