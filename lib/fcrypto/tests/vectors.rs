@@ -1208,3 +1208,48 @@ fn ecdsa_signatures_verify_and_tampering_is_refused() {
         assert!(!verify(curve, x, y, digest, &r[1..], s), "a short r");
     }
 }
+
+/// HMAC-SHA-384: RFC 4231's test cases 1, 2 and 6 and a 100-byte key (longer
+/// than SHA-256's block, shorter than SHA-384's; the expected values from Python's hmac); HKDF-SHA-384 extract and a 100-byte expand.
+#[test]
+fn hmac_and_hkdf_sha384() {
+    use fcrypto::hkdf::sha384;
+    for (k, d, want) in [
+        (
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "4869205468657265",
+            "afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6",
+        ),
+        (
+            "4a656665",
+            "7768617420646f2079612077616e7420666f72206e6f7468696e673f",
+            "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649",
+        ),
+        (
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374",
+            "4ece084485813e9088d2c63a041bc5b44f9ef1012a2b588f3cd11f05033ac4c60c2ef6ab4030fe8296248df163f44952",
+        ),
+        (
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+            "61206b65792070617374205348412d3235367320626c6f636b2c20696e73696465205348412d33383473",
+            "fd1126410b8e121d4f225b528bde5e3b22803ecca4ebb327077f57db4613682da0a89f12d47bd0a80acacce3dd998c16",
+        ),
+    ] {
+        assert_eq!(sha384::hmac(&unhex(k), &unhex(d)).to_vec(), unhex(want));
+    }
+    let prk = sha384::extract(&[], &(0u8..22).collect::<Vec<_>>());
+    assert_eq!(
+        prk.to_vec(),
+        unhex("d36637316849987255d61c5f1fda9ffd2add11916ff77f9faac5fcf7dff53949fea4fe8f86b9a9d95e3fff6b425deae2")
+    );
+    let mut okm = [0u8; 100];
+    sha384::expand(&prk, b"info", &mut okm).unwrap();
+    assert_eq!(
+        okm.to_vec(),
+        unhex(
+            "1e135ca87a6eb715ca424b5d5f45343434112ad4fd5dc6515ad8d1c5e5246dd0008c5674a2a727d834a4acec65e0274e10cfb510cf5951e3a8c92be02dd2cfe3f4e59d2e111dd6c5b136afac36a2b130846c62cc74e6619fedcaccd1b6892ecbecba277a"
+        )
+    );
+    assert!(sha384::expand(&prk, b"", &mut [0u8; 255 * 48 + 1]).is_err());
+}
