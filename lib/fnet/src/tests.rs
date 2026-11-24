@@ -357,3 +357,107 @@ fn tcp_segments_both_ways() {
     assert_eq!(parse(&with(&[8, 1, 0, 0], 6)), Err(Bad::HeaderLength), "an option length under 2");
     assert_eq!(parse(&with(&[0, 2, 4, 5], 6)), Ok((None, None)), "nothing after the end of options");
 }
+
+/// DNS against messages an independent encoder made (Python's struct, the
+/// compression pointers written out): a query; A; a CNAME whose target is
+/// compressed onto the question's suffix, followed to its A, the smaller TTL
+/// kept; AAAA; NXDOMAIN; TC; a chain that leaves the answers. Every bad
+/// form refused with its reason, and nothing panics on changed bytes.
+#[test]
+fn dns_messages() {
+    use crate::dns::{self, Data, Found};
+    let unhex =
+        |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let m = |h: &str| dns::parse(&unhex(h)).unwrap();
+    assert_eq!(
+        dns::query(0x1234, "Test.Freally.Local.", dns::TYPE_A).unwrap(),
+        unhex("123401000001000000000000047465737407667265616c6c79056c6f63616c0000010001")
+    );
+    assert_eq!(dns::query(1, "a..b", 1), None, "an empty label");
+    assert_eq!(dns::query(1, &"x".repeat(64), 1), None, "a label over 63");
+
+    let a =
+        m("123481800001000100000000047465737407667265616c6c79056c6f63616c0000010001c00c000100010000012c00040a000264");
+    assert_eq!((a.id, a.truncated, a.rcode, a.question.clone()), (0x1234, false, 0, ("test.freally.local".into(), 1)));
+    assert_eq!(dns::found(&a, "test.freally.local", dns::TYPE_A), Found::Addresses(vec![vec![10, 0, 2, 100]], 300));
+    assert_eq!(dns::found(&a, "test.freally.local", dns::TYPE_AAAA), Found::NoData);
+
+    let c = m(
+        "0007818000010002000000000357575707467265616c6c79054c6f63616c0000010001c00c0005000100000e10000603776562c010c02f000100010000003c00040a000265",
+    );
+    assert_eq!(c.answers[0].data, Data::Cname("web.freally.local".into()), "lower case, the suffix from the question");
+    assert_eq!(dns::found(&c, "www.freally.local", dns::TYPE_A), Found::Addresses(vec![vec![10, 0, 2, 101]], 60));
+
+    let six = m(
+        "0009818000010001000000000373697807667265616c6c79056c6f63616c00001c0001c00c001c0001000000780010fec00000000000000000000000000015",
+    );
+    let mut want = vec![0xfe, 0xc0];
+    want.extend([0u8; 13]);
+    want.push(0x15);
+    assert_eq!(dns::found(&six, "six.freally.local", dns::TYPE_AAAA), Found::Addresses(vec![want], 120));
+    let nx = m("000a81830001000000000000046e6f6e6507667265616c6c79056c6f63616c0000010001");
+    assert_eq!(dns::found(&nx, "none.freally.local", dns::TYPE_A), Found::NoSuchName);
+    assert!(m("000b838000010000000000000362696707667265616c6c79056c6f63616c0000010001").truncated);
+    let alias = m(
+        "000c818000010001000000000377777707667265616c6c79056c6f63616c0000010001c00c000500010000001e00110363646e076578616d706c65036e657400",
+    );
+    assert_eq!(dns::found(&alias, "www.freally.local", dns::TYPE_A), Found::Alias("cdn.example.net".into(), 30));
+
+    // Refused: a pointer forward (to a later record), a short message, a query
+    // (QR clear), an A of five bytes, a label of the reserved 0x40 kind.
+    let forward = "0007818000010002000000000357575707467265616c6c79054c6f63616c0000010001c00c0005000100000e10000603776562c010c041000100010000003c00040a000265";
+    assert_eq!(dns::parse(&unhex(forward)), Err(Bad::Unsupported));
+    assert_eq!(dns::parse(&unhex("1234818000")), Err(Bad::Short));
+    assert_eq!(
+        dns::parse(&unhex("123401000001000000000000047465737407667265616c6c79056c6f63616c0000010001")),
+        Err(Bad::Unsupported)
+    );
+    let mut five = unhex(
+        "123481800001000100000000047465737407667265616c6c79056c6f63616c0000010001c00c000100010000012c00040a000264",
+    );
+    let at = five.len() - 6;
+    five[at + 1] = 5;
+    five.push(9);
+    assert_eq!(dns::parse(&five), Err(Bad::TotalLength));
+    let mut reserved = unhex("123481800001000000000000047465737407667265616c6c79056c6f63616c0000010001");
+    reserved[12] = 0x44;
+    assert_eq!(dns::parse(&reserved), Err(Bad::Unsupported));
+    // A pointer to itself, and a CNAME loop.
+    let mut own = unhex(
+        "123481800001000100000000047465737407667265616c6c79056c6f63616c0000010001c00c000100010000012c00040a000264",
+    );
+    let p = own.len() - 16;
+    own[p + 1] = p as u8;
+    assert_eq!(dns::parse(&own), Err(Bad::Unsupported));
+    let looped = dns::Response {
+        id: 1,
+        truncated: false,
+        rcode: 0,
+        question: ("a.x".into(), 1),
+        answers: vec![
+            dns::Record { name: "a.x".into(), ttl: 5, data: Data::Cname("b.x".into()) },
+            dns::Record { name: "b.x".into(), ttl: 5, data: Data::Cname("a.x".into()) },
+        ],
+    };
+    assert_eq!(dns::found(&looped, "a.x", 1), Found::TooDeep);
+
+    // Changed bytes never panic.
+    let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+    let base = unhex(
+        "0007818000010002000000000357575707467265616c6c79054c6f63616c0000010001c00c0005000100000e10000603776562c010c02f000100010000003c00040a000265",
+    );
+    for _ in 0..20_000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let mut b = base.clone();
+        let i = (x as usize) % b.len();
+        b[i] = (x >> 32) as u8;
+        if x % 7 == 0 {
+            b.truncate((x as usize >> 8) % b.len());
+        }
+        if let Ok(r) = dns::parse(&b) {
+            let _ = dns::found(&r, "www.freally.local", dns::TYPE_A);
+        }
+    }
+}

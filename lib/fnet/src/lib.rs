@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod dhcp;
+pub mod dns;
 pub mod ipv6;
 pub mod tcp;
 
