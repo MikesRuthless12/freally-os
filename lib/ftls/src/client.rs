@@ -3,7 +3,9 @@
 //! [`Client::feed`], bytes for it come out of [`Client::take_output`], so
 //! the same code runs over netstack's TCP and, in host tests, over a socket.
 //! One full handshake (no PSK, no 0-RTT, no resumption, no TLS 1.2), the
-//! server authenticated against the roots given, the client anonymous.
+//! server authenticated against the roots given, the client anonymous. The
+//! first ClientHello carries an X25519 share; a server that wants P-256 says
+//! so with a HelloRetryRequest, and the second ClientHello carries that.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -70,6 +72,11 @@ pub struct Client<'r> {
     /// The extensions it offered (the only ones a server may answer).
     offered: Vec<u16>,
     x25519: [u8; 32],
+    p256: [u8; 32],
+    /// After a HelloRetryRequest: its suite, the group it asked for, and the
+    /// transcript begun again (§ 4.4.1).
+    retry: Option<(Suite, u16, Transcript)>,
+    retried: bool,
     keys: Option<Keys>,
     /// The server's chain (DER), from Certificate to CertificateVerify.
     chain: Vec<Vec<u8>>,
@@ -85,23 +92,27 @@ pub struct Client<'r> {
 impl Drop for Client<'_> {
     fn drop(&mut self) {
         wipe(&mut self.x25519);
+        wipe(&mut self.p256);
     }
 }
 
 impl<'r> Client<'r> {
     /// Starts a handshake with `host` (its name checked against the leaf's
     /// subjectAltName), trusting only `roots` (DER) at `now` (Unix seconds).
-    /// `entropy` is 64 bytes from the system's random source: the client random
-    /// and the X25519 secret. The ClientHello is ready in [`Client::take_output`].
-    pub fn new(host: &str, roots: &'r [&'r [u8]], now: u64, entropy: &[u8; 64]) -> Result<Client<'r>, Error> {
+    /// `entropy` is 96 bytes from the system's random source: the client
+    /// random, the X25519 secret and the P-256 one. The ClientHello is ready in
+    /// [`Client::take_output`].
+    pub fn new(host: &str, roots: &'r [&'r [u8]], now: u64, entropy: &[u8; 96]) -> Result<Client<'r>, Error> {
         if host.is_empty() || host.len() > 253 || !host.is_ascii() {
             return Err(Error::Host);
         }
         let random: [u8; 32] = entropy[..32].try_into().expect("32");
-        let x25519: [u8; 32] = entropy[32..].try_into().expect("32");
+        let x25519: [u8; 32] = entropy[32..64].try_into().expect("32");
         let share = fcrypto::x25519::public_key(&x25519);
-        let hello = msg::client_hello(&random, host, &[(group::X25519, &share)], &[group::X25519], None);
-        Ok(Client::start(host, roots, now, hello, x25519))
+        let hello = msg::client_hello(&random, host, &[(group::X25519, &share)], &group::OFFERED, None);
+        let mut c = Client::start(host, roots, now, hello, x25519);
+        c.p256 = entropy[64..].try_into().expect("32");
+        Ok(c)
     }
 
     pub(crate) fn start(host: &str, roots: &'r [&'r [u8]], now: u64, hello: Vec<u8>, x25519: [u8; 32]) -> Client<'r> {
@@ -116,6 +127,9 @@ impl<'r> Client<'r> {
             offered: msg::offered(&hello).expect("the client's own ClientHello"),
             hello,
             x25519,
+            p256: [0; 32],
+            retry: None,
+            retried: false,
             keys: None,
             chain: Vec::new(),
             requested: None,
@@ -144,6 +158,11 @@ impl<'r> Client<'r> {
     /// The server sent close_notify: nothing more will come.
     pub fn peer_closed(&self) -> bool {
         self.peer_closed
+    }
+
+    /// The server asked again for another key share (a HelloRetryRequest).
+    pub fn retried(&self) -> bool {
+        self.retried
     }
 
     pub fn suite(&self) -> Option<Suite> {
@@ -214,6 +233,7 @@ impl<'r> Client<'r> {
         }
         self.state = State::Failed(e);
         wipe(&mut self.x25519);
+        wipe(&mut self.p256);
         e
     }
 
@@ -343,28 +363,39 @@ impl<'r> Client<'r> {
         if sh.version != Some(msg::TLS13) {
             return Err(sent(Alert::PROTOCOL_VERSION)); // TLS 1.3 only
         }
-        if sh.retry {
-            // A HelloRetryRequest asks for a share the client didn't send; X25519,
-            // the only group offered, was sent, so no retry can change anything (§ 4.1.4).
-            return Err(sent(Alert::ILLEGAL_PARAMETER));
-        }
         if !sh.session_id.is_empty() {
             return Err(sent(Alert::ILLEGAL_PARAMETER));
         }
+        if sh.retry {
+            return self.hello_retry(&sh, m);
+        }
         let suite = Suite::from_id(sh.suite).ok_or(sent(Alert::ILLEGAL_PARAMETER))?;
-        let peer: &[u8; 32] = match sh.share {
-            Some((group::X25519, k)) => k.try_into().map_err(|_| sent(Alert::ILLEGAL_PARAMETER))?,
+        // After a HelloRetryRequest the ServerHello keeps its suite and its group (§ 4.1.4).
+        let (mut transcript, want) = match self.retry.take() {
+            Some((s, g, t)) if s == suite => (t, g),
+            Some(_) => return Err(sent(Alert::ILLEGAL_PARAMETER)),
+            None => {
+                let mut t = Transcript::new(suite);
+                t.update(&self.hello);
+                (t, group::X25519)
+            }
+        };
+        transcript.update(m);
+        let mut shared = match sh.share {
+            Some((g, k)) if g == want && g == group::X25519 => {
+                let peer: &[u8; 32] = k.try_into().map_err(|_| sent(Alert::ILLEGAL_PARAMETER))?;
+                let s = fcrypto::x25519::x25519(&self.x25519, peer);
+                if fcrypto::ct::eq(&s, &[0; 32]) {
+                    return Err(sent(Alert::ILLEGAL_PARAMETER)); // a small-order point (§ 7.4.2)
+                }
+                s
+            }
+            Some((g, k)) if g == want => fcrypto::p256::ecdh(&self.p256, k).ok_or(sent(Alert::ILLEGAL_PARAMETER))?,
             Some(_) => return Err(sent(Alert::ILLEGAL_PARAMETER)),
             None => return Err(sent(Alert::MISSING_EXTENSION)),
         };
-        let mut shared = fcrypto::x25519::x25519(&self.x25519, peer);
         wipe(&mut self.x25519);
-        if fcrypto::ct::eq(&shared, &[0; 32]) {
-            return Err(sent(Alert::ILLEGAL_PARAMETER)); // a small-order point (§ 7.4.2)
-        }
-        let mut transcript = Transcript::new(suite);
-        transcript.update(&self.hello);
-        transcript.update(m);
+        wipe(&mut self.p256);
         let schedule = Schedule::handshake(suite, &shared);
         wipe(&mut shared);
         let th = transcript.hash();
@@ -384,6 +415,42 @@ impl<'r> Client<'r> {
         self.hello = Vec::new();
         self.state = State::EncryptedExtensions;
         self.key_change()
+    }
+
+    /// A HelloRetryRequest (§ 4.1.4): it must ask for P-256 (X25519's share
+    /// was sent, and nothing else is offered), once. The second ClientHello
+    /// keeps the random, carries a P-256 share and echoes any cookie; the
+    /// transcript begins again with the first ClientHello's hash (§ 4.4.1).
+    fn hello_retry(&mut self, sh: &msg::ServerHello, m: &[u8]) -> Result<(), Error> {
+        let sent = Error::Sent;
+        if self.retried {
+            return Err(sent(Alert::UNEXPECTED_MESSAGE)); // a second HelloRetryRequest
+        }
+        let suite = Suite::from_id(sh.suite).ok_or(sent(Alert::ILLEGAL_PARAMETER))?;
+        match sh.share {
+            Some((group::SECP256R1, _)) => {}
+            _ => return Err(sent(Alert::ILLEGAL_PARAMETER)),
+        }
+        let share = fcrypto::p256::public_key(&self.p256).ok_or(sent(Alert::INTERNAL_ERROR))?;
+        wipe(&mut self.x25519);
+        let random: [u8; 32] = self.hello[6..38].try_into().expect("a ClientHello's random");
+        let hello = msg::client_hello(&random, &self.host, &[(group::SECP256R1, &share)], &group::OFFERED, sh.cookie);
+        let first = {
+            let mut t = Transcript::new(suite);
+            t.update(&self.hello);
+            t.hash()
+        };
+        let mut t = Transcript::new(suite);
+        t.update(&[254, 0, 0, suite.hash_len() as u8]); // message_hash
+        t.update(first.as_slice());
+        t.update(m);
+        t.update(&hello);
+        record::plain(content::HANDSHAKE, 0x0303, &hello, &mut self.out);
+        self.offered = msg::offered(&hello).expect("the client's own ClientHello");
+        self.hello = hello;
+        self.retry = Some((suite, group::SECP256R1, t));
+        self.retried = true;
+        Ok(())
     }
 
     fn finished(&mut self, m: &[u8]) -> Result<(), Error> {

@@ -1253,3 +1253,34 @@ fn hmac_and_hkdf_sha384() {
     );
     assert!(sha384::expand(&prk, b"", &mut [0u8; 255 * 48 + 1]).is_err());
 }
+
+/// P-256 ECDH against Python's cryptography (gen_p256.py): each secret's
+/// public key and its shared secret with a peer's key, the edges among them
+/// (1, 2, n − 1, n + 1 and 2^256 − 1, reduced mod n); a point off the curve,
+/// a coordinate at p, and a compressed point refused.
+#[test]
+fn p256_ecdh() {
+    use fcrypto::p256;
+    let mut seen = 0;
+    for line in include_str!("p256_cases.txt").lines() {
+        let f: Vec<Vec<u8>> = line.split(' ').map(unhex).collect();
+        let k: [u8; 32] = f[0].as_slice().try_into().unwrap();
+        assert_eq!(p256::public_key(&k).map(|p| p.to_vec()), Some(f[1].clone()), "{}", line);
+        assert_eq!(p256::ecdh(&k, &f[2]).map(|s| s.to_vec()), Some(f[3].clone()), "{}", line);
+        seen += 1;
+    }
+    assert_eq!(seen, 24);
+    let line = include_str!("p256_cases.txt").lines().next().unwrap();
+    let peer = unhex(line.split(' ').nth(2).unwrap());
+    let k = [7u8; 32];
+    let mut off = peer.clone();
+    off[64] ^= 1;
+    assert_eq!(p256::ecdh(&k, &off), None, "a point off the curve");
+    let mut at_p = peer.clone();
+    at_p[1..33].copy_from_slice(&unhex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff"));
+    assert_eq!(p256::ecdh(&k, &at_p), None, "x = p");
+    let mut compressed = peer[..33].to_vec();
+    compressed[0] = 2;
+    assert_eq!(p256::ecdh(&k, &compressed), None, "a compressed point");
+    assert_eq!(p256::public_key(&[0u8; 32]), None, "a zero scalar");
+}

@@ -30,6 +30,10 @@ pub mod ext {
 
 pub mod group {
     pub const X25519: u16 = 0x001D;
+    pub const SECP256R1: u16 = 0x0017;
+    /// Offered, in order: X25519's share is sent at once; P-256's only when a
+    /// HelloRetryRequest asks for it.
+    pub const OFFERED: [u16; 2] = [X25519, SECP256R1];
 }
 
 pub mod scheme {

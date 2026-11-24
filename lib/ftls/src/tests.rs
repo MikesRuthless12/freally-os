@@ -266,3 +266,51 @@ fn certificate_verify_signatures() {
     }
     assert_eq!(seen, 5);
 }
+
+/// A HelloRetryRequest's record: its suite, and the group it asks for.
+fn retry_request(suite: u16, group: u16) -> Vec<u8> {
+    let mut body = alloc::vec![3, 3];
+    body.extend_from_slice(&msg::RETRY_RANDOM);
+    body.push(0);
+    body.extend_from_slice(&suite.to_be_bytes());
+    body.push(0);
+    let exts = [0x00, 0x2b, 0, 2, 3, 4, 0x00, 0x33, 0, 2, (group >> 8) as u8, group as u8];
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+    let mut m = alloc::vec![2, 0, (body.len() >> 8) as u8, body.len() as u8];
+    m.extend_from_slice(&body);
+    let mut r = alloc::vec![22, 3, 3, (m.len() >> 8) as u8, m.len() as u8];
+    r.extend_from_slice(&m);
+    r
+}
+
+/// A HelloRetryRequest for P-256 gets a second ClientHello with the same
+/// random and a P-256 share; a second request, one for X25519 (whose share
+/// went already) or for a group never offered, and a ServerHello that
+/// changes the request's suite or group, are each refused (§ 4.1.4).
+#[test]
+fn hello_retry_requests_are_checked() {
+    use crate::Alert;
+    let fresh = || Client::new("test.freally.local", &[], 0, &[9u8; 96]).unwrap();
+    let share = [0x00, 0x17, 0x00, 0x41, 0x04];
+    let mut c = fresh();
+    let first = c.take_output();
+    c.feed(&retry_request(0x1301, 0x0017)).unwrap();
+    assert!(c.retried());
+    let second = c.take_output();
+    assert_eq!(&second[..3], &[22, 3, 3]);
+    assert_eq!(second[11..43], first[11..43], "the same random");
+    assert!(second.windows(5).any(|w| w == share), "a 65-byte P-256 share");
+    assert!(!first.windows(5).any(|w| w == share), "none at first");
+    assert_eq!(c.feed(&retry_request(0x1301, 0x0017)), Err(Error::Sent(Alert::UNEXPECTED_MESSAGE)));
+    for g in [0x001d, 0x0018] {
+        assert_eq!(fresh().feed(&retry_request(0x1301, g)), Err(Error::Sent(Alert::ILLEGAL_PARAMETER)), "{g:04x}");
+    }
+    // The RFC's ServerHello (AES-128, X25519) after a request for AES-256, or for P-256.
+    let mut c = fresh();
+    c.feed(&retry_request(0x1302, 0x0017)).unwrap();
+    assert_eq!(c.feed(&rfc("server_hello_record")), Err(Error::Sent(Alert::ILLEGAL_PARAMETER)), "another suite");
+    let mut c = fresh();
+    c.feed(&retry_request(0x1301, 0x0017)).unwrap();
+    assert_eq!(c.feed(&rfc("server_hello_record")), Err(Error::Sent(Alert::ILLEGAL_PARAMETER)), "another group");
+}

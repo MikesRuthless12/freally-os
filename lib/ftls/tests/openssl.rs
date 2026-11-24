@@ -138,8 +138,12 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
-fn entropy(seed: &str) -> [u8; 64] {
-    fcrypto::sha2::sha512(format!("{seed} {}", now()).as_bytes())
+fn entropy(seed: &str) -> [u8; 96] {
+    let s = format!("{seed} {}", now());
+    let mut e = [0u8; 96];
+    e[..64].copy_from_slice(&fcrypto::sha2::sha512(s.as_bytes()));
+    e[64..].copy_from_slice(&fcrypto::sha2::sha256(s.as_bytes()));
+    e
 }
 
 fn handshake(c: &mut Client, s: &mut TcpStream) -> Result<(), Error> {
@@ -186,6 +190,7 @@ fn every_suite_and_key_against_openssl() {
         let mut c = Client::new(HOST, &roots, now(), &entropy(name)).unwrap();
         handshake(&mut c, &mut s).unwrap_or_else(|e| panic!("{kind} {name}: {e:?}"));
         assert_eq!(c.suite(), Some(suite), "{kind} {name}");
+        assert!(!c.retried(), "{kind} {name}: X25519 taken at once");
         assert_eq!(round_trip(&mut c, &mut s, b"hello freally\n"), b"yllaerf olleh\n", "{kind} {name}");
         // More than one record each way: twelve lines of 3,000 bytes (s_server
         // reverses at most 16 KiB at a time, so no line is longer).
@@ -202,6 +207,22 @@ fn every_suite_and_key_against_openssl() {
         assert_eq!(round_trip(&mut c, &mut s, &out), want, "{kind} {name}: 36 KB");
         c.close();
         s.write_all(&c.take_output()).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// A server that takes only P-256 asks again (HelloRetryRequest): the second
+/// ClientHello's P-256 share is used, and the handshake finishes.
+#[test]
+fn p256_after_a_hello_retry_request() {
+    for name in ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"] {
+        let (dir, root) = pki("p256");
+        let roots = [root.as_slice()];
+        let (_server, mut s) = serve(&dir, &["-groups", "P-256", "-ciphersuites", name]);
+        let mut c = Client::new(HOST, &roots, now(), &entropy("p256")).unwrap();
+        handshake(&mut c, &mut s).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert!(c.retried(), "{name}: the server asked again, for P-256");
+        assert_eq!(round_trip(&mut c, &mut s, b"retried\n"), b"deirter\n", "{name}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
