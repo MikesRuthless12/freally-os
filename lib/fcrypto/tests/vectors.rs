@@ -1284,3 +1284,90 @@ fn p256_ecdh() {
     assert_eq!(p256::ecdh(&k, &compressed), None, "a compressed point");
     assert_eq!(p256::public_key(&[0u8; 32]), None, "a zero scalar");
 }
+
+/// Wycheproof (gen_wycheproof.py): every AES-GCM test with a 12-byte IV and a
+/// 16-byte tag (128- and 256-bit keys: what TLS uses; the rest counted as
+/// skipped), every ChaCha20-Poly1305, P-256 ECDH, X25519, and RSA-2048
+/// PKCS#1 v1.5 and PSS (SHA-256) test. A valid case gives exactly its answer;
+/// an invalid one is refused; an acceptable one may be refused but is never
+/// answered wrongly.
+#[test]
+fn wycheproof() {
+    use fcrypto::{aead, gcm::AesGcm, p256, rsa, sha2, x25519};
+    let mut key: (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+    let (mut ran, mut skipped) = (std::collections::BTreeMap::<String, usize>::new(), 0);
+    let hx = |s: &str| if s == "-" { Vec::new() } else { unhex(s) };
+    for line in include_str!("wycheproof.txt").lines().filter(|l| !l.starts_with('#')) {
+        let f: Vec<&str> = line.split(' ').collect();
+        if f[0] == "key" {
+            key = (hx(f[2]), hx(f[3]));
+            continue;
+        }
+        let (fam, id, result) = (f[0], f[1], f[2]);
+        let (valid, invalid) = (result == "valid", result == "invalid");
+        let what = format!("{fam} {id} ({result})");
+        match fam {
+            "gcm" | "chacha" => {
+                let (k, iv, aad, msg, ct, tag) = (hx(f[5]), hx(f[6]), hx(f[7]), hx(f[8]), hx(f[9]), hx(f[10]));
+                let usable = iv.len() == 12
+                    && tag.len() == 16
+                    && if fam == "gcm" { k.len() == 16 || k.len() == 32 } else { k.len() == 32 };
+                if !usable {
+                    skipped += 1;
+                    continue;
+                }
+                let iv: [u8; 12] = iv.try_into().unwrap();
+                let tag: [u8; 16] = tag.try_into().unwrap();
+                let (mut sealed, mut opened) = (msg.clone(), ct.clone());
+                let (t, r) = if fam == "gcm" {
+                    let g = AesGcm::new(&k).unwrap();
+                    (g.seal(&iv, &aad, &mut sealed), g.open(&iv, &aad, &mut opened, &tag).is_ok())
+                } else {
+                    let k: [u8; 32] = k.try_into().unwrap();
+                    (aead::seal(&k, &iv, &aad, &mut sealed), aead::open(&k, &iv, &aad, &mut opened, &tag).is_ok())
+                };
+                if valid {
+                    assert_eq!((sealed, t.to_vec()), (ct, tag.to_vec()), "{what}: sealed");
+                    assert!(r && opened == msg, "{what}: opened");
+                } else if invalid {
+                    assert!(!r, "{what}: opened a forgery");
+                }
+            }
+            "ecdh256" => {
+                let k: [u8; 32] = hx(f[3]).try_into().unwrap();
+                let got = p256::ecdh(&k, &hx(f[4]));
+                match (valid, invalid) {
+                    (true, _) => assert_eq!(got.map(|s| s.to_vec()), Some(hx(f[5])), "{what}"),
+                    (_, true) => assert_eq!(got, None, "{what}: an invalid point taken"),
+                    _ => assert!(got.is_none_or(|s| s.to_vec() == hx(f[5])), "{what}"),
+                }
+            }
+            "x25519" => {
+                let (k, u): ([u8; 32], [u8; 32]) = (hx(f[3]).try_into().unwrap(), hx(f[4]).try_into().unwrap());
+                assert!(!invalid, "{what}: no invalid X25519 case expected");
+                assert_eq!(x25519::x25519(&k, &u).to_vec(), hx(f[5]), "{what}");
+            }
+            "pkcs1" | "pss" => {
+                let pk = rsa::PublicKey::new(&key.0, &key.1).expect("a 2048-bit key");
+                let (msg, sig) = (hx(f[3]), hx(f[4]));
+                let d = sha2::sha256(&msg);
+                let ok = if fam == "pkcs1" {
+                    pk.verify_pkcs1(rsa::Hash::Sha256, &d, &sig)
+                } else {
+                    pk.verify_pss(rsa::Hash::Sha256, &d, &sig)
+                };
+                if valid {
+                    assert!(ok, "{what}: refused");
+                } else if invalid {
+                    assert!(!ok, "{what}: verified");
+                }
+            }
+            _ => panic!("{line}"),
+        }
+        *ran.entry(fam.to_string()).or_default() += 1;
+    }
+    let ran: Vec<(String, usize)> = ran.into_iter().collect();
+    println!("wycheproof: {ran:?}, {skipped} skipped");
+    assert_eq!(ran.iter().map(|r| r.1).sum::<usize>() + skipped, 1885 - 4);
+    assert!(ran.iter().all(|r| r.1 > 50), "every family ran");
+}
