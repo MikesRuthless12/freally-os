@@ -18,6 +18,8 @@ mod door_netdev;
 #[cfg(feature = "flavour-e2e")]
 mod door_stage;
 #[cfg(feature = "flavour-e2e")]
+mod door_tcp;
+#[cfg(feature = "flavour-e2e")]
 mod door_terminal;
 #[cfg(feature = "flavour-e2e")]
 mod door_vfs;

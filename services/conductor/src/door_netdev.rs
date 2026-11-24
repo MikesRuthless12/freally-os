@@ -28,7 +28,7 @@ fn mac(m: &[u8; 6]) -> String {
     alloc::format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", m[0], m[1], m[2], m[3], m[4], m[5])
 }
 
-fn ipv4(s: &str) -> Option<[u8; 4]> {
+pub(crate) fn ipv4(s: &str) -> Option<[u8; 4]> {
     let mut out = [0u8; 4];
     let mut parts = s.split('.');
     for b in out.iter_mut() {

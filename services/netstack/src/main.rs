@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-//! netstack (TASK-174, TASK-175, FR-060): IPv4 and IPv6 over the network
-//! device, as one service. It takes the device's frames (netdev), gets an
-//! IPv4 address by DHCP and IPv6 ones by SLAAC, answers ARP and NDP for its
-//! addresses and echo requests to them, and serves the net protocol (PRD
-//! § 4) to the clients the Network page lists. With no network device it
-//! says so and ends.
+//! netstack (TASK-174, TASK-175, TASK-177, FR-060): IPv4 and IPv6 over the
+//! network device, as one service. It takes the device's frames (netdev),
+//! gets an IPv4 address by DHCP and IPv6 ones by SLAAC, answers ARP and NDP
+//! for its addresses and echo requests to them, makes outgoing TCP
+//! connections over IPv4 (a RST for any segment of none), and serves the net
+//! protocol (PRD § 4) to the clients the Network page lists. With no network
+//! device it says so and ends.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -13,12 +14,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use fcore_abi::{FErr, signal};
 use fnet::ipv6::{self as v6, Ip6, Ipv6, kind};
+use fnet::tcp::{PROTO_TCP, Tcp, flag, pseudo4};
 use fnet::{Arp, Echo, Eth, Ip, Ipv4, Mac, Udp};
 use fstd::ipc::{Channel, Client};
 use fstd::time::{Duration, Instant};
 use fwire::proto::conductor as c;
 use fwire::proto::net as nt;
 use fwire::proto::netdev as nd;
+use svc_netstack::tcp::{self as tcp, Ended, Out, State as TcpState, Tcb};
 use svc_netstack::{ArpCache, Client as Dhcp, Neighbors, Slaac, Slaac6, next_hop};
 
 fstd::program!(run);
@@ -27,6 +30,12 @@ fstd::program!(run);
 const PING_ID: u16 = 0x4652;
 /// An ARP (or NDP) request's retry.
 const ARP_RETRY: u64 = 500_000_000;
+/// The MSS offered over IPv4 on Ethernet: 1,500 − 20 − 20.
+const MSS4: u16 = 1460;
+/// Connections a client may hold at once.
+const SOCKETS_PER_CLIENT: usize = 16;
+/// The ephemeral ports (RFC 6335 § 6).
+const EPHEMERAL: core::ops::RangeInclusive<u16> = 49152..=65535;
 
 /// Who may use the network today (TASK-183 makes this the Network page's list).
 fn allowed(client: &str) -> bool {
@@ -39,6 +48,51 @@ fn allowed(client: &str) -> bool {
 enum Dest {
     V4 { to: Ipv4, hop: Ipv4 },
     V6 { to: Ipv6, hop: Ipv6 },
+}
+
+/// A reply owed to a client: its request's txid and ordinal.
+#[derive(Clone, Copy)]
+struct Owed {
+    txid: u32,
+    ordinal: u32,
+}
+
+/// A TCP connection, and what its client is waiting on.
+struct Socket {
+    id: u32,
+    client: usize,
+    local_port: u16,
+    to: Ipv4,
+    port: u16,
+    hop: Ipv4,
+    /// The next hop's MAC: until it's known the connection doesn't start.
+    mac: Option<Mac>,
+    arp_at: u64,
+    tcb: Tcb,
+    /// CONNECT's reply, owed until the connection opens, is refused, or passes this deadline.
+    connecting: Option<(Owed, u64)>,
+    /// A RECV waiting for data: the most to give, and until when.
+    reading: Option<(Owed, usize, u64)>,
+    /// A SEND waiting for room: its bytes, and how many are taken.
+    writing: Option<(Owed, Vec<u8>, usize)>,
+    /// Its client closed it: it goes once the connection has (TIME-WAIT included).
+    closed: bool,
+}
+
+fn answer<T: fwire::Wire>(ch: Option<&Channel>, o: Owed, r: &T) {
+    if let Some(ch) = ch
+        && let Ok(m) = fwire::reply(o.txid, o.ordinal, r)
+    {
+        let _ = ch.send(&m, Vec::new());
+    }
+}
+
+fn refuse(ch: Option<&Channel>, o: Owed, e: FErr, why: &str) {
+    if let Some(ch) = ch
+        && let Ok(m) = fwire::error_reply(o.txid, o.ordinal, e as i32, why)
+    {
+        let _ = ch.send(&m, Vec::new());
+    }
 }
 
 /// A ping waiting for its neighbour's MAC, then for its echo.
@@ -66,6 +120,11 @@ struct Stack {
     v6_said: usize,
     ip_id: u16,
     pending: Vec<Pending>,
+    sockets: Vec<Socket>,
+    next_socket: u32,
+    next_port: u16,
+    /// RFC 6528's secret, for initial sequence numbers.
+    isn_key: [u8; 32],
 }
 
 fn now() -> u64 {
@@ -88,6 +147,40 @@ impl Stack {
 
     fn ours(&self) -> Option<(Ipv4, u8, Option<Ipv4>)> {
         self.dhcp.lease().map(|l| (l.address, l.prefix, l.router))
+    }
+
+    /// Frames in as few messages as the netdev protocol allows (32 frames, 60 KiB).
+    fn send_frames(&mut self, frames: Vec<Vec<u8>>) {
+        let (mut batch, mut bytes) = (Vec::new(), 0);
+        for f in frames {
+            if batch.len() == 32 || bytes + f.len() > 60 * 1024 {
+                self.send(core::mem::take(&mut batch));
+                bytes = 0;
+            }
+            bytes += f.len();
+            batch.push(f);
+        }
+        if !batch.is_empty() {
+            self.send(batch);
+        }
+    }
+
+    /// A TCP segment's frame, from `src`:`local_port` to `to`:`port` through `mac`.
+    fn tcp_frame(&mut self, mac: Mac, src: Ipv4, local_port: u16, to: Ipv4, port: u16, o: &Out) -> Vec<u8> {
+        let seg = Tcp {
+            src_port: local_port,
+            dst_port: port,
+            seq: o.seq,
+            ack: o.ack,
+            flags: o.flags,
+            window: o.window,
+            mss: o.mss,
+            wscale: o.wscale,
+            data: &o.data,
+        };
+        self.ip_id = self.ip_id.wrapping_add(1);
+        let packet = fnet::ip(src, to, PROTO_TCP, self.ip_id, &seg.bytes(pseudo4(src, to, seg.wire_len())));
+        fnet::eth(mac, self.mac, fnet::ETHERTYPE_IPV4, &packet)
     }
 
     /// An IPv4 packet to `dst` at `mac`.
@@ -201,6 +294,7 @@ impl Stack {
                 let to_us = Some(p.dst) == ours || p.dst == [255; 4];
                 match p.proto {
                     fnet::PROTO_ICMP if Some(p.dst) == ours => self.icmp(&e, &p, clients),
+                    PROTO_TCP if Some(p.dst) == ours => self.tcp_in(&e, &p),
                     fnet::PROTO_UDP if to_us || ours.is_none() => {
                         let Ok(u) = Udp::parse(p.src, p.dst, p.payload) else { return };
                         if u.dst_port == fnet::dhcp::CLIENT_PORT && u.src_port == fnet::dhcp::SERVER_PORT {
@@ -227,6 +321,197 @@ impl Stack {
             }
             v6::ETHERTYPE_IPV6 => self.ipv6(&e, clients),
             _ => {}
+        }
+    }
+
+    /// A TCP segment to us: its connection's, else answered with a RST (RFC 9293 § 3.10.7.1).
+    fn tcp_in(&mut self, e: &Eth, p: &Ip) {
+        let Ok(seg) = Tcp::parse(p.payload, pseudo4(p.src, p.dst, p.payload.len())) else { return };
+        let t = now();
+        if let Some(s) =
+            self.sockets.iter_mut().find(|s| s.to == p.src && s.port == seg.src_port && s.local_port == seg.dst_port)
+        {
+            s.tcb.segment(&seg, t);
+            return;
+        }
+        if seg.flags & flag::RST != 0 {
+            return; // never a RST for a RST
+        }
+        let o = if seg.flags & flag::ACK != 0 {
+            Out { seq: seg.ack, ack: 0, flags: flag::RST, window: 0, mss: None, wscale: None, data: Vec::new() }
+        } else {
+            let ack = seg.seq.wrapping_add(seg.seq_len());
+            Out { seq: 0, ack, flags: flag::RST | flag::ACK, window: 0, mss: None, wscale: None, data: Vec::new() }
+        };
+        let f = self.tcp_frame(e.src, p.dst, seg.dst_port, p.src, seg.src_port, &o);
+        self.send(alloc::vec![f]);
+    }
+
+    /// Each connection: its neighbour found, its segments sent, its timers
+    /// run, and the replies its client is owed.
+    fn tcp_due(&mut self, clients: &[Channel]) {
+        let t = now();
+        let src = self.ours().map(|o| o.0);
+        let mut i = 0;
+        while i < self.sockets.len() {
+            if let Some(src) = src {
+                if self.sockets[i].mac.is_none() {
+                    let hop = self.sockets[i].hop;
+                    match self.arp.find(hop, t) {
+                        Some(m) => self.sockets[i].mac = Some(m),
+                        None if t >= self.sockets[i].arp_at => {
+                            self.sockets[i].arp_at = t + ARP_RETRY;
+                            self.arp_request(src, hop);
+                        }
+                        None => {}
+                    }
+                }
+                if let Some(mac) = self.sockets[i].mac {
+                    let segs = self.sockets[i].tcb.poll(t);
+                    let (lp, to, port) = (self.sockets[i].local_port, self.sockets[i].to, self.sockets[i].port);
+                    let frames = segs.iter().map(|o| self.tcp_frame(mac, src, lp, to, port, o)).collect();
+                    self.send_frames(frames);
+                }
+            }
+            if self.owed(i, clients, t) {
+                i += 1;
+            }
+        }
+    }
+
+    /// The replies connection `i` owes its client; false once it's gone.
+    fn owed(&mut self, i: usize, clients: &[Channel], t: u64) -> bool {
+        let s = &mut self.sockets[i];
+        let ch = clients.get(s.client);
+        let ended = s.tcb.ended;
+        if let Some((o, deadline)) = s.connecting {
+            match s.tcb.state {
+                TcpState::SynSent if t < deadline => {}
+                TcpState::SynSent | TcpState::Closed => {
+                    let (e, why) = match ended {
+                        Some(Ended::Refused) => (FErr::NotFound, "refused"),
+                        Some(Ended::Reset) => (FErr::PeerClosed, "reset"),
+                        _ => (FErr::TimedOut, "no answer"),
+                    };
+                    s.tcb.abort();
+                    s.connecting = None;
+                    s.closed = true;
+                    refuse(ch, o, e, why);
+                }
+                _ => {
+                    s.connecting = None;
+                    answer(ch, o, &nt::Socket { id: s.id });
+                }
+            }
+        }
+        if let Some((o, data, taken)) = &mut s.writing {
+            *taken += s.tcb.write(&data[*taken..]);
+            let open = matches!(s.tcb.state, TcpState::SynSent | TcpState::Established | TcpState::CloseWait);
+            if *taken == data.len() {
+                answer(ch, *o, &nt::Sent { taken: *taken as u32 });
+                s.writing = None;
+            } else if !open {
+                refuse(ch, *o, FErr::PeerClosed, if ended == Some(Ended::Reset) { "reset" } else { "closed" });
+                s.writing = None;
+            }
+        }
+        if let Some((o, max, deadline)) = s.reading {
+            if s.tcb.readable() > 0 {
+                answer(ch, o, &nt::Received { data: s.tcb.read(max), end: false });
+                s.reading = None;
+            } else if ended == Some(Ended::Reset) {
+                refuse(ch, o, FErr::PeerClosed, "reset");
+                s.reading = None;
+            } else if s.tcb.at_end() || s.tcb.state == TcpState::Closed {
+                answer(ch, o, &nt::Received { data: Vec::new(), end: true });
+                s.reading = None;
+            } else if t >= deadline {
+                answer(ch, o, &nt::Received { data: Vec::new(), end: false });
+                s.reading = None;
+            }
+        }
+        let gone = s.closed
+            && s.tcb.state == TcpState::Closed
+            && s.connecting.is_none()
+            && s.reading.is_none()
+            && s.writing.is_none();
+        if gone {
+            self.sockets.remove(i);
+        }
+        !gone
+    }
+
+    /// A connection asked for: started once its next hop's MAC is known.
+    fn connect(
+        &mut self,
+        client: usize,
+        owed: Owed,
+        to: Ipv4,
+        port: u16,
+        hop: Ipv4,
+        timeout_ms: u32,
+    ) -> Result<(), (FErr, &'static str)> {
+        if self.sockets.iter().filter(|s| s.client == client).count() >= SOCKETS_PER_CLIENT {
+            return Err((FErr::Busy, "too many connections"));
+        }
+        let (src, _, _) = self.ours().ok_or((FErr::BadState, "no address yet"))?;
+        let local_port = (0..EPHEMERAL.len())
+            .find_map(|_| {
+                let p = self.next_port;
+                self.next_port = if p == *EPHEMERAL.end() { *EPHEMERAL.start() } else { p + 1 };
+                (!self.sockets.iter().any(|s| s.local_port == p)).then_some(p)
+            })
+            .ok_or((FErr::Busy, "no free port"))?;
+        let t = now();
+        let iss = tcp::isn(&self.isn_key, &src, local_port, &to, port, t);
+        self.next_socket = self.next_socket.wrapping_add(1).max(1);
+        let wait = timeout_ms.clamp(100, 120_000) as u64 * 1_000_000;
+        self.sockets.push(Socket {
+            id: self.next_socket,
+            client,
+            local_port,
+            to,
+            port,
+            hop,
+            mac: None,
+            arp_at: t,
+            tcb: Tcb::connect(iss, MSS4, t),
+            connecting: Some((owed, t + wait)),
+            reading: None,
+            writing: None,
+            closed: false,
+        });
+        Ok(())
+    }
+
+    /// Client `i`'s connection `id`.
+    fn socket(&mut self, client: usize, id: u32) -> Result<&mut Socket, (FErr, &'static str)> {
+        self.sockets.iter_mut().find(|s| s.client == client && s.id == id).ok_or((FErr::NotFound, "no such connection"))
+    }
+
+    /// Client `c` is gone: its connections reset, its pings dropped, the later clients' indices moved down.
+    fn drop_client(&mut self, c: usize) {
+        let src = self.ours().map(|o| o.0);
+        let mut i = 0;
+        while i < self.sockets.len() {
+            if self.sockets[i].client == c {
+                let mut s = self.sockets.remove(i);
+                if let (Some(rst), Some(mac), Some(src)) = (s.tcb.abort(), s.mac, src) {
+                    let f = self.tcp_frame(mac, src, s.local_port, s.to, s.port, &rst);
+                    self.send(alloc::vec![f]);
+                }
+                continue;
+            }
+            if self.sockets[i].client > c {
+                self.sockets[i].client -= 1;
+            }
+            i += 1;
+        }
+        self.pending.retain(|q| q.client != c);
+        for q in &mut self.pending {
+            if q.client > c {
+                q.client -= 1;
+            }
         }
     }
 
@@ -386,6 +671,21 @@ impl Stack {
                 t = t.min(q.arp_at);
             }
         }
+        let addressed = self.ours().is_some();
+        for s in &self.sockets {
+            // A connection waiting for its neighbour runs no timer of its own yet.
+            match s.mac {
+                Some(_) => t = s.tcb.next_wake().map_or(t, |w| t.min(w)),
+                None if addressed => t = t.min(s.arp_at),
+                None => {}
+            }
+            if let Some((_, d)) = s.connecting {
+                t = t.min(d);
+            }
+            if let Some((_, _, d)) = s.reading {
+                t = t.min(d);
+            }
+        }
         t
     }
 
@@ -441,10 +741,13 @@ fn open() -> Result<(Stack, Channel), String> {
         .map_err(|e| alloc::format!("{e:?}"))?;
     let events = Channel(hs.into_iter().next().ok_or("no events channel")?);
     // DHCP's transaction id, and IPv6's interface id: random, never the MAC.
-    let mut r = [0u8; 12];
+    let mut r = [0u8; 12 + 32 + 2];
     frandom::fill(&mut r).map_err(|_| String::from("no randomness (RDRAND/RDSEED refused)"))?;
     let xid = u32::from_le_bytes([r[0], r[1], r[2], r[3]]);
-    let iid: [u8; 8] = r[4..].try_into().map_err(|_| String::from("no randomness"))?;
+    let iid: [u8; 8] = r[4..12].try_into().map_err(|_| String::from("no randomness"))?;
+    let isn_key: [u8; 32] = r[12..44].try_into().map_err(|_| String::from("no randomness"))?;
+    let span = EPHEMERAL.len() as u16;
+    let next_port = EPHEMERAL.start() + u16::from_le_bytes([r[44], r[45]]) % span;
     let stack = Stack {
         dev,
         mac: info.mac,
@@ -457,6 +760,10 @@ fn open() -> Result<(Stack, Channel), String> {
         v6_said: 0,
         ip_id: 0,
         pending: Vec::new(),
+        sockets: Vec::new(),
+        next_socket: 0,
+        next_port,
+        isn_key,
     };
     Ok((stack, events))
 }
@@ -487,6 +794,7 @@ fn run(_bootstrap: u32) -> i64 {
         s.dhcp_due();
         s.slaac_due();
         s.pings(&clients);
+        s.tcp_due(&clients);
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE], [events.0.raw(), signal::READABLE]];
         items.extend(clients.iter().map(|ch| [ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
         match fstd::sys::wait_many(&items, s.next_wake()) {
@@ -528,13 +836,7 @@ fn run(_bootstrap: u32) -> i64 {
             Ok(k) => {
                 if !serve(&mut s, &clients[k - 2], k - 2) {
                     clients.remove(k - 2);
-                    // Its pings go with it; the later clients' indices move down.
-                    s.pending.retain(|q| q.client != k - 2);
-                    for q in &mut s.pending {
-                        if q.client > k - 2 {
-                            q.client -= 1;
-                        }
-                    }
+                    s.drop_client(k - 2);
                 }
             }
             Err(FErr::TimedOut) => {}
@@ -555,6 +857,7 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
             continue;
         }
         let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
+        let owed = Owed { txid: h.txid, ordinal: h.ordinal };
         let asked = match h.ordinal {
             nt::INTERFACES => Ok(Some(fwire::reply(h.txid, h.ordinal, &s.interfaces()))),
             nt::PING => match (fwire::from_payload::<nt::Ping>(p), s.ours()) {
@@ -573,6 +876,43 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
                     let dest = hop.map(|hop| Dest::V6 { to: ping.to, hop });
                     s.ping(i, h.txid, h.ordinal, dest, ping.seq, ping.timeout_ms).map(|_| None)
                 }
+            },
+            nt::TCP_CONNECT => match (fwire::from_payload::<nt::Connect>(p), s.ours()) {
+                (Err(_), _) => Err((FErr::InvalidArgs, "unreadable")),
+                (Ok(_), None) => Err((FErr::BadState, "no address yet")),
+                (Ok(c), Some((ours, prefix, router))) => match next_hop(c.to, ours, prefix, router) {
+                    None => Err((FErr::NotFound, "no route")),
+                    Some(hop) => s.connect(i, owed, c.to, c.port, hop, c.timeout_ms).map(|_| None),
+                },
+            },
+            nt::TCP_SEND => match fwire::from_payload::<nt::Send>(p) {
+                Err(_) => Err((FErr::InvalidArgs, "unreadable")),
+                Ok(m) => s.socket(i, m.id).and_then(|so| match so.writing {
+                    Some(_) => Err((FErr::Busy, "a send is waiting")),
+                    None => {
+                        so.writing = Some((owed, m.data, 0));
+                        Ok(None)
+                    }
+                }),
+            },
+            nt::TCP_RECV => match fwire::from_payload::<nt::Recv>(p) {
+                Err(_) => Err((FErr::InvalidArgs, "unreadable")),
+                Ok(m) => s.socket(i, m.id).and_then(|so| match so.reading {
+                    Some(_) => Err((FErr::Busy, "a receive is waiting")),
+                    None => {
+                        let wait = m.timeout_ms.min(60_000) as u64 * 1_000_000;
+                        so.reading = Some((owed, (m.max as usize).clamp(1, 60 * 1024), now() + wait));
+                        Ok(None)
+                    }
+                }),
+            },
+            nt::TCP_CLOSE => match fwire::from_payload::<nt::Socket>(p) {
+                Err(_) => Err((FErr::InvalidArgs, "unreadable")),
+                Ok(m) => s.socket(i, m.id).map(|so| {
+                    so.tcb.close();
+                    so.closed = true;
+                    Some(fwire::reply(h.txid, h.ordinal, &()))
+                }),
             },
             _ => Err((FErr::NotSupported, "not served")),
         };

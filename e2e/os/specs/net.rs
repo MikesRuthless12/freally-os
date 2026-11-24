@@ -150,3 +150,31 @@ pub fn ipv6(ctx: &mut Ctx) -> Result<(), String> {
     shell_until(ctx, "ping fec0::2", &["reply from fec0::2: seq=1 time=", "3 sent, 3 answered."])?;
     Ok(())
 }
+
+/// `@net.tcp`: a connection through netstack to QEMU's own TCP, which hands
+/// it to `cat` on the host (the guestfwd at 10.0.2.100:7, the echo port):
+/// 1 MiB sent and echoed back byte for byte, then both sides closed, the
+/// peer's FIN read as the end. A closed port's RST is "refused"; a SYN no
+/// one answers (no one has 10.0.2.99) is given up at its deadline, said (TASK-177).
+pub fn tcp(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
+    let echoed = ctx.door("tcp echo 10.0.2.100 7 1048576")?;
+    let line = echoed.iter().find(|l| l.starts_with("echoed 1048576 bytes in "));
+    let line = line.ok_or_else(|| format!("tcp echo said {echoed:?}"))?;
+    let ms: f64 = line.trim_start_matches("echoed 1048576 bytes in ").trim_end_matches(" ms").parse().unwrap_or(0.0);
+    println!("    1 MiB echoed through TCP in {ms:.0} ms ({:.1} MB/s each way)", 1.048_576 / (ms.max(1.0) / 1000.0));
+    // QEMU's own TCP answers a SYN to a closed port with a RST.
+    let shut = ctx.door("tcp connect 10.0.2.2 9 2000")?;
+    if !shut.iter().any(|l| l.starts_with("error: ") && l.contains("refused")) {
+        return Err(format!("a closed port said {shut:?}"));
+    }
+    let start = Instant::now();
+    let silent = ctx.door("tcp connect 10.0.2.99 9 2000")?;
+    if !silent.iter().any(|l| l.starts_with("error: ") && l.contains("no answer")) {
+        return Err(format!("a connection no one answers said {silent:?}"));
+    }
+    if start.elapsed() > Duration::from_secs(6) {
+        return Err(format!("no answer took {:?} to say, for a 2 s deadline", start.elapsed()));
+    }
+    Ok(())
+}

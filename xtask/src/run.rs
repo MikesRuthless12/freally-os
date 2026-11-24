@@ -242,9 +242,11 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     }
     // A network card on QEMU's user network, restricted: the guest reaches
     // QEMU's own gateway, DHCP and DNS, never the host's network or beyond.
+    // One way out, for TCP's tests (TASK-177): 10.0.2.100:7, the echo port,
+    // is handed to `cat` on this machine, a connection each.
     match &o.nic {
         Some(model) => {
-            c.args(["-netdev", "user,id=n0,restrict=on"]);
+            c.args(["-netdev", "user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat"]);
             c.arg("-device").arg(format!("{model},netdev=n0"));
         }
         None => {

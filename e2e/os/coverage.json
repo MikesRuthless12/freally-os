@@ -678,6 +678,13 @@
       "setup": "e2e-net",
       "spec": "e2e/os/specs/net.rs",
       "what": "IPv6 by SLAAC: a link-local address from a random interface id (never the MAC), checked by DAD; a global one from QEMU's router advertisement (fec0::/64); both in the shell's ip; ping fec0::2 answered, its neighbour found by NDP."
+    },
+    {
+      "id": "net.tcp",
+      "task": "TASK-177",
+      "setup": "e2e-net",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "TCP through netstack to QEMU's own TCP, handed to cat on the host (10.0.2.100:7): 1 MiB echoed byte for byte, both sides closed, the peer's FIN read as the end; a closed port's RST said as refused; a SYN no one answers given up at its deadline, said."
     }
   ]
 }

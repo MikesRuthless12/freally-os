@@ -1384,6 +1384,17 @@ pub mod net {
     pub const PING: u32 = 2;
     /// `Ping6` → `Pong`.
     pub const PING6: u32 = 3;
+    /// `Connect` → `Socket`: an outgoing TCP connection over IPv4, answered
+    /// once it's open (or refused, or not answered by `timeout_ms`).
+    pub const TCP_CONNECT: u32 = 4;
+    /// `Send` → `Sent`: answered once every byte is in the connection's
+    /// send buffer (60 KiB at most a call).
+    pub const TCP_SEND: u32 = 5;
+    /// `Recv` → `Received`: what has arrived, up to `max` bytes, waiting up to
+    /// `timeout_ms` for something; `end` once the peer has closed and all is read.
+    pub const TCP_RECV: u32 = 6;
+    /// `Socket` → `()`: this side closed (a FIN after what's still to send).
+    pub const TCP_CLOSE: u32 = 7;
 
     wire_struct! {
         pub struct Interface {
@@ -1411,6 +1422,24 @@ pub mod net {
     }
     wire_struct! {
         pub struct Pong { pub rtt_us: u32 }
+    }
+    wire_struct! {
+        pub struct Connect { pub to: [u8; 4], pub port: u16, pub timeout_ms: u32 }
+    }
+    wire_struct! {
+        pub struct Socket { pub id: u32 }
+    }
+    wire_struct! {
+        pub struct Send { pub id: u32, pub data: Vec<u8> }
+    }
+    wire_struct! {
+        pub struct Sent { pub taken: u32 }
+    }
+    wire_struct! {
+        pub struct Recv { pub id: u32, pub max: u32, pub timeout_ms: u32 }
+    }
+    wire_struct! {
+        pub struct Received { pub data: Vec<u8>, pub end: bool }
     }
 }
 
@@ -1554,7 +1583,18 @@ pub mod inventory {
         ("terminal", &[(term::FEED, "feed"), (term::TYPE, "type"), (term::SCREEN, "screen")]),
         ("cdpd", &[(cd::CALL, "call")]),
         ("drv-nvme", &[(blk::INFO, "info"), (blk::READ, "read"), (blk::WRITE, "write"), (blk::FLUSH, "flush")]),
-        ("netstack", &[(nt::INTERFACES, "interfaces"), (nt::PING, "ping"), (nt::PING6, "ping6")]),
+        (
+            "netstack",
+            &[
+                (nt::INTERFACES, "interfaces"),
+                (nt::PING, "ping"),
+                (nt::PING6, "ping6"),
+                (nt::TCP_CONNECT, "tcp_connect"),
+                (nt::TCP_SEND, "tcp_send"),
+                (nt::TCP_RECV, "tcp_recv"),
+                (nt::TCP_CLOSE, "tcp_close"),
+            ],
+        ),
         ("drv-e1000", &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")]),
         (
             "drv-virtio-net",
