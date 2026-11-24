@@ -1038,3 +1038,101 @@ fn crc32c_rfc3720_b4() {
     assert_eq!(crc32c(&pdu), 0xD9963A56);
     assert_eq!(crc32c(b"123456789"), 0xE3069283);
 }
+
+/// SHA-384 of the same FIPS 180-4 example messages (the hashes from Python's
+/// hashlib, which gives FIPS 180-4's own for "abc").
+const SHA384: &[(&[u8], &str)] = &[
+    (b"abc", "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"),
+    (b"", "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b"),
+    (b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "3391fdddfc8dc7393707a65b1b4709397cf8b1d162af05abfe8f450de5f36bc6b0455a8520bc4e6f5fe95b1fe3c8452b"),
+    (b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu", "09330c33f71147e83d192fc782cd1b4753111b173b3b05d22fa08086e3b0f712fcc7c71a557e2db966c3e9fa91746039"),
+];
+
+#[test]
+fn sha384_fips_180_4_examples() {
+    for (msg, want) in SHA384 {
+        assert_eq!(sha2::sha384(msg).to_vec(), unhex(want), "SHA-384 of {:?}", String::from_utf8_lossy(msg));
+    }
+    // Streamed in odd pieces, the same.
+    let m = SHA384[3].0;
+    let mut h = sha2::Sha512::new_384();
+    for piece in m.chunks(7) {
+        h.update(piece);
+    }
+    assert_eq!(h.finish()[..48].to_vec(), unhex(SHA384[3].1));
+}
+
+/// FIPS 197's Appendix C examples, and 32 more from an independent AES
+/// (`gen_gcm.py`: Python's `cryptography`).
+#[test]
+fn aes_fips_197_and_independent_cases() {
+    use fcrypto::aes::Aes;
+    let pt: [u8; 16] = unhex("00112233445566778899aabbccddeeff").try_into().unwrap();
+    let k128 = unhex("000102030405060708090a0b0c0d0e0f");
+    let k256 = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    assert_eq!(Aes::new(&k128).unwrap().encrypt(&pt).to_vec(), unhex("69c4e0d86a7b0430d8cdb78070b4c55a"));
+    assert_eq!(Aes::new(&k256).unwrap().encrypt(&pt).to_vec(), unhex("8ea2b7ca516745bfeafc49904b496089"));
+    for line in include_str!("aes_cases.txt").lines() {
+        let f: Vec<Vec<u8>> = line.split(' ').map(unhex).collect();
+        let block: [u8; 16] = f[1].clone().try_into().unwrap();
+        assert_eq!(Aes::new(&f[0]).unwrap().encrypt(&block).to_vec(), f[2], "{line}");
+    }
+}
+
+/// SP 800-38D's (McGrew and Viega's) test cases 1-3, and 64 more from an
+/// independent AES-GCM (`gen_gcm.py`); each opened again, and a flipped bit
+/// anywhere refused with the buffer left as it was.
+#[test]
+fn aes_gcm_cases() {
+    use fcrypto::gcm::AesGcm;
+    let hx = |s: &str| if s == "-" { Vec::new() } else { unhex(s) };
+    let mut cases: Vec<[Vec<u8>; 6]> = vec![
+        [
+            unhex("00000000000000000000000000000000"),
+            unhex("000000000000000000000000"),
+            vec![],
+            vec![],
+            vec![],
+            unhex("58e2fccefa7e3061367f1d57a4e7455a"),
+        ],
+        [
+            unhex("00000000000000000000000000000000"),
+            unhex("000000000000000000000000"),
+            vec![],
+            unhex("00000000000000000000000000000000"),
+            unhex("0388dace60b6a392f328c2b971b2fe78"),
+            unhex("ab6e47d42cec13bdf53a67b21257bddf"),
+        ],
+    ];
+    for line in include_str!("gcm_cases.txt").lines() {
+        let f: Vec<Vec<u8>> = line.split(' ').map(hx).collect();
+        cases.push([f[0].clone(), f[1].clone(), f[2].clone(), f[3].clone(), f[4].clone(), f[5].clone()]);
+    }
+    for [key, nonce, aad, pt, ct, tag] in &cases {
+        let g = AesGcm::new(key).unwrap();
+        let nonce: [u8; 12] = nonce.clone().try_into().unwrap();
+        let mut data = pt.clone();
+        let t = g.seal(&nonce, aad, &mut data);
+        assert_eq!((&data, t.to_vec()), (ct, tag.clone()), "seal, {} bytes", pt.len());
+        let tag: [u8; 16] = tag.clone().try_into().unwrap();
+        g.open(&nonce, aad, &mut data, &tag).unwrap();
+        assert_eq!(&data, pt);
+        // A flipped bit in the ciphertext, the AAD or the tag: refused, nothing decrypted.
+        let mut bad = ct.clone();
+        if let Some(b) = bad.first_mut() {
+            *b ^= 1;
+            let kept = bad.clone();
+            assert!(g.open(&nonce, aad, &mut bad, &tag).is_err());
+            assert_eq!(bad, kept);
+        }
+        let mut wrong_tag = tag;
+        wrong_tag[15] ^= 0x80;
+        assert!(g.open(&nonce, aad, &mut ct.clone(), &wrong_tag).is_err());
+        if !aad.is_empty() {
+            let mut a2 = aad.clone();
+            a2[0] ^= 1;
+            assert!(g.open(&nonce, &a2, &mut ct.clone(), &tag).is_err());
+        }
+    }
+    assert!(AesGcm::new(&[0; 24]).is_none());
+}

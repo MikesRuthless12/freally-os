@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Freally's own cryptography, written from the specifications.
 //!
-//! - [`sha2`]: SHA-256 and SHA-512 (FIPS 180-4).
+//! - [`sha2`]: SHA-256, SHA-384 and SHA-512 (FIPS 180-4).
+//! - [`aes`], [`gcm`]: AES-128/256 (FIPS 197) and AES-GCM (SP 800-38D), for TLS 1.3.
 //! - [`sha1`]: SHA-1 (FIPS 180-4), **for the WebSocket handshake only** (RFC 6455).
 //!   It's broken for anything that needs collision resistance; never use it for that.
 //! - [`ed25519`]: Ed25519 signing and verification (RFC 8032), constant-time
@@ -13,12 +14,14 @@
 #![no_std]
 
 pub mod aead;
+pub mod aes;
 pub mod argon2;
 pub mod blake2b;
 pub mod chacha;
 pub mod crc32c;
 pub mod ct;
 pub mod ed25519;
+pub mod gcm;
 pub mod hkdf;
 pub mod poly1305;
 pub mod sha1;

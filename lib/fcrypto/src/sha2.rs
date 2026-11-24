@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! SHA-256 and SHA-512 (FIPS 180-4).
+//! SHA-256, SHA-384 and SHA-512 (FIPS 180-4).
 
 /// SHA-512's round constants (FIPS 180-4 § 4.2.3): the first 64 bits of the
 /// fractional parts of the cube roots of the first 80 primes.
@@ -48,6 +48,14 @@ const IV256: [u32; 8] = [
 const IV512: [u64; 8] = [
     0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
     0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+];
+
+/// SHA-384's initial values (FIPS 180-4 § 5.3.4): the first 64 bits of the
+/// fractional parts of the square roots of the ninth to sixteenth primes.
+#[rustfmt::skip]
+const IV384: [u64; 8] = [
+    0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939,
+    0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4,
 ];
 
 /// A running SHA-256.
@@ -172,6 +180,12 @@ impl Sha512 {
         Sha512 { h: IV512, buf: [0; 128], buf_len: 0, total: 0 }
     }
 
+    /// SHA-384: SHA-512's rounds from its own initial values, the first 48
+    /// bytes of [`Sha512::finish`] kept (FIPS 180-4 § 6.5).
+    pub const fn new_384() -> Sha512 {
+        Sha512 { h: IV384, buf: [0; 128], buf_len: 0, total: 0 }
+    }
+
     fn compress(h: &mut [u64; 8], block: &[u8]) {
         let mut w = [0u64; 80];
         for (i, word) in w.iter_mut().take(16).enumerate() {
@@ -256,6 +270,15 @@ pub fn sha512(data: &[u8]) -> [u8; 64] {
     let mut h = Sha512::new();
     h.update(data);
     h.finish()
+}
+
+/// SHA-384 of `data`.
+pub fn sha384(data: &[u8]) -> [u8; 48] {
+    let mut h = Sha512::new_384();
+    h.update(data);
+    let mut out = [0u8; 48];
+    out.copy_from_slice(&h.finish()[..48]);
+    out
 }
 
 #[cfg(all(test, target_arch = "x86_64", feature = "shani"))]
