@@ -74,6 +74,10 @@
     {
       "prefix": "settings BUTTON settings-remove-",
       "why": "One per account but the Owner's: @settings.accounts removes one."
+    },
+    {
+      "prefix": "login OPTION login-user-",
+      "why": "One row per account on the login screen, named by it: the login specs choose rows of the accounts they make; which accounts a setup shows depends on the specs before it."
     }
   ]
 }
