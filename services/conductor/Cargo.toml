@@ -15,13 +15,16 @@ path = "src/main.rs"
 # Exactly one, chosen by `cargo xtask build` for the image's flavour.
 flavour-release = []
 flavour-dev = []
-# The test door on COM3 (`door.rs`): compiled into e2e images only.
-flavour-e2e = []
+# The test door on COM3 (`door.rs`): compiled into e2e images only, with
+# TLS for its `tls` command (TASK-180).
+flavour-e2e = ["dep:ftls", "dep:frandom"]
 
 [dependencies]
 fbootctl.workspace = true
 fcore-abi.workspace = true
 fcrypto.workspace = true
+frandom = { workspace = true, optional = true }
+ftls = { workspace = true, optional = true }
 felf.workspace = true
 fsi.workspace = true
 fstd.workspace = true

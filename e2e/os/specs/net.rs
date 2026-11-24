@@ -178,3 +178,152 @@ pub fn tcp(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// OpenSSL's tool, for the TLS spec's certificates and server.
+fn openssl(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new("openssl")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("@net.tls needs OpenSSL's command line tool: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("openssl {args:?}: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(())
+}
+
+/// A root and a test.freally.local leaf (P-256) made by OpenSSL in `dir`: the
+/// root's DER in hex. Valid from 2025 on: the guest's clock is the RTC's local
+/// time, hours from UTC until Settings has time zones (TASK-180A).
+fn pki(dir: &std::path::Path) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    for key in ["root.key", "leaf.key"] {
+        openssl(dir, &["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", key])?;
+    }
+    openssl(
+        dir,
+        &[
+            "req",
+            "-x509",
+            "-new",
+            "-key",
+            "root.key",
+            "-subj",
+            "/CN=Freally Test Root",
+            "-not_before",
+            "20250101000000Z",
+            "-not_after",
+            "20351231235959Z",
+            "-sha256",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign",
+            "-out",
+            "root.pem",
+        ],
+    )?;
+    openssl(dir, &["req", "-new", "-key", "leaf.key", "-subj", "/CN=test.freally.local", "-out", "leaf.csr"])?;
+    std::fs::write(dir.join("leaf.ext"), "subjectAltName=DNS:test.freally.local\nextendedKeyUsage=serverAuth\n")
+        .map_err(|e| e.to_string())?;
+    openssl(
+        dir,
+        &[
+            "x509",
+            "-req",
+            "-in",
+            "leaf.csr",
+            "-CA",
+            "root.pem",
+            "-CAkey",
+            "root.key",
+            "-set_serial",
+            "7",
+            "-not_before",
+            "20250101000000Z",
+            "-not_after",
+            "20351231235959Z",
+            "-sha256",
+            "-extfile",
+            "leaf.ext",
+            "-out",
+            "leaf.pem",
+        ],
+    )?;
+    openssl(dir, &["x509", "-in", "root.pem", "-outform", "DER", "-out", "root.der"])?;
+    let der = std::fs::read(dir.join("root.der")).map_err(|e| e.to_string())?;
+    Ok(der.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// `@net.tls`: ftls in the guest, over netstack's TCP, to OpenSSL's s_server
+/// on the host (QEMU hands 10.0.2.100:443 to `nc`, which reaches the
+/// server): each cipher suite connects with the chain checked against the
+/// root the door is given, and `GET /` is answered whole (s_server's `-www`
+/// page); a wrong name and an unknown root are refused (TASK-180).
+pub fn tls(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
+    let port = ctx.tls_port.ok_or("no --tls-port for this VM")?;
+    let base = std::env::temp_dir().join(format!("freally-net-tls-{port}"));
+    let _ = std::fs::remove_dir_all(&base);
+    let (root, other) = (pki(&base.join("a"))?, pki(&base.join("b"))?);
+    for (suite, name) in [
+        ("TLS_CHACHA20_POLY1305_SHA256", "ChaCha20Poly1305Sha256"),
+        ("TLS_AES_128_GCM_SHA256", "Aes128GcmSha256"),
+        ("TLS_AES_256_GCM_SHA384", "Aes256GcmSha384"),
+    ] {
+        let server = Server::start(&base.join("a"), port, suite)?;
+        let said = ctx.door(&format!("tls get 10.0.2.100 443 test.freally.local {root} /"))?;
+        drop(server);
+        let want = [format!("tls {name} test.freally.local"), "HTTP/1.0 200 ok".to_string()];
+        if said.len() < 3 || said[..2] != want || !said[2].starts_with("got ") {
+            return Err(format!("{suite}: the door said {said:?}"));
+        }
+        ctx.note(&format!("{suite}: {}", said[2]));
+    }
+    for (host, r, want) in
+        [("other.freally.local", &root, "certificate Name"), ("test.freally.local", &other, "certificate UnknownRoot")]
+    {
+        let server = Server::start(&base.join("a"), port, "TLS_AES_128_GCM_SHA256")?;
+        let said = ctx.door(&format!("tls get 10.0.2.100 443 {host} {r} /"))?;
+        drop(server);
+        if !said.iter().any(|l| l.starts_with("error: ") && l.contains(want)) {
+            return Err(format!("{host}, {want}: the door said {said:?}"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&base);
+    Ok(())
+}
+
+/// One `openssl s_server -www` on 127.0.0.1:`port`, stopped when dropped.
+struct Server(std::process::Child);
+
+impl Server {
+    fn start(dir: &std::path::Path, port: u16, suite: &str) -> Result<Server, String> {
+        let child = std::process::Command::new("openssl")
+            .current_dir(dir)
+            .args(["s_server", "-accept", &format!("127.0.0.1:{port}"), "-tls1_3", "-cert", "leaf.pem"])
+            .args(["-key", "leaf.key", "-www", "-quiet", "-ciphersuites", suite])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("openssl s_server: {e}"))?;
+        let s = Server(child);
+        let start = Instant::now();
+        // Listening once a probe connects (s_server takes it and moves on).
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            if start.elapsed() > Duration::from_secs(10) {
+                return Err("s_server never listened".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(s)
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}

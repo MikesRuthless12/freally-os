@@ -15,6 +15,8 @@ use std::process::{Child, Command};
 
 /// The serial ports, as TCP ports on 127.0.0.1: COM1 log, COM2 Brain, COM3 CDP test door.
 pub const COM1_PORT: u16 = 4551;
+/// The host's TLS test server, which QEMU's 10.0.2.100:443 reaches (TASK-180).
+pub const TLS_PORT: u16 = 4560;
 
 #[derive(Clone, Debug)]
 pub struct VmOptions {
@@ -135,6 +137,11 @@ impl VmOptions {
     pub fn port(&self, com: u16) -> u16 {
         COM1_PORT + (com - 1) + self.port_offset
     }
+
+    /// The port a spec's TLS server listens on, for this VM (TASK-180).
+    pub fn tls_port(&self) -> u16 {
+        TLS_PORT + self.port_offset
+    }
 }
 
 /// Makes the VM folder and its ESP from a build. Returns the ESP folder.
@@ -242,11 +249,13 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     }
     // A network card on QEMU's user network, restricted: the guest reaches
     // QEMU's own gateway, DHCP and DNS, never the host's network or beyond.
-    // One way out, for TCP's tests (TASK-177): 10.0.2.100:7, the echo port,
-    // is handed to `cat` on this machine, a connection each.
+    // Two ways out, for the tests: 10.0.2.100:7, the echo port, is handed to
+    // `cat` on this machine (TCP, TASK-177), and 10.0.2.100:443 to the TLS
+    // test server a spec starts on this machine's `tls_port` (TASK-180).
     match &o.nic {
         Some(model) => {
-            c.args(["-netdev", "user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat"]);
+            let tls = format!("guestfwd=tcp:10.0.2.100:443-cmd:nc -N 127.0.0.1 {}", o.tls_port());
+            c.args(["-netdev", &format!("user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat,{tls}")]);
             c.arg("-device").arg(format!("{model},netdev=n0"));
         }
         None => {

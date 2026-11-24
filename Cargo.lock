@@ -436,9 +436,11 @@ dependencies = [
  "fcore-abi",
  "fcrypto",
  "felf",
+ "frandom",
  "fsi",
  "fstd",
  "fsvc",
+ "ftls",
  "fwire",
 ]
 

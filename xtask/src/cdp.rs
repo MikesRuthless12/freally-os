@@ -296,6 +296,8 @@ fn run_setup(
         .args([
             "--endpoint",
             &format!("127.0.0.1:{host_port}"),
+            "--tls-port",
+            &o.tls_port().to_string(),
             "--com1-log",
             &o.com1_log().display().to_string(),
             "--specs",

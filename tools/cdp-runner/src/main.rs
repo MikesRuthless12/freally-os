@@ -167,6 +167,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("net.e1000e", net::e1000e),
     ("net.ipv6", net::ipv6),
     ("net.tcp", net::tcp),
+    ("net.tls", net::tls),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -222,6 +223,8 @@ pub struct Ctx {
     allowed_errors: Vec<String>,
     /// The e2e test door (COM3's socket), when the setup has one.
     pub com3: Option<String>,
+    /// Where QEMU's 10.0.2.100:443 goes on this machine (`--tls-port`).
+    pub tls_port: Option<u16>,
     /// What the guard lets this spec do: restart services, file faults; and
     /// whether it rebooted the VM (the guard's counts begin again).
     allow_restarts: bool,
@@ -713,6 +716,7 @@ fn main() {
         spec: String::new(),
         allowed_errors: Vec::new(),
         com3: arg("--com3"),
+        tls_port: arg("--tls-port").and_then(|p| p.parse().ok()),
         allow_restarts: false,
         allow_faults: false,
         rebooted: false,

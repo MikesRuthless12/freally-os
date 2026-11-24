@@ -22,6 +22,8 @@ mod door_tcp;
 #[cfg(feature = "flavour-e2e")]
 mod door_terminal;
 #[cfg(feature = "flavour-e2e")]
+mod door_tls;
+#[cfg(feature = "flavour-e2e")]
 mod door_vfs;
 mod faults;
 mod image;
