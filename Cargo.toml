@@ -46,6 +46,7 @@ drv-e1000 = { path = "drivers/e1000" }
 fnet = { path = "lib/fnet" }
 fnetdev = { path = "lib/fnetdev" }
 fhttp = { path = "lib/fhttp" }
+fhttps = { path = "lib/fhttps" }
 ftls = { path = "lib/ftls" }
 cdp-proto = { path = "tools/cdp-proto" }
 

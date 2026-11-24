@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fhttps"
+description = "fhttps: an HTTPS GET over netstack: the name resolved, TCP, ftls, fhttp, redirects."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fhttp.workspace = true
+frandom.workspace = true
+fstd.workspace = true
+ftls.workspace = true
+fwire.workspace = true
+
+[lints]
+workspace = true

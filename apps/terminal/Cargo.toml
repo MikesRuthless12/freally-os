@@ -22,8 +22,11 @@ flavour-e2e = []
 [dependencies]
 app-shell = { path = "../shell" }
 fcore-abi.workspace = true
+fcrypto.workspace = true
 ffont = { workspace = true, features = ["raster"] }
+fhttps.workspace = true
 fstd.workspace = true
+ftls.workspace = true
 fui = { workspace = true, features = ["ui"] }
 fwire.workspace = true
 

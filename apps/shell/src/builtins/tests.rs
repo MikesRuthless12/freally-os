@@ -15,9 +15,28 @@ struct Pretend {
     /// The network: its interfaces (None: netstack isn't running), and each ping's answer.
     net: Option<Vec<Interface>>,
     pongs: Vec<Result<u32, String>>,
+    /// The roots each fetch was given.
+    fetched: Vec<Option<Vec<u8>>>,
 }
 
 impl System for Pretend {
+    fn fetch(&mut self, url: &str, root: Option<Vec<u8>>) -> Result<Fetched, String> {
+        self.fetched.push(root.clone());
+        match (url, root) {
+            (_, None) => Err("this image trusts no root yet".into()),
+            ("https://test.freally.local/moved", Some(_)) => Ok(Fetched {
+                url: "https://test.freally.local/".into(),
+                hops: vec!["https://test.freally.local/".into()],
+                suite: "Aes128GcmSha256".into(),
+                status: 200,
+                reason: "OK".into(),
+                bytes: 5,
+                sha256: [0xAB; 32],
+            }),
+            (u, Some(_)) => Err(format!("{u}: no answer")),
+        }
+    }
+
     fn services(&mut self) -> Result<Vec<Service>, String> {
         Ok(vec![
             Service {
@@ -349,6 +368,49 @@ fn ip_shows_ipv6_too() {
         run(&ok("ping fec0::2 1"), &mut q).text,
         "reply from fec0::2: seq=1 time=0.25 ms\n1 sent, 1 answered.\n"
     );
+}
+
+/// A root certificate's first bytes, as DER and as PEM (lines of any width).
+const DER: [u8; 7] = [0x30, 0x82, 0x01, 0x0a, 0xff, 0x00, 0x7f];
+const PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBCv8A\nfw==\n-----END CERTIFICATE-----\n";
+
+#[test]
+fn a_root_is_read_from_pem_or_der() {
+    assert_eq!(root_der(PEM.as_bytes()).unwrap(), DER);
+    assert_eq!(root_der(b"  -----BEGIN CERTIFICATE----- MIIB Cv8Afw== -----END CERTIFICATE-----").unwrap(), DER);
+    assert_eq!(root_der(&DER).unwrap(), DER);
+    for bad in [
+        &b"hello"[..],
+        b"-----BEGIN CERTIFICATE-----\nMIIBCv8Afw==\n",
+        b"-----BEGIN CERTIFICATE-----\nMIIB*v8Afw==\n-----END CERTIFICATE-----",
+        b"-----BEGIN CERTIFICATE-----\nMIIBCv8Afw=\n-----END CERTIFICATE-----",
+        b"-----BEGIN CERTIFICATE-----\nMI==Cv8A\n-----END CERTIFICATE-----",
+    ] {
+        assert!(root_der(bad).is_err(), "{:?}", core::str::from_utf8(bad));
+    }
+}
+
+#[test]
+fn fetch_says_where_it_went_what_it_got_and_its_hash() {
+    let mut p = Pretend::default();
+    p.files.insert("/home/t/root.pem".into(), Some(PEM.as_bytes().to_vec()));
+    let said = run(&ok("fetch --root /home/t/root.pem https://test.freally.local/moved"), &mut p).text;
+    assert_eq!(
+        said,
+        format!(
+            "redirected to https://test.freally.local/\nhttps://test.freally.local/: 200 OK, 5 bytes, Aes128GcmSha256\nsha256 {}\n",
+            "ab".repeat(32)
+        )
+    );
+    assert_eq!(p.fetched, [Some(DER.to_vec())], "the root, as DER");
+    let said = run(&ok("fetch https://test.freally.local/"), &mut p).text;
+    assert_eq!(said, "fetch: https://test.freally.local/: this image trusts no root yet\n");
+    let said = run(&ok("fetch --root /home/t/none.pem https://test.freally.local/"), &mut p).text;
+    assert!(said.starts_with("fetch: /home/t/none.pem: "), "{said}");
+    assert_eq!(p.fetched.len(), 2, "no fetch without its root");
+    for bad in ["fetch", "fetch --root https://x/", "fetch --root rel.pem https://x/", "fetch a b"] {
+        assert!(parse(bad, false).unwrap_err().contains("usage: fetch"), "{bad}");
+    }
 }
 
 #[test]

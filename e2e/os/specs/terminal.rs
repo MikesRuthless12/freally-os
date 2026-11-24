@@ -289,7 +289,7 @@ pub(crate) fn once(ctx: &Ctx, line: &str, want: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn session(ctx: &Ctx, user: &str) -> Result<(), String> {
+pub(crate) fn session(ctx: &Ctx, user: &str) -> Result<(), String> {
     let said = ctx.door(&format!("vfs session {user}"))?;
     if said != ["ok"] {
         return Err(format!("vfs session {user}: {said:?}"));

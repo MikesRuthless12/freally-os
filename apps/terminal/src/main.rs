@@ -238,6 +238,36 @@ impl System for Sys {
         self.lookup(name, kind)
     }
 
+    /// An HTTPS GET (TASK-181): the image's roots, and in a dev or test
+    /// image the root given; a release image takes no root from outside (the
+    /// code that would is compiled out).
+    fn fetch(&mut self, url: &str, root: Option<Vec<u8>>) -> Result<builtins::Fetched, String> {
+        #[allow(unused_mut)]
+        let mut roots: Vec<&[u8]> = ftls::roots::ROOTS.to_vec();
+        #[cfg(any(feature = "flavour-dev", feature = "flavour-e2e"))]
+        if let Some(r) = &root {
+            roots.push(r);
+        }
+        #[cfg(not(any(feature = "flavour-dev", feature = "flavour-e2e")))]
+        if root.is_some() {
+            return Err(String::from("a release image trusts only the roots built into it"));
+        }
+        if roots.is_empty() {
+            return Err(String::from("this image trusts no root yet (the update host isn't chosen)"));
+        }
+        let got = fhttps::fetch(self.netstack()?, url, &roots, 16 << 20)?;
+        let r = &got.response;
+        Ok(builtins::Fetched {
+            url: got.url.clone(),
+            hops: got.hops.clone(),
+            suite: got.suite.clone(),
+            status: r.status,
+            reason: r.reason.clone(),
+            bytes: r.body.len() as u64,
+            sha256: fcrypto::sha2::sha256(&r.body),
+        })
+    }
+
     fn ping(&mut self, to: builtins::Target, seq: u16) -> Result<u32, String> {
         let wait = Instant::after(Duration::from_secs(3));
         let net = self.netstack()?;

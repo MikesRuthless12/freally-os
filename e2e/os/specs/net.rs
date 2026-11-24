@@ -373,3 +373,102 @@ pub fn dns(ctx: &mut Ctx) -> Result<(), String> {
     shell_until(ctx, "nslookup none.freally.local", &["nslookup: none.freally.local: no such name"])?;
     Ok(())
 }
+
+/// The test network's HTTPS server (`e2e/os/net/https.py`) on the TAP's host
+/// address, stopped when dropped.
+struct Https(std::process::Child);
+
+impl Https {
+    fn start(dir: &std::path::Path, address: &str) -> Result<Https, String> {
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/os/net/https.py");
+        let mut child = std::process::Command::new("python3")
+            .arg(&script)
+            .arg(dir)
+            .arg(address)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("https.py: {e}"))?;
+        // Serving once it says so.
+        let mut out = std::io::BufReader::new(child.stdout.take().ok_or("https.py: no stdout")?);
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut out, &mut line).map_err(|e| format!("https.py: {e}"))?;
+        if !line.starts_with("https: serving") {
+            let _ = child.kill();
+            return Err(format!("https.py said {line:?}"));
+        }
+        Ok(Https(child))
+    }
+}
+
+impl Drop for Https {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// `@net.https` (TASK-181): the shell's `fetch` from the Terminal, on the
+/// test network: test.freally.local resolved by its DNS, TLS 1.3 to the
+/// host's HTTPS server, the chain checked against the root `--root` names (a
+/// PEM file written to the session's home, the certificates made the minute
+/// before); a 300,000-byte page read whole, its SHA-256 the host's, by
+/// Content-Length and chunked; a redirect followed and said; a redirect loop
+/// given up after five; no root given: refused (the image trusts none yet);
+/// another root: refused.
+pub fn https(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.77.")?;
+    let log = ctx.log();
+    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
+    let prefix =
+        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let off = crate::settings::host_zone()?;
+    if ctx.door(&format!("zone {off} local"))? != ["ok"] {
+        return Err("the zone wasn't set".into());
+    }
+    crate::terminal::session(ctx, "tester")?;
+    let base = std::env::temp_dir().join(format!("freally-net-https-{prefix}"));
+    let _ = std::fs::remove_dir_all(&base);
+    let (_, _) = (pki(&base.join("a"))?, pki(&base.join("b"))?);
+    // The page: 300,000 bytes no compressor would shrink.
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let page: Vec<u8> = (0..300_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    std::fs::write(base.join("a/page.bin"), &page).map_err(|e| e.to_string())?;
+    let sum: String = fcrypto::sha2::sha256(&page).iter().map(|b| format!("{b:02x}")).collect();
+    let _server = Https::start(&base.join("a"), &format!("{prefix}.1"))?;
+    open(ctx)?;
+    // The roots, as PEM files in the home (their lines joined by spaces: one
+    // typed line; fetch reads PEM whatever its whitespace).
+    for (name, dir) in [("root.pem", "a"), ("other.pem", "b")] {
+        let pem = std::fs::read_to_string(base.join(dir).join("root.pem")).map_err(|e| e.to_string())?;
+        let one: Vec<&str> = pem.split_whitespace().collect();
+        shell_until(ctx, &format!("write /home/tester/{name} {}", one.join(" ")), &[])?;
+        shell_until(ctx, &format!("cat /home/tester/{name}"), &["-----END CERTIFICATE-----"])?;
+    }
+    let root = "--root /home/tester/root.pem";
+    let page_line = "https://test.freally.local/: 200 OK, 300000 bytes";
+    let hash = format!("sha256 {sum}");
+    shell_until(ctx, &format!("fetch {root} https://test.freally.local/"), &[page_line, &hash])?;
+    shell_until(
+        ctx,
+        &format!("fetch {root} https://test.freally.local/chunked"),
+        &["https://test.freally.local/chunked: 200 OK, 300000 bytes", &hash],
+    )?;
+    shell_until(
+        ctx,
+        &format!("fetch {root} https://test.freally.local/moved"),
+        &["redirected to https://test.freally.local/", page_line, &hash],
+    )?;
+    shell_until(ctx, &format!("fetch {root} https://test.freally.local/loop"), &["more than 5 redirects"])?;
+    shell_until(ctx, "fetch https://test.freally.local/", &["this image trusts no root yet"])?;
+    shell_until(ctx, "fetch --root /home/tester/other.pem https://test.freally.local/", &["certificate UnknownRoot"])?;
+    let _ = std::fs::remove_dir_all(&base);
+    Ok(())
+}

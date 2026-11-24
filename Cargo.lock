@@ -99,8 +99,11 @@ version = "0.8.0"
 dependencies = [
  "app-shell",
  "fcore-abi",
+ "fcrypto",
  "ffont",
+ "fhttps",
  "fstd",
+ "ftls",
  "fui",
  "fwire",
 ]
@@ -268,6 +271,17 @@ dependencies = [
 [[package]]
 name = "fhttp"
 version = "0.8.0"
+
+[[package]]
+name = "fhttps"
+version = "0.8.0"
+dependencies = [
+ "fhttp",
+ "frandom",
+ "fstd",
+ "ftls",
+ "fwire",
+]
 
 [[package]]
 name = "fimage"
@@ -441,12 +455,10 @@ dependencies = [
  "fcore-abi",
  "fcrypto",
  "felf",
- "fhttp",
- "frandom",
+ "fhttps",
  "fsi",
  "fstd",
  "fsvc",
- "ftls",
  "fwire",
 ]
 

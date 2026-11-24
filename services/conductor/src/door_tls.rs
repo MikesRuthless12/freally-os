@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The test door's TLS (e2e flavour only, TASK-180): ftls over netstack's TCP,
-//! as a client of the net protocol.
+//! The test door's TLS (e2e flavour only, TASK-180): fhttps over netstack's
+//! TCP, as a client of the net protocol (the shell's `fetch` uses the same).
 //! - `tls get <ip> <port> <host> <root DER in hex> <path>` connects, checks the
 //!   server's chain for `<host>` against that root alone, sends fhttp's GET,
 //!   reads the response with fhttp's reader: `tls <suite> <host>`, then
@@ -13,7 +13,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use fstd::ipc::Client;
 use fstd::time::{Duration, Instant};
-use fwire::proto::net as nt;
 
 #[derive(Default)]
 pub struct TlsDoor {
@@ -28,15 +27,6 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         return None;
     }
     b.chunks(2).map(|p| u8::from_str_radix(core::str::from_utf8(p).ok()?, 16).ok()).collect()
-}
-
-fn why(e: ftls::Error) -> String {
-    match e {
-        ftls::Error::Certificate(r) => alloc::format!("certificate {r:?}"),
-        ftls::Error::Sent(a) => alloc::format!("sent {a:?}"),
-        ftls::Error::Received(a) => alloc::format!("alert {a:?}"),
-        other => alloc::format!("{other:?}"),
-    }
 }
 
 impl TlsDoor {
@@ -60,71 +50,11 @@ impl TlsDoor {
         })
     }
 
-    fn call<Q: fwire::Wire, R: fwire::Wire>(&mut self, ordinal: u32, req: &Q, secs: u64) -> Result<R, String> {
-        let cl = self.client.as_mut().ok_or("netstack isn't up")?;
-        cl.call::<_, R>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(secs)))
-            .map(|(r, _)| r)
-            .map_err(|e| alloc::format!("{e:?}"))
-    }
-
-    /// Sends what the client has for the server.
-    fn flush(&mut self, id: u32, tls: &mut ftls::Client) -> Result<(), String> {
-        let out = tls.take_output();
-        for piece in out.chunks(60 * 1024) {
-            self.call::<_, nt::Sent>(nt::TCP_SEND, &nt::Send { id, data: piece.to_vec() }, 10)?;
-        }
-        Ok(())
-    }
-
     fn get(&mut self, to: [u8; 4], port: u16, host: &str, root: &[u8], path: &str) -> Result<Vec<String>, String> {
-        let mut entropy = [0u8; 96];
-        frandom::fill(&mut entropy).map_err(|_| String::from("no randomness"))?;
-        let now = fstd::time::utc_ns() / 1_000_000_000;
-        let roots = [root];
-        let mut tls = ftls::Client::new(host, &roots, now, &entropy).map_err(why)?;
-        let id = self.call::<_, nt::Socket>(nt::TCP_CONNECT, &nt::Connect { to, port, timeout_ms: 10_000 }, 12)?.id;
-        let result = self.exchange(id, &mut tls, host, path);
-        let _ = self.call::<_, ()>(nt::TCP_CLOSE, &nt::Socket { id }, 2);
-        result
-    }
-
-    fn exchange(&mut self, id: u32, tls: &mut ftls::Client, host: &str, path: &str) -> Result<Vec<String>, String> {
-        self.flush(id, tls)?;
-        let recv = nt::Recv { id, max: 60 * 1024, timeout_ms: 5_000 };
-        while !tls.is_connected() {
-            let r = self.call::<_, nt::Received>(nt::TCP_RECV, &recv, 7)?;
-            if r.data.is_empty() {
-                return Err(String::from(if r.end { "the server closed mid-handshake" } else { "no answer in 5 s" }));
-            }
-            let fed = tls.feed(&r.data);
-            self.flush(id, tls)?;
-            fed.map_err(why)?;
-        }
-        let suite = tls.suite().map_or(String::from("?"), |s| alloc::format!("{s:?}"));
-        tls.write(&fhttp::get(host, path)).map_err(why)?;
-        self.flush(id, tls)?;
-        let mut http = fhttp::Reader::new(1 << 20);
-        let mut got = 0;
-        while !tls.peer_closed() && http.done().is_none() {
-            let r = self.call::<_, nt::Received>(nt::TCP_RECV, &recv, 7)?;
-            if r.data.is_empty() {
-                if r.end {
-                    break; // the TCP connection ended without close_notify
-                }
-                return Err(alloc::format!("nothing more in 5 s after {got} bytes"));
-            }
-            tls.feed(&r.data).map_err(why)?;
-            self.flush(id, tls)?;
-            let data = tls.take_data();
-            got += data.len();
-            http.feed(&data).map_err(|e| alloc::format!("http {e:?}"))?;
-        }
-        tls.close();
-        let _ = self.flush(id, tls);
-        let r = match http.done() {
-            Some(r) => r.clone(),
-            None => http.close().map_err(|e| alloc::format!("http {e:?}"))?.clone(),
-        };
+        let net = self.client.as_mut().ok_or("netstack isn't up")?;
+        // The door's host as given (a wrong name is a test of its own).
+        let url = fhttps::Url { host: String::from(host), port, path: String::from(path) };
+        let (suite, r) = fhttps::get_at(net, to, &url, &[root], 1 << 20, Instant::after(Duration::from_secs(60)))?;
         Ok(alloc::vec![
             alloc::format!("tls {suite} {host}"),
             alloc::format!("http {} {}", r.status, r.reason),

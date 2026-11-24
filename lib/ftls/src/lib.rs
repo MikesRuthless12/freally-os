@@ -14,6 +14,7 @@ extern crate alloc;
 pub mod client;
 pub mod msg;
 pub mod record;
+pub mod roots;
 pub mod schedule;
 
 pub use client::{Client, Error};

@@ -107,6 +107,64 @@ pub trait System {
     fn ping(&mut self, to: Target, seq: u16) -> Result<u32, String>;
     /// A name's addresses by DNS (`kind` 1: IPv4, 28: IPv6) (TASK-176).
     fn resolve(&mut self, name: &str, kind: u16) -> Result<Vec<Vec<u8>>, String>;
+    /// `url` over HTTPS (TASK-181), checked against the image's roots and,
+    /// in a dev or test image, `root` (DER) too.
+    fn fetch(&mut self, url: &str, root: Option<Vec<u8>>) -> Result<Fetched, String>;
+}
+
+/// What `fetch` got (TASK-181).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fetched {
+    /// Where it ended, and each redirect on the way.
+    pub url: String,
+    pub hops: Vec<String>,
+    pub suite: String,
+    pub status: u16,
+    pub reason: String,
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+}
+
+/// A root certificate from a file: PEM (`-----BEGIN CERTIFICATE-----`,
+/// its lines in any whitespace) or DER.
+pub fn root_der(b: &[u8]) -> Result<Vec<u8>, String> {
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    let pem = core::str::from_utf8(b).ok().and_then(|t| t.trim_start().strip_prefix(BEGIN));
+    let Some(rest) = pem else {
+        return if b.first() == Some(&0x30) { Ok(b.to_vec()) } else { Err("not a certificate (PEM or DER)".into()) };
+    };
+    let (body, _) = rest.split_once(END).ok_or("a PEM certificate with no end")?;
+    base64(body).ok_or_else(|| "a PEM certificate that isn't base64".into())
+}
+
+/// Standard base64 (RFC 4648), whitespace ignored, `=` padding.
+fn base64(s: &str) -> Option<Vec<u8>> {
+    let digits: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace()).collect();
+    let pad = digits.iter().rev().take_while(|&&c| c == b'=').count();
+    if digits.len() % 4 != 0 || pad > 2 || digits.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(digits.len() / 4 * 3);
+    for (i, quad) in digits.chunks(4).enumerate() {
+        let last = i + 1 == digits.len() / 4;
+        let mut v = 0u32;
+        for (k, &c) in quad.iter().enumerate() {
+            let d = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                b'=' if last && k >= 4 - pad => 0,
+                _ => return None,
+            };
+            v = v << 6 | d as u32;
+        }
+        let bytes = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+        out.extend_from_slice(&bytes[..if last { 3 - pad } else { 3 }]);
+    }
+    Some(out)
 }
 
 /// "10.0.2.15".
@@ -227,6 +285,7 @@ pub enum Command {
     Ip,
     Ping { to: Target, count: u16 },
     Nslookup { name: String },
+    Fetch { url: String, root: Option<String> },
 }
 
 /// Every built-in, its usage and what it does.
@@ -263,6 +322,11 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
         "nslookup",
         "nslookup <name>",
         "Shows a name's IPv4 and IPv6 addresses, asked of the DNS servers the network gave.",
+    ),
+    (
+        "fetch",
+        "fetch [--root <file>] <url>",
+        "Gets an https:// page (following up to 5 redirects) and shows its status, size and SHA-256. --root trusts one more root certificate (PEM or DER), in dev and test images only.",
     ),
 ];
 
@@ -346,6 +410,13 @@ pub fn parse(line: &str, dev: bool) -> Result<Option<Command>, String> {
         "nslookup" => match args {
             [n] => Ok(Some(Command::Nslookup { name: n.to_string() })),
             _ => Err(usage("nslookup")),
+        },
+        "fetch" => match args {
+            [u] => Ok(Some(Command::Fetch { url: u.to_string(), root: None })),
+            ["--root", f, u] if f.starts_with('/') => {
+                Ok(Some(Command::Fetch { url: u.to_string(), root: Some(f.to_string()) }))
+            }
+            _ => Err(usage("fetch")),
         },
         "ping" => {
             let to = |a: &str| {
@@ -630,6 +701,28 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
                 s.push_str(&format!("nslookup: {name}: {why}\n"));
             }
             text(s)
+        }
+        Command::Fetch { url, root } => {
+            let root = match root {
+                Some(p) => match sys.read_file(p).map_err(|e| format!("{p}: {e}")).and_then(|b| root_der(&b)) {
+                    Ok(der) => Some(der),
+                    Err(e) => return text(format!("fetch: {e}\n")),
+                },
+                None => None,
+            };
+            match sys.fetch(url, root) {
+                Ok(f) => {
+                    let mut s = String::new();
+                    for h in &f.hops {
+                        s.push_str(&format!("redirected to {h}\n"));
+                    }
+                    s.push_str(&format!("{}: {} {}, {} bytes, {}\n", f.url, f.status, f.reason, f.bytes, f.suite));
+                    let hex: String = f.sha256.iter().map(|b| format!("{b:02x}")).collect();
+                    s.push_str(&format!("sha256 {hex}\n"));
+                    text(s)
+                }
+                Err(e) => text(format!("fetch: {url}: {e}\n")),
+            }
         }
     }
 }
