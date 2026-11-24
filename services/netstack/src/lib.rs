@@ -6,6 +6,9 @@
 
 extern crate alloc;
 
+pub mod resolver;
+#[cfg(test)]
+mod resolver_tests;
 pub mod tcp;
 #[cfg(test)]
 mod tcp_tests;

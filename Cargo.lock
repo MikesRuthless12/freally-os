@@ -265,6 +265,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fhttp"
+version = "0.8.0"
+
+[[package]]
 name = "fimage"
 version = "0.8.0"
 
@@ -436,6 +440,7 @@ dependencies = [
  "fcore-abi",
  "fcrypto",
  "felf",
+ "fhttp",
  "frandom",
  "fsi",
  "fstd",

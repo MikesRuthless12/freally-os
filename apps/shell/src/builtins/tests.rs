@@ -131,6 +131,16 @@ impl System for Pretend {
     fn interfaces(&mut self) -> Result<Vec<Interface>, String> {
         self.net.clone().ok_or_else(|| "netstack isn't running (no network)".into())
     }
+    fn resolve(&mut self, name: &str, kind: u16) -> Result<Vec<Vec<u8>>, String> {
+        match (name, kind) {
+            ("both.freally.local", 1) => Ok(vec![vec![10, 0, 3, 1], vec![10, 0, 3, 2]]),
+            ("both.freally.local", 28) => Ok(vec![[0xfe, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1].to_vec()]),
+            ("v4.freally.local", 1) => Ok(vec![vec![10, 0, 3, 3]]),
+            ("v4.freally.local", _) => Err("no address".into()),
+            (_, _) => Err("no such name".into()),
+        }
+    }
+
     fn ping(&mut self, _to: Target, _seq: u16) -> Result<u32, String> {
         if self.pongs.is_empty() { Err("no answer".into()) } else { self.pongs.remove(0) }
     }
@@ -339,4 +349,16 @@ fn ip_shows_ipv6_too() {
         run(&ok("ping fec0::2 1"), &mut q).text,
         "reply from fec0::2: seq=1 time=0.25 ms\n1 sent, 1 answered.\n"
     );
+}
+
+#[test]
+fn nslookup_says_each_address_or_why_not() {
+    let out = |line: &str| run(&ok(line), &mut Pretend::default()).text;
+    assert_eq!(
+        out("nslookup both.freally.local"),
+        "both.freally.local has address 10.0.3.1\nboth.freally.local has address 10.0.3.2\nboth.freally.local has address fec0::1\n"
+    );
+    assert_eq!(out("nslookup v4.freally.local"), "v4.freally.local has address 10.0.3.3\n");
+    assert_eq!(out("nslookup none.freally.local"), "nslookup: none.freally.local: no such name\n");
+    assert!(parse("nslookup", false).unwrap_err().contains("usage: nslookup <name>"));
 }

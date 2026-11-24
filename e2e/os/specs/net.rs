@@ -274,8 +274,8 @@ pub fn tls(ctx: &mut Ctx) -> Result<(), String> {
         let server = Server::start(&base.join("a"), port, suite)?;
         let said = ctx.door(&format!("tls get 10.0.2.100 443 test.freally.local {root} /"))?;
         drop(server);
-        let want = [format!("tls {name} test.freally.local"), "HTTP/1.0 200 ok".to_string()];
-        if said.len() < 3 || said[..2] != want || !said[2].starts_with("got ") {
+        let want = [format!("tls {name} test.freally.local"), "http 200 ok".to_string()];
+        if said.len() < 3 || said[..2] != want || !said[2].starts_with("body ") {
             return Err(format!("{suite}: the door said {said:?}"));
         }
         ctx.note(&format!("{suite}: {}", said[2]));
@@ -326,4 +326,37 @@ impl Drop for Server {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+/// `@net.dns`: on the test network (a TAP device; e2e/os/net/testnet.py gives
+/// the address by DHCP, and the DNS server), the shell's `nslookup`: an A;
+/// a CNAME followed to it; an AAAA; both kinds; a name with 40 addresses
+/// (too big for UDP: TC, then TCP, all 40); a chain the server leaves in its
+/// answers, asked again for its end; a name that doesn't exist (TASK-176).
+pub fn dns(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.77.")?;
+    let dhcp = ctx.log();
+    let Some(line) = dhcp.lines().find(|l| l.contains("by DHCP")) else { return Err("no DHCP lease said".into()) };
+    let prefix =
+        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    if !line.contains(&format!("DNS {prefix}.1")) {
+        return Err(format!("the lease gave another DNS server: {line}"));
+    }
+    open(ctx)?;
+    let one = |name: &str, want: &[&str]| -> Result<(), String> {
+        let wanted: Vec<String> = want.iter().map(|w| format!("{name} has address {w}")).collect();
+        let refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        shell_until(ctx, &format!("nslookup {name}"), &refs).map(|_| ())
+    };
+    let me = format!("{prefix}.1");
+    one("test.freally.local", &[&me])?;
+    one("www.freally.local", &[&me])?;
+    one("six.freally.local", &["fec0::1"])?;
+    one("both.freally.local", &[&format!("{prefix}.7"), "fec0::7"])?;
+    // 40 lines scroll past the screen: the last two-thirds of them stay on it,
+    // and the 40th only comes whole over TCP.
+    one("big.freally.local", &[&format!("{prefix}.120"), &format!("{prefix}.139")])?;
+    one("alias.freally.local", &[&format!("{prefix}.9")])?;
+    shell_until(ctx, "nslookup none.freally.local", &["nslookup: none.freally.local: no such name"])?;
+    Ok(())
 }

@@ -1395,6 +1395,9 @@ pub mod net {
     pub const TCP_RECV: u32 = 6;
     /// `Socket` → `()`: this side closed (a FIN after what's still to send).
     pub const TCP_CLOSE: u32 = 7;
+    /// `Resolve` → `Resolved`: a name's addresses by DNS (`kind` 1: A,
+    /// 28: AAAA); `NotFound` "no such name" or "no address", `TimedOut` "no answer".
+    pub const RESOLVE: u32 = 8;
 
     wire_struct! {
         pub struct Interface {
@@ -1440,6 +1443,12 @@ pub mod net {
     }
     wire_struct! {
         pub struct Received { pub data: Vec<u8>, pub end: bool }
+    }
+    wire_struct! {
+        pub struct Resolve { pub name: String, pub kind: u16 }
+    }
+    wire_struct! {
+        pub struct Resolved { pub addresses: Vec<Vec<u8>> }
     }
 }
 
@@ -1593,6 +1602,7 @@ pub mod inventory {
                 (nt::TCP_SEND, "tcp_send"),
                 (nt::TCP_RECV, "tcp_recv"),
                 (nt::TCP_CLOSE, "tcp_close"),
+                (nt::RESOLVE, "resolve"),
             ],
         ),
         ("drv-e1000", &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")]),

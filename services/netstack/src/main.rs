@@ -3,7 +3,8 @@
 //! network device, as one service. It takes the device's frames (netdev),
 //! gets an IPv4 address by DHCP and IPv6 ones by SLAAC, answers ARP and NDP
 //! for its addresses and echo requests to them, makes outgoing TCP
-//! connections over IPv4 (a RST for any segment of none), and serves the net
+//! connections over IPv4 (a RST for any segment of none), resolves names by
+//! DNS (UDP, TCP when truncated: `resolver.rs`), and serves the net
 //! protocol (PRD § 4) to the clients the Network page lists. With no network
 //! device it says so and ends.
 #![cfg_attr(target_os = "none", no_std, no_main)]
@@ -21,6 +22,7 @@ use fstd::time::{Duration, Instant};
 use fwire::proto::conductor as c;
 use fwire::proto::net as nt;
 use fwire::proto::netdev as nd;
+use svc_netstack::resolver::{self, Answer, Resolver};
 use svc_netstack::tcp::{self as tcp, Ended, Out, State as TcpState, Tcb};
 use svc_netstack::{ArpCache, Client as Dhcp, Neighbors, Slaac, Slaac6, next_hop};
 
@@ -77,6 +79,9 @@ struct Socket {
     writing: Option<(Owed, Vec<u8>, usize)>,
     /// Its client closed it: it goes once the connection has (TIME-WAIT included).
     closed: bool,
+    /// The resolver's, not a client's: its lookup, the framed query (sent
+    /// once it opens), and the answer as it arrives.
+    dns: Option<(u32, Vec<u8>, Vec<u8>)>,
 }
 
 fn answer<T: fwire::Wire>(ch: Option<&Channel>, o: Owed, r: &T) {
@@ -125,6 +130,15 @@ struct Stack {
     next_port: u16,
     /// RFC 6528's secret, for initial sequence numbers.
     isn_key: [u8; 32],
+    resolver: Resolver,
+    /// Lookups clients are waiting on: (the resolver's id, the client, its reply).
+    resolving: Vec<(u32, usize, Owed)>,
+}
+
+fn random4() -> [u8; 4] {
+    let mut r = [0u8; 4];
+    let _ = frandom::fill(&mut r);
+    r
 }
 
 fn now() -> u64 {
@@ -297,6 +311,16 @@ impl Stack {
                     PROTO_TCP if Some(p.dst) == ours => self.tcp_in(&e, &p),
                     fnet::PROTO_UDP if to_us || ours.is_none() => {
                         let Ok(u) = Udp::parse(p.src, p.dst, p.payload) else { return };
+                        if u.src_port == fnet::dns::PORT
+                            && Some(p.dst) == ours
+                            && self.resolver.ports().any(|q| q == u.dst_port)
+                        {
+                            let mut sends = Vec::new();
+                            let done = self.resolver.udp(p.src, u.dst_port, u.data, now(), random4(), &mut sends);
+                            self.dns_send(sends);
+                            self.resolved(done, clients);
+                            return;
+                        }
                         if u.dst_port == fnet::dhcp::CLIENT_PORT && u.src_port == fnet::dhcp::SERVER_PORT {
                             let had = ours.is_some();
                             if let Some(m) = self.dhcp.reply(u.data, now()) {
@@ -379,8 +403,87 @@ impl Stack {
         }
     }
 
+    /// The resolver's queries: UDP to the server (through its neighbour, or
+    /// dropped till ARP finds it: the resolver asks again), or a connection.
+    fn dns_send(&mut self, sends: Vec<resolver::Send>) {
+        let Some((src, prefix, router)) = self.ours() else { return };
+        for q in sends {
+            match q {
+                resolver::Send::Udp { server, port, bytes } => {
+                    let Some(hop) = next_hop(server, src, prefix, router) else { continue };
+                    match self.arp.find(hop, now()) {
+                        Some(mac) => {
+                            let d = fnet::udp(src, server, port, fnet::dns::PORT, &bytes);
+                            self.send_ip(mac, src, server, fnet::PROTO_UDP, &d);
+                        }
+                        None => self.arp_request(src, hop),
+                    }
+                }
+                resolver::Send::Tcp { id, server, bytes } => {
+                    let Some(hop) = next_hop(server, src, prefix, router) else { continue };
+                    let mut framed = (bytes.len() as u16).to_be_bytes().to_vec();
+                    framed.extend_from_slice(&bytes);
+                    let owed = Owed { txid: 0, ordinal: 0 };
+                    if self.connect(usize::MAX, owed, server, fnet::dns::PORT, hop, 5_000).is_ok()
+                        && let Some(s) = self.sockets.last_mut()
+                    {
+                        s.dns = Some((id, framed, Vec::new()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Finished lookups, answered to the clients waiting on them.
+    fn resolved(&mut self, done: Vec<(u32, Answer)>, clients: &[Channel]) {
+        for (id, a) in done {
+            let Some(k) = self.resolving.iter().position(|r| r.0 == id) else { continue };
+            let (_, client, o) = self.resolving.remove(k);
+            let ch = clients.get(client);
+            match a {
+                Answer::Found(addresses) => answer(ch, o, &nt::Resolved { addresses }),
+                Answer::NoSuchName => refuse(ch, o, FErr::NotFound, "no such name"),
+                Answer::NoData => refuse(ch, o, FErr::NotFound, "no address"),
+                Answer::NoAnswer => refuse(ch, o, FErr::TimedOut, "no answer"),
+                Answer::NoServer => refuse(ch, o, FErr::BadState, "no DNS server"),
+                Answer::Failed => refuse(ch, o, FErr::Integrity, "a bad answer"),
+            }
+        }
+    }
+
+    /// A DNS connection: the query once open, the answer when whole; false once it's gone.
+    fn dns_socket(&mut self, i: usize, clients: &[Channel], t: u64) -> bool {
+        let s = &mut self.sockets[i];
+        let Some((id, query, got)) = &mut s.dns else { return true };
+        let id = *id;
+        if !query.is_empty() && matches!(s.tcb.state, TcpState::Established) {
+            let n = s.tcb.write(query);
+            query.drain(..n);
+        }
+        got.extend(s.tcb.read(64 * 1024));
+        let whole = got.len() >= 2 && got.len() >= 2 + u16::from_be_bytes([got[0], got[1]]) as usize;
+        let failed = s.tcb.state == TcpState::Closed
+            || s.connecting.is_some_and(|(_, d)| t >= d && s.tcb.state == TcpState::SynSent);
+        if !whole && !failed {
+            return true;
+        }
+        let answer = whole.then(|| got[2..2 + u16::from_be_bytes([got[0], got[1]]) as usize].to_vec());
+        s.tcb.close();
+        s.dns = None;
+        s.connecting = None;
+        s.closed = true;
+        let mut sends = Vec::new();
+        let done = self.resolver.tcp(id, answer.as_deref(), t, random4(), &mut sends);
+        self.dns_send(sends);
+        self.resolved(done, clients);
+        true
+    }
+
     /// The replies connection `i` owes its client; false once it's gone.
     fn owed(&mut self, i: usize, clients: &[Channel], t: u64) -> bool {
+        if self.sockets[i].dns.is_some() {
+            self.dns_socket(i, clients, t);
+        }
         let s = &mut self.sockets[i];
         let ch = clients.get(s.client);
         let ended = s.tcb.ended;
@@ -451,7 +554,7 @@ impl Stack {
         hop: Ipv4,
         timeout_ms: u32,
     ) -> Result<(), (FErr, &'static str)> {
-        if self.sockets.iter().filter(|s| s.client == client).count() >= SOCKETS_PER_CLIENT {
+        if client != usize::MAX && self.sockets.iter().filter(|s| s.client == client).count() >= SOCKETS_PER_CLIENT {
             return Err((FErr::Busy, "too many connections"));
         }
         let (src, _, _) = self.ours().ok_or((FErr::BadState, "no address yet"))?;
@@ -480,6 +583,7 @@ impl Stack {
             reading: None,
             writing: None,
             closed: false,
+            dns: None,
         });
         Ok(())
     }
@@ -502,17 +606,35 @@ impl Stack {
                 }
                 continue;
             }
-            if self.sockets[i].client > c {
+            if self.sockets[i].client > c && self.sockets[i].client != usize::MAX {
                 self.sockets[i].client -= 1;
             }
             i += 1;
         }
         self.pending.retain(|q| q.client != c);
+        self.resolving.retain(|r| r.1 != c);
+        for r in &mut self.resolving {
+            if r.1 > c {
+                r.1 -= 1;
+            }
+        }
         for q in &mut self.pending {
             if q.client > c {
                 q.client -= 1;
             }
         }
+    }
+
+    /// The resolver's servers (the lease's), its retries, and its deadlines.
+    fn dns_due(&mut self, clients: &[Channel]) {
+        let servers = self.dhcp.lease().map(|l| l.dns.clone()).unwrap_or_default();
+        if self.resolver.servers != servers {
+            self.resolver.servers = servers;
+        }
+        let mut sends = Vec::new();
+        let done = self.resolver.due(now(), random4, &mut sends);
+        self.dns_send(sends);
+        self.resolved(done, clients);
     }
 
     fn icmp(&mut self, e: &Eth, p: &Ip, clients: &[Channel]) {
@@ -671,6 +793,9 @@ impl Stack {
                 t = t.min(q.arp_at);
             }
         }
+        if let Some(w) = self.resolver.next_wake() {
+            t = t.min(w);
+        }
         let addressed = self.ours().is_some();
         for s in &self.sockets {
             // A connection waiting for its neighbour runs no timer of its own yet.
@@ -764,6 +889,8 @@ fn open() -> Result<(Stack, Channel), String> {
         next_socket: 0,
         next_port,
         isn_key,
+        resolver: Resolver::new(),
+        resolving: Vec::new(),
     };
     Ok((stack, events))
 }
@@ -795,6 +922,7 @@ fn run(_bootstrap: u32) -> i64 {
         s.slaac_due();
         s.pings(&clients);
         s.tcp_due(&clients);
+        s.dns_due(&clients);
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE], [events.0.raw(), signal::READABLE]];
         items.extend(clients.iter().map(|ch| [ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
         match fstd::sys::wait_many(&items, s.next_wake()) {
@@ -884,6 +1012,31 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
                     None => Err((FErr::NotFound, "no route")),
                     Some(hop) => s.connect(i, owed, c.to, c.port, hop, c.timeout_ms).map(|_| None),
                 },
+            },
+            nt::RESOLVE => match fwire::from_payload::<nt::Resolve>(p) {
+                Err(_) => Err((FErr::InvalidArgs, "unreadable")),
+                Ok(q) if q.kind != fnet::dns::TYPE_A && q.kind != fnet::dns::TYPE_AAAA => {
+                    Err((FErr::InvalidArgs, "kind is 1 (A) or 28 (AAAA)"))
+                }
+                Ok(q) => {
+                    let mut sends = Vec::new();
+                    match s.resolver.lookup(&q.name, q.kind, now(), random4(), &mut sends) {
+                        // From the cache, or a name that can't be one: answered now.
+                        Ok(Answer::Found(addresses)) => {
+                            Ok(Some(fwire::reply(h.txid, h.ordinal, &nt::Resolved { addresses })))
+                        }
+                        Ok(Answer::NoSuchName) => Err((FErr::NotFound, "no such name")),
+                        Ok(Answer::NoData) => Err((FErr::NotFound, "no address")),
+                        Ok(Answer::NoAnswer) => Err((FErr::TimedOut, "no answer")),
+                        Ok(Answer::NoServer) => Err((FErr::BadState, "no DNS server (the network gave none)")),
+                        Ok(Answer::Failed) => Err((FErr::InvalidArgs, "not a name")),
+                        Err(id) => {
+                            s.resolving.push((id, i, owed));
+                            s.dns_send(sends);
+                            Ok(None)
+                        }
+                    }
+                }
             },
             nt::TCP_SEND => match fwire::from_payload::<nt::Send>(p) {
                 Err(_) => Err((FErr::InvalidArgs, "unreadable")),

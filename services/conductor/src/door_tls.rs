@@ -2,9 +2,9 @@
 //! The test door's TLS (e2e flavour only, TASK-180): ftls over netstack's TCP,
 //! as a client of the net protocol.
 //! - `tls get <ip> <port> <host> <root DER in hex> <path>` connects, checks the
-//!   server's chain for `<host>` against that root alone, sends
-//!   `GET <path> HTTP/1.0`, reads to the server's close: `tls <suite> <host>`,
-//!   then the response's first line, then `got <n> bytes`.
+//!   server's chain for `<host>` against that root alone, sends fhttp's GET,
+//!   reads the response with fhttp's reader: `tls <suite> <host>`, then
+//!   `http <status> <reason>`, then `body <n> bytes`.
 //!
 //! Any failure: `error: …` (`certificate Name`, `alert …`, netstack's reason).
 
@@ -101,28 +101,34 @@ impl TlsDoor {
             fed.map_err(why)?;
         }
         let suite = tls.suite().map_or(String::from("?"), |s| alloc::format!("{s:?}"));
-        tls.write(alloc::format!("GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n").as_bytes()).map_err(why)?;
+        tls.write(&fhttp::get(host, path)).map_err(why)?;
         self.flush(id, tls)?;
-        let mut body = Vec::new();
-        while !tls.peer_closed() {
+        let mut http = fhttp::Reader::new(1 << 20);
+        let mut got = 0;
+        while !tls.peer_closed() && http.done().is_none() {
             let r = self.call::<_, nt::Received>(nt::TCP_RECV, &recv, 7)?;
             if r.data.is_empty() {
                 if r.end {
                     break; // the TCP connection ended without close_notify
                 }
-                return Err(alloc::format!("nothing more in 5 s after {} bytes", body.len()));
+                return Err(alloc::format!("nothing more in 5 s after {got} bytes"));
             }
             tls.feed(&r.data).map_err(why)?;
             self.flush(id, tls)?;
-            body.extend(tls.take_data());
+            let data = tls.take_data();
+            got += data.len();
+            http.feed(&data).map_err(|e| alloc::format!("http {e:?}"))?;
         }
         tls.close();
         let _ = self.flush(id, tls);
-        let first = body.split(|&b| b == b'\r' || b == b'\n').next().unwrap_or(&[]);
+        let r = match http.done() {
+            Some(r) => r.clone(),
+            None => http.close().map_err(|e| alloc::format!("http {e:?}"))?.clone(),
+        };
         Ok(alloc::vec![
             alloc::format!("tls {suite} {host}"),
-            String::from_utf8_lossy(first).into_owned(),
-            alloc::format!("got {} bytes", body.len()),
+            alloc::format!("http {} {}", r.status, r.reason),
+            alloc::format!("body {} bytes", r.body.len()),
         ])
     }
 }

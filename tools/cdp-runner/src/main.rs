@@ -168,6 +168,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("net.ipv6", net::ipv6),
     ("net.tcp", net::tcp),
     ("net.tls", net::tls),
+    ("net.dns", net::dns),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

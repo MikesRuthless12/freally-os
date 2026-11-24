@@ -45,6 +45,7 @@ drv-virtio-net = { path = "drivers/virtio-net" }
 drv-e1000 = { path = "drivers/e1000" }
 fnet = { path = "lib/fnet" }
 fnetdev = { path = "lib/fnetdev" }
+fhttp = { path = "lib/fhttp" }
 ftls = { path = "lib/ftls" }
 cdp-proto = { path = "tools/cdp-proto" }
 

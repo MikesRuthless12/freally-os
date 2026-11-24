@@ -23,6 +23,7 @@
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
     "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" },
     "e2e-net": { "flavour": "e2e", "nic": "virtio-net-pci" },
+    "e2e-testnet": { "flavour": "e2e", "nic": "virtio-net-pci", "testnet": true },
     "e2e-net-e1000": { "flavour": "e2e", "nic": "e1000" },
     "e2e-net-e1000e": { "flavour": "e2e", "nic": "e1000e" },
     "e2e-no-tsc-deadline": { "flavour": "e2e", "cpu": "host,-tsc-deadline" }
@@ -685,6 +686,13 @@
       "setup": "e2e-net",
       "spec": "e2e/os/specs/net.rs",
       "what": "TCP through netstack to QEMU's own TCP, handed to cat on the host (10.0.2.100:7): 1 MiB echoed byte for byte, both sides closed, the peer's FIN read as the end; a closed port's RST said as refused; a SYN no one answers given up at its deadline, said."
+    },
+    {
+      "id": "net.dns",
+      "task": "TASK-176",
+      "setup": "e2e-testnet",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "On a test network of its own (a TAP device; DHCP and DNS from e2e/os/net/testnet.py), the shell's nslookup: an A, a CNAME followed, an AAAA, both kinds, a name too big for UDP (TC, then TCP: all 40 addresses), a chain left in the answers asked again, and a name that doesn't exist said so."
     },
     {
       "id": "net.tls",

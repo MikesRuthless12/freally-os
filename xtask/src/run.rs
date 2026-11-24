@@ -27,6 +27,9 @@ pub struct VmOptions {
     pub tcg: bool,
     /// Added to every port, so two VMs can run side by side.
     pub port_offset: u16,
+    /// The NIC on a test network of its own (TASK-176): a TAP device, and a
+    /// DHCP and DNS server on it (`e2e/os/net/testnet.py`), not QEMU's.
+    pub testnet: bool,
     pub memory_mb: u32,
     pub cpus: u32,
     /// Test only: flip one bit of this byte in the VM's copy of the image, to
@@ -89,6 +92,7 @@ impl VmOptions {
             carry: None,
             updates: false,
             nic: None,
+            testnet: false,
             cpu: None,
         }
     }
@@ -136,6 +140,12 @@ impl VmOptions {
 
     pub fn port(&self, com: u16) -> u16 {
         COM1_PORT + (com - 1) + self.port_offset
+    }
+
+    /// The test network's TAP device and its /24 (`frt2`, `10.77.2`), by the port offset.
+    pub fn testnet_names(&self) -> (String, String) {
+        let n = self.port_offset / 100;
+        (format!("frt{n}"), format!("10.77.{n}"))
     }
 
     /// The port a spec's TLS server listens on, for this VM (TASK-180).
@@ -253,6 +263,11 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     // `cat` on this machine (TCP, TASK-177), and 10.0.2.100:443 to the TLS
     // test server a spec starts on this machine's `tls_port` (TASK-180).
     match &o.nic {
+        Some(model) if o.testnet => {
+            let (tap, _) = o.testnet_names();
+            c.args(["-netdev", &format!("tap,id=n0,ifname={tap},script=no,downscript=no")]);
+            c.arg("-device").arg(format!("{model},netdev=n0"));
+        }
         Some(model) => {
             let tls = format!("guestfwd=tcp:10.0.2.100:443-cmd:nc -N 127.0.0.1 {}", o.tls_port());
             c.args(["-netdev", &format!("user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat,{tls}")]);
@@ -326,7 +341,51 @@ pub fn start_built(o: &VmOptions, built: &Built) -> Result<Child, String> {
         }
     }
     let _ = std::fs::remove_file(o.qmp_socket());
+    if o.testnet {
+        testnet_up(o)?;
+    }
     qemu(o, &esp).spawn().map_err(|e| format!("can't start QEMU: {e}"))
+}
+
+/// The VM's test network (TASK-176): its TAP device, made once with the
+/// host's address on it, and the DHCP and DNS server, started once and left
+/// for the leg's later VMs on the same device (it ends with xtask).
+fn testnet_up(o: &VmOptions) -> Result<(), String> {
+    let (tap, prefix) = o.testnet_names();
+    if !Path::new(&format!("/sys/class/net/{tap}")).exists() {
+        let made = Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "ip tuntap add dev {tap} mode tap && ip addr add {prefix}.1/24 dev {tap} && ip link set {tap} up"
+                ),
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !made.success() {
+            return Err(format!("can't make the test network's {tap} (root, /dev/net/tun?)"));
+        }
+    }
+    let server: std::net::SocketAddr = format!("{prefix}.1:53").parse().map_err(|_| "a bad prefix")?;
+    let up = || std::net::TcpStream::connect_timeout(&server, std::time::Duration::from_millis(200)).is_ok();
+    if up() {
+        return Ok(());
+    }
+    Command::new("python3")
+        .arg(util::repo_root().join("e2e/os/net/testnet.py"))
+        .args([&tap, &prefix])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("can't start the test network's server: {e}"))?;
+    let start = std::time::Instant::now();
+    while !up() {
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            return Err(format!("the test network's server never listened on {server}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 /// As [`start_built`], and for a GPT disk on NVMe waits for the bootloader's

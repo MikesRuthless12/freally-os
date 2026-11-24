@@ -234,6 +234,10 @@ impl System for Sys {
             .collect())
     }
 
+    fn resolve(&mut self, name: &str, kind: u16) -> Result<Vec<Vec<u8>>, String> {
+        self.lookup(name, kind)
+    }
+
     fn ping(&mut self, to: builtins::Target, seq: u16) -> Result<u32, String> {
         let wait = Instant::after(Duration::from_secs(3));
         let net = self.netstack()?;
@@ -254,6 +258,17 @@ impl System for Sys {
 }
 
 impl Sys {
+    /// A name's addresses (the resolver gives up by 10 s).
+    fn lookup(&mut self, name: &str, kind: u16) -> Result<Vec<Vec<u8>>, String> {
+        let wait = Instant::after(Duration::from_secs(12));
+        let q = nt::Resolve { name: String::from(name), kind };
+        match self.netstack()?.call::<_, nt::Resolved>(nt::RESOLVE, &q, Vec::new(), wait) {
+            Ok((r, _)) => Ok(r.addresses),
+            Err(fstd::ipc::CallError::Remote(_, why)) => Err(why),
+            Err(e) => Err(self.net_failed(e)),
+        }
+    }
+
     /// netstack's client, connected the first time.
     fn netstack(&mut self) -> Result<&mut Client, String> {
         if self.net.is_none() {

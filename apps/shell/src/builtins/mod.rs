@@ -105,6 +105,8 @@ pub trait System {
     fn interfaces(&mut self) -> Result<Vec<Interface>, String>;
     /// One echo request to `to`: its round trip in µs.
     fn ping(&mut self, to: Target, seq: u16) -> Result<u32, String>;
+    /// A name's addresses by DNS (`kind` 1: IPv4, 28: IPv6) (TASK-176).
+    fn resolve(&mut self, name: &str, kind: u16) -> Result<Vec<Vec<u8>>, String>;
 }
 
 /// "10.0.2.15".
@@ -224,6 +226,7 @@ pub enum Command {
     Cp { sources: Vec<String>, dest: String, verify: bool },
     Ip,
     Ping { to: Target, count: u16 },
+    Nslookup { name: String },
 }
 
 /// Every built-in, its usage and what it does.
@@ -255,6 +258,11 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
         "ping",
         "ping <address> [count]",
         "Sends echo requests (3, or count up to 10), each after the last's answer, and shows each round trip.",
+    ),
+    (
+        "nslookup",
+        "nslookup <name>",
+        "Shows a name's IPv4 and IPv6 addresses, asked of the DNS servers the network gave.",
     ),
 ];
 
@@ -335,6 +343,10 @@ pub fn parse(line: &str, dev: bool) -> Result<Option<Command>, String> {
         },
         "whoami" => none(Command::Whoami),
         "ip" => none(Command::Ip),
+        "nslookup" => match args {
+            [n] => Ok(Some(Command::Nslookup { name: n.to_string() })),
+            _ => Err(usage("nslookup")),
+        },
         "ping" => {
             let to = |a: &str| {
                 ipv4_of(a)
@@ -600,6 +612,23 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
                 }
             }
             s.push_str(&format!("{count} sent, {answered} answered.\n"));
+            text(s)
+        }
+        Command::Nslookup { name } => {
+            let (v4, v6) = (sys.resolve(name, 1), sys.resolve(name, 28));
+            let mut s = String::new();
+            for a in v4.iter().chain(v6.iter()).flatten() {
+                let shown = match <[u8; 4]>::try_from(a.as_slice()) {
+                    Ok(four) => dotted(four),
+                    Err(_) => <[u8; 16]>::try_from(a.as_slice()).map(|b| fnet::ipv6::text(&b)).unwrap_or_default(),
+                };
+                s.push_str(&format!("{name} has address {shown}\n"));
+            }
+            if s.is_empty() {
+                // Neither kind: the first reason (a name that doesn't exist, no answer).
+                let why = v4.err().or(v6.err()).unwrap_or_default();
+                s.push_str(&format!("nslookup: {name}: {why}\n"));
+            }
             text(s)
         }
     }
