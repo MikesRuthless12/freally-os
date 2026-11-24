@@ -703,6 +703,13 @@
       "what": "On a test network of its own (a TAP device; DHCP and DNS from e2e/os/net/testnet.py), the shell's nslookup: an A, a CNAME followed, an AAAA, both kinds, a name too big for UDP (TC, then TCP: all 40 addresses), a chain left in the answers asked again, and a name that doesn't exist said so."
     },
     {
+      "id": "net.limits",
+      "task": "TASK-185",
+      "setup": "e2e-testnet",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "One client holds at most 16 TCP connections at once: against a listener on the host that keeps every connection open, the 17th is refused (too many connections), and once they're closed a new one opens."
+    },
+    {
       "id": "net.https",
       "task": "TASK-181",
       "setup": "e2e-testnet",

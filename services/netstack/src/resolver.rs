@@ -20,7 +20,7 @@ const TRIES_PER_SERVER: u32 = 2;
 const DEADLINE: u64 = 10 * SECOND;
 const MAX_TTL: u32 = 86_400;
 const NEGATIVE_TTL: u64 = 60 * SECOND;
-const CACHE: usize = 128;
+const CACHE: usize = crate::limits::DNS_CACHE;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
@@ -87,6 +87,11 @@ impl Default for Resolver {
 impl Resolver {
     pub fn new() -> Resolver {
         Resolver { servers: Vec::new(), lookups: Vec::new(), cache: Vec::new(), next_id: 0 }
+    }
+
+    /// The answers cached now.
+    pub fn cached(&self) -> usize {
+        self.cache.len()
     }
 
     /// Starts a lookup: Ok(answer) at once from the cache (or for a name that

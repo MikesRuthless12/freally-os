@@ -211,3 +211,19 @@ fn a_chain_past_eight_aliases_fails() {
         }
     }
 }
+
+#[test]
+fn the_cache_never_holds_more_than_its_limit() {
+    let mut r = resolver(&[ONE]);
+    for i in 0..(crate::limits::DNS_CACHE * 3) {
+        let q = format!("n{i}.freally.local");
+        let mut out = Vec::new();
+        let id = r.lookup(&q, TYPE_A, 0, (i as u32).to_be_bytes(), &mut out).unwrap_err();
+        let (_, port, txid) = udp(&out);
+        let answer = reply(txid, &q, TYPE_A, 0, false, &[(&q, TYPE_A, 300, vec![10, 0, 3, 1])]);
+        let done = r.udp(ONE, port, &answer, 1, [0; 4], &mut out);
+        assert_eq!(done, [(id, Answer::Found(vec![vec![10, 0, 3, 1]]))], "{q}");
+        assert!(r.cached() <= crate::limits::DNS_CACHE, "{} cached after {i}", r.cached());
+    }
+    assert_eq!(r.cached(), crate::limits::DNS_CACHE);
+}

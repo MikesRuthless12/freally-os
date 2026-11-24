@@ -6,6 +6,9 @@
 //!   byte, closes, and waits for the peer's end: `echoed <n> bytes in <ms> ms`.
 //! - `tcp connect <ip> <port> [ms]` connects (waiting up to `ms`, else 10 s)
 //!   and closes: `connected`.
+//! - `tcp hold <ip> <port> <n>` opens up to `n` connections at once, then
+//!   closes them all: `opened <k> of <n>`, and the first refusal's words
+//!   (TASK-185: netstack's limit per client).
 //!
 //! Any failure: `error: …`, netstack's reason in it (`refused`, `no answer`).
 
@@ -21,7 +24,8 @@ pub struct TcpDoor {
     client: Option<Client>,
 }
 
-const USAGE: &str = "tcp echo <ip> <port> <bytes, at most 4 MiB> | tcp connect <ip> <port> [ms]";
+const USAGE: &str =
+    "tcp echo <ip> <port> <bytes, at most 4 MiB> | tcp connect <ip> <port> [ms] | tcp hold <ip> <port> <n, at most 64>";
 
 impl TcpDoor {
     pub fn run(&mut self, c: &mut Conductor, arg: &str) -> Vec<String> {
@@ -48,6 +52,26 @@ impl TcpDoor {
                     _ => Err(String::from(USAGE)),
                 }
             }
+            ["hold", ip, port, n] => match (crate::door_netdev::ipv4(ip), port.parse::<u16>(), n.parse::<usize>()) {
+                (Some(to), Ok(port), Ok(n)) if n <= 64 => {
+                    let mut held = Vec::new();
+                    let mut why = String::new();
+                    for _ in 0..n {
+                        match self.connect(to, port, 5_000) {
+                            Ok(id) => held.push(id),
+                            Err(e) => {
+                                why = e;
+                                break;
+                            }
+                        }
+                    }
+                    for id in &held {
+                        let _ = self.call::<_, ()>(nt::TCP_CLOSE, &nt::Socket { id: *id }, 2);
+                    }
+                    Ok(alloc::vec![alloc::format!("opened {} of {n}", held.len()), why])
+                }
+                _ => Err(String::from(USAGE)),
+            },
             _ => Err(String::from(USAGE)),
         };
         r.unwrap_or_else(|e| {

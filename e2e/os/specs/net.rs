@@ -408,6 +408,45 @@ impl Drop for Https {
     }
 }
 
+/// `@net.limits` (TASK-185): one client holds at most 16 TCP connections at
+/// once: on the test network, against a listener on the host that keeps
+/// every connection open, the 17th is refused ("too many connections"),
+/// and once they're closed a new one opens.
+pub fn limits(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.77.")?;
+    let log = ctx.log();
+    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
+    let prefix =
+        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let host = format!("{prefix}.1");
+    let script = format!(
+        "import socket,time\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\ns.bind(('{host}', 7777)); s.listen(64)\nprint('listening', flush=True)\nheld=[]\nwhile True:\n    c,_=s.accept(); held.append(c)\n"
+    );
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", &script])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("python3: {e}"))?;
+    let mut out = std::io::BufReader::new(child.stdout.take().ok_or("no stdout")?);
+    let mut first = String::new();
+    let _ = std::io::BufRead::read_line(&mut out, &mut first);
+    let said = ctx.door(&format!("tcp hold {host} 7777 20"));
+    let again = ctx.door(&format!("tcp hold {host} 7777 1"));
+    let _ = child.kill();
+    let _ = child.wait();
+    let said = said?;
+    if said.first().map(String::as_str) != Some("opened 16 of 20")
+        || !said.get(1).is_some_and(|w| w.contains("too many connections"))
+    {
+        return Err(format!("20 asked for: {said:?}"));
+    }
+    let again = again?;
+    if again != ["opened 1 of 1"] {
+        return Err(format!("once closed, a new connection wasn't let open: {again:?}"));
+    }
+    Ok(())
+}
+
 /// `@net.grants` (TASK-183): netstack serves the programs its list names
 /// and no one else: a client called `terminal` is served; one called
 /// `intruder` is refused, and the refusal is said in the log.

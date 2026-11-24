@@ -35,7 +35,7 @@ const ARP_RETRY: u64 = 500_000_000;
 /// The MSS offered over IPv4 on Ethernet: 1,500 − 20 − 20.
 const MSS4: u16 = 1460;
 /// Connections a client may hold at once.
-const SOCKETS_PER_CLIENT: usize = 16;
+const SOCKETS_PER_CLIENT: usize = svc_netstack::limits::SOCKETS_PER_CLIENT;
 /// The ephemeral ports (RFC 6335 § 6).
 const EPHEMERAL: core::ops::RangeInclusive<u16> = 49152..=65535;
 
@@ -555,7 +555,10 @@ impl Stack {
         hop: Ipv4,
         timeout_ms: u32,
     ) -> Result<(), (FErr, &'static str)> {
-        if client != usize::MAX && self.sockets.iter().filter(|s| s.client == client).count() >= SOCKETS_PER_CLIENT {
+        // The ones it holds: a connection it has closed (in FIN-WAIT or
+        // TIME-WAIT for a while yet) isn't one (TASK-185, @net.limits).
+        let held = self.sockets.iter().filter(|s| s.client == client && !s.closed).count();
+        if client != usize::MAX && held >= SOCKETS_PER_CLIENT {
             return Err((FErr::Busy, "too many connections"));
         }
         let (src, _, _) = self.ours().ok_or((FErr::BadState, "no address yet"))?;
