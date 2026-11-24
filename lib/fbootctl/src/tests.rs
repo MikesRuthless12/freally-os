@@ -101,3 +101,49 @@ fn neither_bootable_is_said_and_both_states_kept() {
     let d = decide(Some(&BootCtl::fresh("0.8.0").encode()), [false, false], "0.8.0");
     assert_eq!(d.boot, None);
 }
+
+#[test]
+fn the_clock_record_round_trips_and_damage_is_refused() {
+    use crate::clock::{SIZE, Zone};
+    for z in [
+        Zone { offset_min: -360, rtc_local: true },
+        Zone { offset_min: 330, rtc_local: false },
+        Zone { offset_min: -720, rtc_local: true },
+        Zone { offset_min: 840, rtc_local: false },
+        Zone::default(),
+    ] {
+        let b = z.encode();
+        assert_eq!(b.len(), SIZE);
+        assert_eq!(&b[..4], b"FCK1");
+        assert_eq!(Zone::decode(&b), Some(z));
+        // Every bit flipped, one at a time: refused.
+        for i in 0..SIZE * 8 {
+            let mut d = b;
+            d[i / 8] ^= 1 << (i % 8);
+            assert_eq!(Zone::decode(&d), None, "bit {i} of {z:?}");
+        }
+        assert_eq!(Zone::decode(&b[..SIZE - 1]), None);
+    }
+    // Offsets no zone has, even with a right CRC.
+    for off in [-735, 855, 7, -1] {
+        assert_eq!(Zone::decode(&Zone { offset_min: off, rtc_local: false }.encode()), None, "{off}");
+    }
+}
+
+#[test]
+fn the_rtc_is_ahead_of_utc_only_when_it_keeps_local_time() {
+    use crate::clock::Zone;
+    assert_eq!(Zone { offset_min: -360, rtc_local: true }.rtc_ahead_s(), -21_600);
+    assert_eq!(Zone { offset_min: -360, rtc_local: false }.rtc_ahead_s(), 0);
+    assert_eq!(Zone { offset_min: 345, rtc_local: true }.rtc_ahead_s(), 20_700);
+}
+
+#[test]
+fn zones_are_named_as_the_fleet_writes_them() {
+    use crate::clock::Zone;
+    extern crate std;
+    use std::format;
+    assert_eq!(format!("{}", Zone { offset_min: -360, rtc_local: true }.name()), "UTC\u{2212}06:00");
+    assert_eq!(format!("{}", Zone { offset_min: 330, rtc_local: false }.name()), "UTC+05:30");
+    assert_eq!(format!("{}", Zone::default().name()), "UTC");
+}

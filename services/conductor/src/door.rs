@@ -358,6 +358,31 @@ impl Door {
                 (_, None) => self.send("error: no A/B record"),
                 _ => self.send("error: bootctl, or bootctl trial b"),
             },
+            // The zone (TASK-180A): `zone` says it, `zone <minutes> local|utc`
+            // sets it as Settings' SET_ZONE does (a spec on a VM with no
+            // session: @net.tls).
+            "zone" => {
+                let mut w = arg.split(' ');
+                let z = match (w.next(), w.next(), w.next()) {
+                    (Some(""), None, None) => None,
+                    (Some(m), Some(k @ ("local" | "utc")), None) => match m.parse::<i16>() {
+                        Ok(offset_min) => Some(fbootctl::clock::Zone { offset_min, rtc_local: k == "local" }),
+                        Err(_) => return self.send("error: zone, or zone <minutes> local|utc"),
+                    },
+                    _ => return self.send("error: zone, or zone <minutes> local|utc"),
+                };
+                match z {
+                    None => {
+                        let (m, l) = fstd::machine::zone().unwrap_or((0, false));
+                        self.send(&alloc::format!("zone {m} {}", if l { "local" } else { "utc" }));
+                    }
+                    Some(z) if !z.valid() => self.send("error: not a zone"),
+                    Some(z) => match fstd::sys::uefi_set_var(fbootctl::clock::NAME, &z.encode()) {
+                        Ok(()) => self.send("ok"),
+                        Err(e) => self.send(&alloc::format!("error: {}", e.describe())),
+                    },
+                }
+            }
             "stage" => {
                 for line in self.stage.run(c, arg) {
                     self.send(&line);

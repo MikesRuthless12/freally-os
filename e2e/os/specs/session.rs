@@ -182,7 +182,7 @@ pub fn welcome_form(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// Logs out (the door, until Settings has the key) and waits for Login.
-fn to_login(ctx: &mut Ctx) -> Result<(), String> {
+pub(crate) fn to_login(ctx: &mut Ctx) -> Result<(), String> {
     // Already there when an earlier spec logged out last; either way the
     // screen itself is waited for, not a line (it may have been said already).
     if ctx.door("accounts who")? != ["(no one)"] && ctx.door("accounts logout")? != ["ok"] {

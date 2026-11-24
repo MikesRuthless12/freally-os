@@ -14,7 +14,7 @@ use app_settings::accounts::{Dialog, Kind as DKind, Outcome as DOut};
 use app_settings::personalisation::{Kind, ROWS, Row, WALLPAPER_NAMES};
 use app_settings::shell::{BAR, Bar, Focus, Outcome, PANELS, Panel, Shell};
 use app_settings::updates::{self, Act as UpAct, View as UpView};
-use app_settings::{about, hardware, key};
+use app_settings::{about, hardware, key, time};
 use fapp::{Look as KeyLook, Window, inside};
 use fcore_abi::signal;
 use fimage::bundle::Bundle;
@@ -65,6 +65,19 @@ enum Act {
     Add,
     Import,
     Remove(String),
+}
+
+/// A row of choices as drawn: Personalisation's and Time and language's.
+struct RowView {
+    label: &'static str,
+    id: &'static str,
+    kind: Kind,
+    options: Vec<String>,
+    chosen: usize,
+    /// Pressable (Personalisation's idle time is not, with no screensaver).
+    on: bool,
+    /// The backgrounds: a row of tiles.
+    tall: bool,
 }
 
 /// The wallpapers, small: for this theme, at this tile width, each if rendered.
@@ -194,7 +207,26 @@ impl App {
     /// Apply: a person's look saved by accounts (which puts it on the
     /// screen); a guest's put on the screen here.
     fn save(&mut self) -> bool {
+        // The zone (the machine's): conductor writes it and the kernel takes it.
+        let z = self.shell.zone_pending;
+        if z != self.shell.zone_saved {
+            let zone = c::Zone { offset_min: z.offset_min, rtc_local: z.rtc_local };
+            if let Err(e) = fstd::service::ask::<_, ()>(c::SET_ZONE, &zone) {
+                fstd::error!("settings: the zone: {e:?}");
+                self.note = Some(match e {
+                    CallError::Remote(_, text) => text,
+                    other => alloc::format!("The time zone wasn't saved: {other:?}"),
+                });
+                return false;
+            }
+            fstd::info!("settings: the zone saved ({})", z.name());
+        }
         let l = self.shell.pending.clone();
+        if l == self.shell.saved {
+            self.shell.saved();
+            self.note = None;
+            return true;
+        }
         let done = match (self.accounts.as_mut(), self.me.is_some()) {
             (Some(acc), true) => call::<_, ()>(acc, a::SET_LOOK, &l),
             _ => {
@@ -327,24 +359,86 @@ impl App {
         v
     }
 
+    /// Personalisation's rows, on the account's look as chosen.
     fn draw_personalisation(&mut self, x: i32, y: i32, w: u32) {
+        let l = self.shell.pending.clone();
+        let rows = ROWS
+            .into_iter()
+            .map(|r| RowView {
+                label: r.label(),
+                id: r.id(),
+                kind: r.kind(),
+                options: r.options(),
+                chosen: r.chosen(&l),
+                on: r.enabled(&l),
+                tall: r == Row::Wallpaper,
+            })
+            .collect();
+        self.draw_rows(rows, x, y, w);
+    }
+
+    /// Time and language's rows, then the time now, true and here.
+    fn draw_time(&mut self, x: i32, y: i32, w: u32) {
+        let z = self.shell.zone_pending;
+        let rows = time::ROWS
+            .into_iter()
+            .map(|r| RowView {
+                label: r.label(),
+                id: r.id(),
+                kind: r.kind(),
+                options: r.options(),
+                chosen: r.chosen(&z),
+                on: true,
+                tall: false,
+            })
+            .collect();
+        let t = self.win.theme;
+        let y = self.draw_rows(rows, x, y, w) + t.px(8) as i32;
+        let (_, line, _) = t.text(TextStyle::Body);
+        // As the kernel has it now (what's chosen counts once saved).
+        let kept = fbootctl::clock::Zone { offset_min: self.shell.zone_saved.offset_min, rtc_local: false };
+        let lines = [
+            (
+                alloc::format!(
+                    "The time here: {}",
+                    time::words(fstd::time::local_ns(), &alloc::format!("{}", kept.name()))
+                ),
+                "settings-time-here",
+            ),
+            (alloc::format!("The true time: {}", time::words(fstd::time::utc_ns(), "UTC")), "settings-time-utc"),
+        ];
+        for (k, (words, id)) in lines.into_iter().enumerate() {
+            let at = (x, y + k as i32 * (line + t.px(8)) as i32);
+            self.win.say(at, TextStyle::Body, &words, Tok::Text2);
+            let (ww, _) = self.win.measure(TextStyle::Body, &words);
+            self.win.nodes.push(node(ax::TEXT, &words, 0, Rect::new(at.0, at.1, ww, line), id));
+        }
+        let hint = "Windows keeps the hardware clock on local time: choose Local time on a computer that also runs it.";
+        let hy = y + 2 * (line + t.px(8)) as i32 + t.px(8) as i32;
+        for (k, l) in wrap(&mut self.win, TextStyle::Small, hint, w).into_iter().enumerate() {
+            let (_, sl, _) = t.text(TextStyle::Small);
+            self.win.say((x, hy + k as i32 * (sl + t.px(4)) as i32), TextStyle::Small, &l, Tok::Text3);
+        }
+    }
+
+    /// Rows of choices, one under another; where the last one ends.
+    fn draw_rows(&mut self, rows: Vec<RowView>, x: i32, y: i32, w: u32) -> i32 {
         let t = self.win.theme;
         let col = x + t.px(LABELS_W) as i32;
         let cw = (x + w as i32 - col) as u32;
         let key_h = t.px(36);
         let mut y = y;
-        let thumbs = self.thumbs();
-        for (i, row) in ROWS.into_iter().enumerate() {
-            let on = row.enabled(&self.shell.pending);
-            let tall = row == Row::Wallpaper;
+        let thumbs = if rows.iter().any(|r| r.tall) { self.thumbs() } else { Vec::new() };
+        for (i, row) in rows.into_iter().enumerate() {
+            let (on, tall) = (row.on, row.tall);
             let h = if tall { self.tile().1 + t.px(32) } else { t.px(ROW_H) };
             let (_, line, _) = t.text(TextStyle::Body);
             let ly = y + if tall { 0 } else { (key_h as i32 - line as i32) / 2 };
-            self.win.say((x, ly), TextStyle::Body, row.label(), if on { Tok::Text } else { Tok::Text3 });
-            let options = row.options();
-            let chosen = row.chosen(&self.shell.pending);
+            self.win.say((x, ly), TextStyle::Body, row.label, if on { Tok::Text } else { Tok::Text3 });
+            let options = &row.options;
+            let chosen = row.chosen;
             let focused = self.shell.focus == Focus::Control(i) && self.dialog.is_none();
-            let area = match row.kind() {
+            let area = match row.kind {
                 Kind::Radio if tall => {
                     let (tw, th) = self.tile();
                     let gap = t.px(TILE_GAP) as i32;
@@ -385,7 +479,7 @@ impl App {
                             ink,
                         );
                         let state = if sel { ax::CHECKED | ax::SELECTED } else { 0 };
-                        let mut n = node(ax::OPTION, name, state, r, &alloc::format!("{}-{k}", row.id()));
+                        let mut n = node(ax::OPTION, name, state, r, &alloc::format!("{}-{k}", row.id));
                         n.value = String::from(if thumbs.get(k).is_some_and(Option::is_some) {
                             "rendered"
                         } else {
@@ -402,7 +496,7 @@ impl App {
                     let pw = ((cw - (n - 1) * gap) / n).min(t.px(132));
                     for (k, o) in options.iter().enumerate() {
                         let r = Rect::new(col + k as i32 * (pw + gap) as i32, y, pw, key_h);
-                        self.pill(r, o, k == chosen, Hit::Option(i, k), &alloc::format!("{}-{k}", row.id()));
+                        self.pill(r, o, k == chosen, Hit::Option(i, k), &alloc::format!("{}-{k}", row.id));
                     }
                     Rect::new(col, y, n * pw + (n - 1) * gap, key_h)
                 }
@@ -415,7 +509,7 @@ impl App {
                     let at_end = chosen + 1 == options.len();
                     for (r, plus, end) in [(down, false, at_start), (up, true, at_end)] {
                         let hit = Hit::Step(i, plus);
-                        let id = alloc::format!("{}-{}", row.id(), if plus { "up" } else { "down" });
+                        let id = alloc::format!("{}-{}", row.id, if plus { "up" } else { "down" });
                         if on && !end {
                             let look = self.look(hit, false);
                             self.win.key(r, if plus { "+" } else { "−" }, false, look, &id);
@@ -439,10 +533,10 @@ impl App {
                     self.win.say((vx, ly), TextStyle::Body, shown, if on { Tok::Text } else { Tok::Text3 });
                     let mut n = node(
                         ax::SLIDER,
-                        row.label(),
+                        row.label,
                         if on { 0 } else { ax::DISABLED } | if focused { ax::FOCUSED } else { 0 },
                         Rect::new(col, y, 2 * b + vw, b),
-                        row.id(),
+                        row.id,
                     );
                     n.value = shown.clone();
                     self.win.nodes.push(n);
@@ -478,7 +572,7 @@ impl App {
                         Tok::Text2,
                     );
                     let state = if lit { ax::CHECKED } else { 0 } | if focused { ax::FOCUSED } else { 0 };
-                    self.win.nodes.push(node(ax::SWITCH, row.label(), state, r, row.id()));
+                    self.win.nodes.push(node(ax::SWITCH, row.label, state, r, row.id));
                     self.hits.push((r, hit));
                     r
                 }
@@ -489,17 +583,18 @@ impl App {
                 let mut s = self.win.surface();
                 outline(&mut s, ring, t.px(2).max(1), t.colour(Tok::Focus).xrgb());
             }
-            if matches!(row.kind(), Kind::Radio) && !tall {
-                let mut g = node(ax::GROUP, row.label(), if focused { ax::FOCUSED } else { 0 }, area, row.id());
+            if matches!(row.kind, Kind::Radio) && !tall {
+                let mut g = node(ax::GROUP, row.label, if focused { ax::FOCUSED } else { 0 }, area, row.id);
                 g.value = options[chosen].clone();
                 self.win.nodes.push(g);
             } else if tall {
-                let mut g = node(ax::GROUP, row.label(), if focused { ax::FOCUSED } else { 0 }, area, row.id());
+                let mut g = node(ax::GROUP, row.label, if focused { ax::FOCUSED } else { 0 }, area, row.id);
                 g.value = String::from(WALLPAPER_NAMES[chosen]);
                 self.win.nodes.push(g);
             }
             y += h as i32;
         }
+        y
     }
 
     fn draw_accounts(&mut self, x: i32, y: i32, w: u32) {
@@ -1179,6 +1274,7 @@ impl App {
         match self.shell.panel {
             Panel::Personalisation => self.draw_personalisation(x, y, pw),
             Panel::Accounts => self.draw_accounts(x, y, pw),
+            Panel::Time => self.draw_time(x, y, pw),
             Panel::Update => self.draw_update(x, y, pw),
             Panel::Hardware => self.draw_hardware(x, y),
             Panel::About => self.draw_about(x, y, pw),
@@ -1386,7 +1482,7 @@ impl App {
             }
             Hit::Step(row, up) => {
                 self.shell.focus = Focus::Control(row);
-                let at = ROWS[row].chosen(&self.shell.pending);
+                let at = self.shell.row(row).map_or(0, |(_, at, _)| at);
                 let to = if up { at + 1 } else { at.saturating_sub(1) };
                 let o = self.shell.choose(row, to);
                 return self.outcome(if o == Outcome::Nothing { Outcome::Changed } else { o });
@@ -1530,7 +1626,11 @@ fn run(_bootstrap: u32) -> i64 {
     let shown = (saved.dark, saved.wallpaper);
     let mut app = App {
         win,
-        shell: Shell::new(saved),
+        // The zone the kernel has now (TASK-180A).
+        shell: Shell::new(
+            saved,
+            fstd::machine::zone().map_or(time::defaults(), |(m, l)| time::Zone { offset_min: m, rtc_local: l }),
+        ),
         accounts,
         me,
         users: Vec::new(),

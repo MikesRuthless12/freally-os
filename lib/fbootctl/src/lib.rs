@@ -9,6 +9,8 @@
 //! everything before it.
 #![no_std]
 
+pub mod clock;
+
 /// The variable's name.
 pub const NAME: &str = "FreallyBootCtl";
 /// Non-volatile, boot-services and runtime access.

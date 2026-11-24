@@ -12,27 +12,32 @@
 
 use crate::key;
 use crate::personalisation::{self as pers, Kind, ROWS};
+use crate::time::{self, Zone};
 use fwire::proto::stage::Look;
 
 /// The categories, in their fixed order (FR-080: the list grows to
 /// Windows', each name and place fixed now). Update and the hardware report
-/// joined between Accounts and About in Phase 7 (TASK-110, TASK-111).
+/// joined between Accounts and About in Phase 7 (TASK-110, TASK-111); Time
+/// and language between Accounts and Update in Phase 8 (TASK-180A).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
     Personalisation,
     Accounts,
+    Time,
     Update,
     Hardware,
     About,
 }
 
-pub const PANELS: [Panel; 5] = [Panel::Personalisation, Panel::Accounts, Panel::Update, Panel::Hardware, Panel::About];
+pub const PANELS: [Panel; 6] =
+    [Panel::Personalisation, Panel::Accounts, Panel::Time, Panel::Update, Panel::Hardware, Panel::About];
 
 impl Panel {
     pub fn name(self) -> &'static str {
         match self {
             Panel::Personalisation => "Personalisation",
             Panel::Accounts => "Accounts",
+            Panel::Time => "Time and language",
             Panel::Update => "Update",
             Panel::Hardware => "Hardware report",
             Panel::About => "About",
@@ -43,6 +48,7 @@ impl Panel {
         match self {
             Panel::Personalisation => "settings-tab-personalisation",
             Panel::Accounts => "settings-tab-accounts",
+            Panel::Time => "settings-tab-time",
             Panel::Update => "settings-tab-update",
             Panel::Hardware => "settings-tab-hardware",
             Panel::About => "settings-tab-about",
@@ -85,7 +91,7 @@ impl Bar {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
     Tabs,
-    /// The open panel's control `i` (a Personalisation row, an Accounts key).
+    /// The open panel's control `i` (a Personalisation or Time row, an Accounts key).
     Control(usize),
     Bar(Bar),
 }
@@ -119,10 +125,14 @@ pub struct Shell {
     pub actions: usize,
     /// How many keys the Update panel has (the app counts them).
     pub updates: usize,
+    /// The zone as the kernel has it, and as chosen here (the machine's,
+    /// not the account's).
+    pub zone_saved: Zone,
+    pub zone_pending: Zone,
 }
 
 impl Shell {
-    pub fn new(saved: Look) -> Shell {
+    pub fn new(saved: Look, zone: Zone) -> Shell {
         Shell {
             panel: Panel::Personalisation,
             pending: saved.clone(),
@@ -130,16 +140,32 @@ impl Shell {
             focus: Focus::Tabs,
             actions: 0,
             updates: 0,
+            zone_saved: zone,
+            zone_pending: zone,
         }
     }
 
     pub fn dirty(&self) -> bool {
-        self.pending != self.saved
+        self.pending != self.saved || self.zone_pending != self.zone_saved
     }
 
     /// Whether `p` carries the dot: it has changes not yet saved.
     pub fn panel_dirty(&self, p: Panel) -> bool {
-        p == Panel::Personalisation && self.dirty()
+        match p {
+            Panel::Personalisation => self.pending != self.saved,
+            Panel::Time => self.zone_pending != self.zone_saved,
+            _ => false,
+        }
+    }
+
+    /// A row of choices on the open panel: its kind, the option chosen, how
+    /// many options; `None` on a panel of keys.
+    pub fn row(&self, i: usize) -> Option<(Kind, usize, usize)> {
+        match self.panel {
+            Panel::Personalisation => ROWS.get(i).map(|r| (r.kind(), r.chosen(&self.pending), r.options().len())),
+            Panel::Time => time::ROWS.get(i).map(|r| (r.kind(), r.chosen(&self.zone_pending), r.options().len())),
+            _ => None,
+        }
     }
 
     /// Whether a bar key can be pressed: Apply only while something
@@ -147,7 +173,11 @@ impl Shell {
     pub fn enabled(&self, b: Bar) -> bool {
         match b {
             Bar::Apply => self.dirty(),
-            Bar::Defaults => self.panel == Panel::Personalisation && self.pending != pers::defaults(),
+            Bar::Defaults => match self.panel {
+                Panel::Personalisation => self.pending != pers::defaults(),
+                Panel::Time => self.zone_pending != time::defaults(),
+                _ => false,
+            },
             Bar::Ok | Bar::Cancel => true,
         }
     }
@@ -157,6 +187,7 @@ impl Shell {
         match self.panel {
             Panel::Personalisation => (0..ROWS.len()).filter(|&i| ROWS[i].enabled(&self.pending)).collect(),
             Panel::Accounts => (0..self.actions).collect(),
+            Panel::Time => (0..time::ROWS.len()).collect(),
             Panel::Update => (0..self.updates).collect(),
             Panel::Hardware => (0..crate::hardware::KEYS.len()).collect(),
             Panel::About => alloc::vec::Vec::new(),
@@ -189,8 +220,15 @@ impl Shell {
         Outcome::Changed
     }
 
-    /// A Personalisation row's option `i` chosen.
+    /// A row's option `i` chosen, on the panel open.
     pub fn choose(&mut self, row: usize, i: usize) -> Outcome {
+        if self.panel == Panel::Time {
+            let Some(&r) = time::ROWS.get(row) else { return Outcome::Nothing };
+            let was = self.zone_pending;
+            r.set(&mut self.zone_pending, i);
+            // Nothing is shown live: the zone is the kernel's only once saved.
+            return if self.zone_pending == was { Outcome::Nothing } else { Outcome::Changed };
+        }
         let Some(&r) = ROWS.get(row) else { return Outcome::Nothing };
         if !r.enabled(&self.pending) {
             return Outcome::Nothing;
@@ -210,6 +248,13 @@ impl Shell {
             return Outcome::Nothing;
         }
         match b {
+            Bar::Defaults if self.panel == Panel::Time => {
+                self.zone_pending = time::defaults();
+                if self.focus == Focus::Bar(Bar::Defaults) {
+                    self.focus = Focus::Bar(Bar::Ok);
+                }
+                Outcome::Changed
+            }
             Bar::Defaults => {
                 self.pending = pers::defaults();
                 if self.focus == Focus::Bar(Bar::Defaults) {
@@ -226,6 +271,7 @@ impl Shell {
     /// Saved: what's chosen is what's stored. Apply's focus moves to OK.
     pub fn saved(&mut self) {
         self.saved = self.pending.clone();
+        self.zone_saved = self.zone_pending;
         if self.focus == Focus::Bar(Bar::Apply) {
             self.focus = Focus::Bar(Bar::Ok);
         }
@@ -234,6 +280,7 @@ impl Shell {
     /// Cancelled: what's chosen goes back to what's stored.
     pub fn cancel(&mut self) {
         self.pending = self.saved.clone();
+        self.zone_pending = self.zone_saved;
     }
 
     pub fn key(&mut self, usage: u16, shift: bool) -> Outcome {
@@ -255,11 +302,9 @@ impl Shell {
                 };
                 self.show(PANELS[to])
             }
-            Focus::Control(i) if self.panel == Panel::Personalisation => {
-                let r = ROWS[i];
-                let at = r.chosen(&self.pending);
-                let n = r.options().len();
-                let to = match (r.kind(), usage) {
+            Focus::Control(i) if self.row(i).is_some() => {
+                let Some((kind, at, n)) = self.row(i) else { return Outcome::Nothing };
+                let to = match (kind, usage) {
                     (Kind::Switch, key::SPACE | key::ENTER) => 1 - at,
                     (Kind::Radio, key::LEFT | key::UP) => (at + n - 1) % n,
                     (Kind::Radio, key::RIGHT | key::DOWN) => (at + 1) % n,
@@ -300,7 +345,7 @@ mod tests {
     use crate::personalisation::Row;
 
     fn shell() -> Shell {
-        Shell::new(pers::defaults())
+        Shell::new(pers::defaults(), time::defaults())
     }
 
     #[test]
@@ -341,7 +386,7 @@ mod tests {
         let mut s = shell();
         assert_eq!(s.key(key::DOWN, false), Outcome::Changed);
         assert_eq!(s.panel, Panel::Accounts);
-        for _ in 0..4 {
+        for _ in 0..5 {
             s.key(key::DOWN, false);
         }
         assert_eq!(s.panel, Panel::Personalisation, "↓ from the last wraps");
@@ -387,6 +432,40 @@ mod tests {
         assert!(!s.stops().contains(&Focus::Control(6)));
         // Now Apply is a stop too.
         assert!(s.stops().contains(&Focus::Bar(Bar::Apply)));
+    }
+
+    #[test]
+    fn the_zone_is_chosen_saved_and_put_back_apart_from_the_look() {
+        let mut s = shell();
+        s.show(Panel::Time);
+        assert_eq!(s.stops().len(), 1 + 2 + 2, "the tab list, two rows, OK and Cancel");
+        assert!(!s.enabled(Bar::Defaults), "already the defaults");
+        s.key(key::TAB, false);
+        assert_eq!(s.focus, Focus::Control(0));
+        for _ in 0..8 {
+            s.key(key::LEFT, false);
+        }
+        assert_eq!(s.zone_pending.offset_min, -360, "eight steps west of UTC: UTC\u{2212}06:00");
+        s.key(key::TAB, false);
+        assert_eq!(s.key(key::LEFT, false), Outcome::Changed);
+        assert!(s.zone_pending.rtc_local, "Local time");
+        assert!(s.panel_dirty(Panel::Time) && !s.panel_dirty(Panel::Personalisation));
+        assert!(s.enabled(Bar::Apply) && s.zone_saved == time::defaults(), "chosen, not saved");
+        s.saved();
+        assert_eq!(s.zone_saved, Zone { offset_min: -360, rtc_local: true });
+        assert!(!s.dirty());
+        // Changed again, then Escape: back to what's saved.
+        s.choose(0, 15);
+        s.cancel();
+        assert_eq!(s.zone_pending.offset_min, -360);
+        // Restore Defaults resets only this panel.
+        s.choose(1, 1);
+        s.show(Panel::Personalisation);
+        s.choose(4, 1);
+        s.show(Panel::Time);
+        assert_eq!(s.press(Bar::Defaults), Outcome::Changed);
+        assert_eq!(s.zone_pending, time::defaults());
+        assert!(s.pending.clock_24h, "the look's change stays");
     }
 
     #[test]

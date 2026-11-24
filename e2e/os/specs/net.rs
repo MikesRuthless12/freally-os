@@ -193,10 +193,16 @@ fn openssl(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
 }
 
 /// A root and a test.freally.local leaf (P-256) made by OpenSSL in `dir`: the
-/// root's DER in hex. Valid from 2025 on: the guest's clock is the RTC's local
-/// time, hours from UTC until Settings has time zones (TASK-180A).
+/// root's DER in hex. Valid from the minute before (TASK-180A: the guest must
+/// know the true time, its zone set, to take them) for ten years.
 fn pki(dir: &std::path::Path) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let stamp = |secs: u64| {
+        let (y, mo, d, h, mi, s) = crate::settings::civil(secs);
+        format!("{y:04}{mo:02}{d:02}{h:02}{mi:02}{s:02}Z")
+    };
+    let now = crate::settings::host_now();
+    let (from, to) = (stamp(now - 60), stamp(now + 10 * 365 * 86_400));
     for key in ["root.key", "leaf.key"] {
         openssl(dir, &["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", key])?;
     }
@@ -211,9 +217,9 @@ fn pki(dir: &std::path::Path) -> Result<String, String> {
             "-subj",
             "/CN=Freally Test Root",
             "-not_before",
-            "20250101000000Z",
+            &from,
             "-not_after",
-            "20351231235959Z",
+            &to,
             "-sha256",
             "-addext",
             "basicConstraints=critical,CA:TRUE",
@@ -240,9 +246,9 @@ fn pki(dir: &std::path::Path) -> Result<String, String> {
             "-set_serial",
             "7",
             "-not_before",
-            "20250101000000Z",
+            &from,
             "-not_after",
-            "20351231235959Z",
+            &to,
             "-sha256",
             "-extfile",
             "leaf.ext",
@@ -263,6 +269,13 @@ fn pki(dir: &std::path::Path) -> Result<String, String> {
 pub fn tls(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
     let port = ctx.tls_port.ok_or("no --tls-port for this VM")?;
+    // The zone first (QEMU's RTC keeps the host's local time): without it a
+    // certificate made the minute before isn't valid yet (TASK-180A).
+    let off = crate::settings::host_zone()?;
+    let said = ctx.door(&format!("zone {off} local"))?;
+    if said != ["ok"] {
+        return Err(format!("zone {off} local: {said:?}"));
+    }
     let base = std::env::temp_dir().join(format!("freally-net-tls-{port}"));
     let _ = std::fs::remove_dir_all(&base);
     let (root, other) = (pki(&base.join("a"))?, pki(&base.join("b"))?);

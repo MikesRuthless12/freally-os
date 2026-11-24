@@ -89,7 +89,8 @@ fn when(ns: u64) -> String {
     if ns == 0 {
         return String::new();
     }
-    let secs = ns / 1_000_000_000;
+    // Kept in UTC; shown in the zone's time (TASK-180A).
+    let secs = fstd::time::to_local(ns) / 1_000_000_000;
     let (y, m, d) = app_session::import::date(secs);
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let day = secs % 86_400;

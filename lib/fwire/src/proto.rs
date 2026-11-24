@@ -49,6 +49,10 @@ pub mod conductor {
     /// Switch back: the other slot, if it started cleanly, active from the
     /// next boot (`()` → `()`; the updater).
     pub const BOOT_SWITCH: u32 = 19;
+    /// The zone, and whether the computer's clock keeps local time (`Zone`
+    /// → `()`; Settings ▸ Time and language alone, TASK-180A): written to
+    /// `FreallyClock`, the kernel's at once (PRD § 3).
+    pub const SET_ZONE: u32 = 20;
 
     wire_struct! {
         /// `start`: who the service is, the image's flavour (0 release, 1 dev,
@@ -68,6 +72,12 @@ pub mod conductor {
 
     wire_struct! {
         pub struct BootTrial { pub slot: u8, pub version: String }
+    }
+
+    wire_struct! {
+        /// `set_zone`: minutes east of UTC (a multiple of 15, −720 ..= +840),
+        /// and whether the RTC keeps local time.
+        pub struct Zone { pub offset_min: i16, pub rtc_local: bool }
     }
 
     wire_struct! {
@@ -1540,6 +1550,7 @@ pub mod inventory {
                 (c::BOOT_STATE, "boot_state"),
                 (c::BOOT_TRIAL, "boot_trial"),
                 (c::BOOT_SWITCH, "boot_switch"),
+                (c::SET_ZONE, "set_zone"),
             ],
         ),
         ("logger", &[(l::WRITE, "write"), (l::READ, "read")]),

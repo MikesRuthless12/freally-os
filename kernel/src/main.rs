@@ -156,6 +156,19 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
         time::rtc_unix(),
         time::ticks_to_ns(K2.load(Ordering::Relaxed) - K1.load(Ordering::Relaxed)) / 1000
     );
+    // The zone (TASK-180A): kept by the firmware, so UTC is true from the
+    // first service's first call.
+    match uefi::get_clock() {
+        Some(z) => {
+            time::set_zone(z);
+            klog!(
+                "freally-core: the zone is {}; the RTC keeps {}",
+                z.name(),
+                if z.rtc_local { "local time" } else { "UTC" }
+            );
+        }
+        None => klog!("freally-core: no zone kept: the RTC is read as UTC"),
+    }
     // No TSC-deadline (VirtualBox shows a guest none, TASK-113): the one-shot
     // timer's clock measured now, before anything arms a deadline.
     if let Some(hz) = arch::apic::calibrate() {

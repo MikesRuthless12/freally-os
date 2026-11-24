@@ -6,7 +6,10 @@
 //!
 //! - `MONOTONIC`: nanoseconds since the kernel's clock started; never backwards.
 //! - `BOOT`: nanoseconds since the bootloader started (B0).
-//! - `UTC`: nanoseconds since 1970, from the RTC at boot.
+//! - `UTC`: nanoseconds since 1970, from the RTC at boot: the RTC's reading,
+//!   less the zone's offset when the RTC keeps local time (`FreallyClock`,
+//!   TASK-180A), plus the monotonic clock.
+//! - `LOCAL`: `UTC` plus the zone's offset.
 
 use crate::arch::cpu;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +19,10 @@ static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 static TSC_ZERO: AtomicU64 = AtomicU64::new(0);
 static B0: AtomicU64 = AtomicU64::new(0);
 static RTC_UNIX: AtomicU64 = AtomicU64::new(0);
+/// The zone in use, packed: the offset in minutes (as u16) in the low half,
+/// bit 16 set when the RTC keeps local time. Nothing kept: 0, the RTC read
+/// as UTC.
+static ZONE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static HPET: AtomicU64 = AtomicU64::new(0);
 /// Where the TSC's frequency came from (`fcore_abi::tsc_from`).
 static TSC_FROM: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
@@ -49,7 +56,31 @@ pub fn boot_ns() -> u64 {
 }
 
 pub fn utc_ns() -> u64 {
-    RTC_UNIX.load(Ordering::Relaxed) * 1_000_000_000 + now_ns()
+    utc_at(RTC_UNIX.load(Ordering::Relaxed), now_ns(), zone().rtc_ahead_s())
+}
+
+/// UTC from the RTC's reading at boot (seconds), the monotonic clock (ns)
+/// and what the RTC is ahead of UTC by (seconds); never below 0.
+fn utc_at(rtc_s: u64, mono_ns: u64, ahead_s: i64) -> u64 {
+    let ns = rtc_s as i128 * 1_000_000_000 + mono_ns as i128 - ahead_s as i128 * 1_000_000_000;
+    ns.clamp(0, u64::MAX as i128) as u64
+}
+
+/// Local time: UTC plus the zone's offset.
+pub fn local_ns() -> u64 {
+    let ns = utc_ns() as i128 + zone().offset_s() as i128 * 1_000_000_000;
+    ns.clamp(0, u64::MAX as i128) as u64
+}
+
+/// The zone in use.
+pub fn zone() -> fbootctl::clock::Zone {
+    let v = ZONE.load(Ordering::Relaxed);
+    fbootctl::clock::Zone { offset_min: v as u16 as i16, rtc_local: v & 1 << 16 != 0 }
+}
+
+/// Takes `z` from now on (a valid zone: `FreallyClock` decoded it).
+pub fn set_zone(z: fbootctl::clock::Zone) {
+    ZONE.store(z.offset_min as u16 as u32 | (z.rtc_local as u32) << 16, Ordering::Relaxed);
 }
 
 // The HPET: capabilities at 0x0 (period in femtoseconds in the top half, at
@@ -198,6 +229,36 @@ ktest!(time_the_rtc_reads_a_plausible_date, {
     // 2026-01-01 .. 2100-01-01
     let s = rtc_unix();
     if (1_767_225_600..4_102_444_800).contains(&s) { Ok(()) } else { Err("the RTC's date isn't plausible") }
+});
+
+ktest!(time_utc_is_the_rtc_less_the_zone_when_it_keeps_local_time, {
+    use fbootctl::clock::Zone;
+    // The RTC read 12:00:00 on 2026-11-24, in Central time (UTC−06:00).
+    let rtc = 1_795_521_600;
+    let central = Zone { offset_min: -360, rtc_local: true };
+    if utc_at(rtc, 5_000_000_000, central.rtc_ahead_s()) != (rtc + 6 * 3600 + 5) * 1_000_000_000 {
+        return Err("an RTC on local time, six hours behind UTC: UTC isn't six hours on");
+    }
+    // The same zone, the RTC on UTC: its reading is UTC already.
+    if utc_at(rtc, 0, Zone { rtc_local: false, ..central }.rtc_ahead_s()) != rtc * 1_000_000_000 {
+        return Err("an RTC on UTC was moved by the zone");
+    }
+    // East of UTC (India, +05:30), the RTC on local time.
+    if utc_at(rtc, 0, Zone { offset_min: 330, rtc_local: true }.rtc_ahead_s()) != (rtc - 19_800) * 1_000_000_000 {
+        return Err("an RTC on local time east of UTC");
+    }
+    // Set, read back, the local clock its offset from UTC; then put back.
+    let was = zone();
+    set_zone(central);
+    let (z, u, l) = (zone(), utc_ns(), local_ns());
+    set_zone(was);
+    if z != central {
+        return Err("the zone set isn't the zone read");
+    }
+    if (u as i128 - l as i128 - 6 * 3_600_000_000_000).abs() > 1_000_000_000 {
+        return Err("LOCAL isn't UTC less six hours in Central time");
+    }
+    Ok(())
 });
 
 ktest!(time_a_tsc_measured_against_the_hpet, {

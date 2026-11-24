@@ -259,6 +259,7 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     expect_focus(ctx, "settings-tab-personalisation")?;
     for (code, id) in [
         ("ArrowDown", "settings-tab-accounts"),
+        ("ArrowDown", "settings-tab-time"),
         ("ArrowDown", "settings-tab-update"),
         ("ArrowDown", "settings-tab-hardware"),
         ("ArrowDown", "settings-tab-about"),
@@ -313,6 +314,202 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     press(ctx, "Escape")?;
     closed(ctx)?;
     expect_look(ctx, DEFAULTS)
+}
+
+/// The host's zone, as QEMU's `-rtc base=localtime` keeps its clock:
+/// minutes east of UTC (`date +%z`, the runner's own environment).
+pub(crate) fn host_zone() -> Result<i16, String> {
+    let out = std::process::Command::new("date").arg("+%z").output().map_err(|e| format!("date: {e}"))?;
+    let z = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let num = |r: std::ops::Range<usize>| z.get(r).and_then(|v| v.parse::<i16>().ok());
+    match (z.get(..1), num(1..3), num(3..5)) {
+        (Some("+"), Some(h), Some(m)) if z.len() == 5 => Ok(h * 60 + m),
+        (Some("-"), Some(h), Some(m)) if z.len() == 5 => Ok(-(h * 60 + m)),
+        _ => Err(format!("date +%z said {z:?}")),
+    }
+}
+
+/// The civil date and time (UTC) of Unix seconds: year, month, day, hour,
+/// minute, second (Howard Hinnant's days-to-civil).
+pub(crate) fn civil(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
+    let (days, s) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d, (s / 3600) as u32, (s / 60 % 60) as u32, (s % 60) as u32)
+}
+
+/// Now, in Unix seconds, by the host.
+pub(crate) fn host_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A zone as Settings names it: `UTC`, `UTC−06:00`, `UTC+05:30`.
+fn zone_name(m: i16) -> String {
+    if m == 0 {
+        return "UTC".into();
+    }
+    let a = m.unsigned_abs();
+    format!("UTC{}{:02}:{:02}", if m < 0 { '\u{2212}' } else { '+' }, a / 60, a % 60)
+}
+
+/// What Settings says of a time (`18:05 UTC, 24 Nov 2026`), for each minute
+/// from a minute before `secs` to a minute after (the panel was drawn a
+/// moment ago, and a minute may turn).
+fn said_near(secs: u64, zone: &str) -> Vec<String> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    [secs - 60, secs, secs + 60]
+        .into_iter()
+        .map(|t| {
+            let (y, mo, d, h, mi, _) = civil(t);
+            format!("{h:02}:{mi:02} {zone}, {d} {} {y}", MONTHS[mo as usize - 1])
+        })
+        .collect()
+}
+
+/// Waits (10 s) for the line `id` (`prefix` and a time) to say a time
+/// `said_near` gives.
+fn expect_time(ctx: &mut Ctx, id: &str, prefix: &str, secs: u64, zone: &str) -> Result<(), String> {
+    let want: Vec<String> = said_near(secs, zone).into_iter().map(|w| format!("{prefix}{w}")).collect();
+    let start = Instant::now();
+    loop {
+        let n = until_q(ctx, &sel(id))?;
+        let said = attr(ctx, n, "aria-label")?.unwrap_or_default();
+        if want.contains(&said) {
+            return Ok(());
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(format!("{id} says {said:?}, not one of {want:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// Settings open on Time and language.
+fn time_panel(ctx: &mut Ctx) -> Result<(), String> {
+    open(ctx)?;
+    press_id(ctx, "settings-tab-time")?;
+    chosen(ctx, "settings-tab-time")
+}
+
+/// `@settings.time` (TASK-180A): Time and language. QEMU keeps its RTC on
+/// the host's local time, as Windows keeps a PC's: until the zone is set,
+/// the true time Freally OS knows is wrong by the host's offset. The zone
+/// stepped to the host's (both stepper keys worked) and *Local time* chosen;
+/// Escape puts a change back; Apply saves it through conductor (its log),
+/// and the true time is then the host's UTC and the time here its local
+/// time; the zone is kept over a restart (the kernel reads `FreallyClock`
+/// at boot, its log); Restore Defaults puts UTC back.
+pub fn time(ctx: &mut Ctx) -> Result<(), String> {
+    signed_in(ctx)?;
+    time_panel(ctx)?;
+    // Whatever an earlier run left: the defaults, saved.
+    if !dark(ctx, "settings-defaults")? {
+        press_id(ctx, "settings-defaults")?;
+    }
+    if !dark(ctx, "settings-apply")? {
+        press_id(ctx, "settings-apply")?;
+    }
+    expect_value(ctx, "settings-zone", "UTC")?;
+    chosen(ctx, "settings-rtc-1")?;
+    // Each row one stop, worked by its keys.
+    press_id(ctx, "settings-tab-time")?;
+    press(ctx, "Tab")?;
+    expect_focus(ctx, "settings-zone")?;
+    press(ctx, "ArrowRight")?;
+    expect_value(ctx, "settings-zone", "UTC+01:00")?;
+    press(ctx, "ArrowLeft")?;
+    expect_value(ctx, "settings-zone", "UTC")?;
+    press(ctx, "Tab")?;
+    expect_focus(ctx, "settings-rtc")?;
+    press(ctx, "ArrowLeft")?;
+    chosen(ctx, "settings-rtc-0")?;
+    press(ctx, "ArrowRight")?;
+    chosen(ctx, "settings-rtc-1")?;
+    expect_lit(ctx, "settings-apply", false)?;
+    let off = host_zone()?;
+    let want = zone_name(off);
+    ctx.note(&format!("the host's zone: {want}"));
+    // The RTC read as UTC: the "true" time is the host's local time.
+    let local = host_now().saturating_add_signed(off as i64 * 60);
+    expect_time(ctx, "settings-time-utc", "The true time: ", local, "UTC")?;
+    // Both stepper keys, then Escape: nothing kept.
+    press_id(ctx, "settings-zone-up")?;
+    expect_value(ctx, "settings-zone", "UTC+01:00")?;
+    press_id(ctx, "settings-zone-down")?;
+    press_id(ctx, "settings-zone-down")?;
+    expect_value(ctx, "settings-zone", "UTC\u{2212}01:00")?;
+    until_attr(ctx, &sel("settings-tab-time"), "aria-valuenow", "changed")?;
+    press(ctx, "Escape")?;
+    closed(ctx)?;
+    time_panel(ctx)?;
+    expect_value(ctx, "settings-zone", "UTC")?;
+    // The host's zone, a step at a time.
+    for _ in 0..40 {
+        let now = crate::session::value(ctx, "settings-zone")?;
+        if now == want {
+            break;
+        }
+        let east = off > 0;
+        press_id(ctx, if east { "settings-zone-up" } else { "settings-zone-down" })?;
+        let start = Instant::now();
+        while crate::session::value(ctx, "settings-zone")? == now {
+            if start.elapsed() > Duration::from_secs(5) {
+                return Err(format!("the zone stayed {now:?} after a step"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    expect_value(ctx, "settings-zone", &want)?;
+    press_id(ctx, "settings-rtc-1")?;
+    press_id(ctx, "settings-rtc-0")?;
+    chosen(ctx, "settings-rtc-0")?;
+    let line = format!("conductor: the zone is {want}; the RTC keeps local time");
+    let saved = ctx.log_count(&line);
+    press_id(ctx, "settings-apply")?;
+    waits_for_log(ctx, &line, saved)?;
+    expect_lit(ctx, "settings-apply", false)?;
+    let now = host_now();
+    expect_time(ctx, "settings-time-utc", "The true time: ", now, "UTC")?;
+    expect_time(ctx, "settings-time-here", "The time here: ", now.saturating_add_signed(off as i64 * 60), &want)?;
+    // Kept over a restart: the kernel reads it at boot.
+    press_id(ctx, "settings-ok")?;
+    closed(ctx)?;
+    crate::session::to_login(ctx)?;
+    press(ctx, "Tab")?;
+    press(ctx, "Tab")?;
+    expect_focus(ctx, "login-restart")?;
+    let (boots, shown) = (ctx.log_count("freally-boot "), ctx.log_count("login: shown"));
+    ctx.rebooted_by_guest();
+    press(ctx, "Enter")?;
+    waits_for_log(ctx, "freally-boot ", boots)?;
+    waits_for_log(ctx, "login: shown", shown)?;
+    let tail = ctx.log();
+    let since = tail.rfind("freally-boot ").map_or("", |i| &tail[i..]);
+    let line = format!("freally-core: the zone is {want}; the RTC keeps local time");
+    if !since.contains(&line) {
+        return Err(format!("after the restart the kernel didn't say {line:?}"));
+    }
+    signed_in(ctx)?;
+    time_panel(ctx)?;
+    expect_value(ctx, "settings-zone", &want)?;
+    chosen(ctx, "settings-rtc-0")?;
+    expect_time(ctx, "settings-time-utc", "The true time: ", host_now(), "UTC")?;
+    // Restore Defaults: UTC, the RTC read as UTC.
+    let line = "conductor: the zone is UTC; the RTC keeps UTC";
+    let saved = ctx.log_count(line);
+    press_id(ctx, "settings-defaults")?;
+    expect_value(ctx, "settings-zone", "UTC")?;
+    chosen(ctx, "settings-rtc-1")?;
+    press_id(ctx, "settings-ok")?;
+    waits_for_log(ctx, line, saved)?;
+    closed(ctx)
 }
 
 /// One dialog's key pressed, and its words once it's done.
@@ -538,4 +735,17 @@ pub fn about_licences(ctx: &mut Ctx) -> Result<(), String> {
     }
     press_id(ctx, "settings-cancel")?;
     closed(ctx)
+}
+
+#[cfg(test)]
+mod clock_tests {
+    #[test]
+    fn civil_dates_and_zone_names() {
+        assert_eq!(super::civil(1_795_543_500), (2026, 11, 24, 18, 5, 0));
+        assert_eq!(super::civil(951_782_400), (2000, 2, 29, 0, 0, 0));
+        assert_eq!(super::civil(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(super::zone_name(-360), "UTC\u{2212}06:00");
+        assert_eq!(super::zone_name(345), "UTC+05:45");
+        assert_eq!(super::said_near(1_795_543_500, "UTC")[1], "18:05 UTC, 24 Nov 2026");
+    }
 }

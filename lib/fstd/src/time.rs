@@ -26,9 +26,22 @@ impl Instant {
     }
 }
 
-/// Nanoseconds since the Unix epoch (UTC), from the RTC at boot.
+/// Nanoseconds since the Unix epoch (UTC), from the RTC at boot and the
+/// zone (`FreallyClock`, TASK-180A).
 pub fn utc_ns() -> u64 {
     sys::clock_get(clock::UTC)
+}
+
+/// Local time, as nanoseconds since 1970 on the zone's clock: what a person
+/// reads (the desktop's clock).
+pub fn local_ns() -> u64 {
+    sys::clock_get(clock::LOCAL)
+}
+
+/// A UTC time (ns) as local time: the zone's offset added (Files' dates).
+pub fn to_local(utc_ns: u64) -> u64 {
+    let off = crate::machine::zone().map_or(0, |(m, _)| m as i64 * 60_000_000_000);
+    (utc_ns as i64).saturating_add(off).max(0) as u64
 }
 
 /// Sleeps for `d` (a futex wait nobody wakes).

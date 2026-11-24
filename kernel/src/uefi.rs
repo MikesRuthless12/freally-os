@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! UEFI runtime services (TASK-045): `SetVariable`, for `FreallyBootCtl` and
-//! nothing else (syscall 35, conductor only); `ResetSystem`, to power off
-//! (TASK-102: the login screen's Shut down, through conductor).
+//! `FreallyClock` and nothing else (syscall 35, conductor only);
+//! `GetVariable`, for `FreallyClock` at boot (TASK-180A); `ResetSystem`, to
+//! power off (TASK-102: the login screen's Shut down, through conductor).
 //!
 //! The bootloader moved the runtime services into the direct map
 //! (`SetVirtualAddressMap`) and handed them over only when the firmware has
@@ -21,7 +22,7 @@ struct RuntimeServices {
     _time: [usize; 4],
     _set_virtual_address_map: usize,
     _convert_pointer: usize,
-    _get_variable: usize,
+    get_variable: extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut u8) -> usize,
     _get_next_variable_name: usize,
     set_variable: extern "efiapi" fn(*const u16, *const Guid, u32, usize, *const u8) -> usize,
     _get_next_high_monotonic_count: usize,
@@ -40,7 +41,7 @@ pub fn power_off() -> FErr {
     let _one = CALL.lock();
     crate::arch::cpu::interrupts_off();
     crate::sched::with_fpu_saved(|| {
-        // SAFETY: as `set_boot_ctl`'s call; ResetSystem takes no memory of ours.
+        // SAFETY: as `set_var`'s call; ResetSystem takes no memory of ours.
         unsafe { ((*(rt as *const RuntimeServices)).reset_system)(RESET_SHUTDOWN, 0, 0, core::ptr::null()) }
     });
     FErr::Internal
@@ -49,14 +50,49 @@ pub fn power_off() -> FErr {
 /// One runtime call at a time: firmware isn't reentrant.
 static CALL: SpinLock<()> = SpinLock::new(());
 
-/// Writes `FreallyBootCtl` (non-volatile, boot and runtime access).
-pub fn set_boot_ctl(data: &[u8; fbootctl::SIZE]) -> Result<(), FErr> {
+/// `FreallyClock` as the firmware keeps it, read once at boot; `None` when
+/// it has none, it's damaged, or there are no runtime services.
+pub fn get_clock() -> Option<fbootctl::clock::Zone> {
+    let rt = crate::boot_info().map_or(0, |b| b.uefi_runtime);
+    if rt == 0 {
+        return None;
+    }
+    let name: Vec<u16> = fbootctl::clock::NAME.encode_utf16().chain(core::iter::once(0)).collect();
+    let mut data = [0u8; fbootctl::clock::SIZE];
+    let mut len = data.len();
+    let _one = CALL.lock();
+    let irq = crate::arch::cpu::interrupts_enabled();
+    crate::arch::cpu::interrupts_off();
+    let status = crate::sched::with_fpu_saved(|| {
+        // SAFETY: as `set_var`'s call; `len` says how much `data` holds, and
+        // a variable longer than that is refused (EFI_BUFFER_TOO_SMALL).
+        unsafe {
+            ((*(rt as *const RuntimeServices)).get_variable)(
+                name.as_ptr(),
+                &FREALLY_VENDOR_GUID,
+                core::ptr::null_mut(),
+                &mut len,
+                data.as_mut_ptr(),
+            )
+        }
+    });
+    if irq {
+        crate::arch::cpu::interrupts_on();
+    }
+    if status != 0 {
+        return None;
+    }
+    fbootctl::clock::Zone::decode(data.get(..len)?)
+}
+
+/// Writes `name` (one of ours: non-volatile, boot and runtime access).
+pub fn set_var(name: &str, data: &[u8]) -> Result<(), FErr> {
     let rt = crate::boot_info().map_or(0, |b| b.uefi_runtime);
     if rt == 0 {
         // The firmware gave no Memory Attributes Table (or none at all).
         return Err(FErr::NotSupported);
     }
-    let name: Vec<u16> = fbootctl::NAME.encode_utf16().chain(core::iter::once(0)).collect();
+    let name: Vec<u16> = name.encode_utf16().chain(core::iter::once(0)).collect();
     let _one = CALL.lock();
     let irq = crate::arch::cpu::interrupts_enabled();
     crate::arch::cpu::interrupts_off();

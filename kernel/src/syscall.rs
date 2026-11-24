@@ -480,18 +480,30 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
                 return Err(FErr::AccessDenied);
             }
             copy_from_user(&mut name[..a1 as usize], a0)?;
-            if &name[..a1 as usize] != fbootctl::NAME.as_bytes() {
+            let name = &name[..a1 as usize];
+            let size = if name == fbootctl::NAME.as_bytes() {
+                fbootctl::SIZE
+            } else if name == fbootctl::clock::NAME.as_bytes() {
+                fbootctl::clock::SIZE
+            } else {
                 return Err(FErr::AccessDenied);
-            }
+            };
             let mut data = [0u8; fbootctl::SIZE];
-            if a3 as usize != data.len() {
+            if a3 as usize != size {
                 return Err(FErr::InvalidArgs);
             }
-            copy_from_user(&mut data, a2)?;
-            if fbootctl::BootCtl::decode(&data).is_none() {
-                return Err(FErr::InvalidArgs);
+            let data = &mut data[..size];
+            copy_from_user(data, a2)?;
+            if size == fbootctl::SIZE {
+                if fbootctl::BootCtl::decode(data).is_none() {
+                    return Err(FErr::InvalidArgs);
+                }
+                return crate::uefi::set_var(fbootctl::NAME, data).map(|_| (0, 0));
             }
-            crate::uefi::set_boot_ctl(&data).map(|_| (0, 0))
+            // The zone is the kernel's at once, before the write: a firmware
+            // that won't keep it still has it until the restart (PRD § 3).
+            crate::time::set_zone(fbootctl::clock::Zone::decode(data).ok_or(FErr::InvalidArgs)?);
+            crate::uefi::set_var(fbootctl::clock::NAME, data).map(|_| (0, 0))
         }
         nr::RESOURCE_CREATE => {
             let parent = crate::hw::resource_of(&handle(a0, rights::MANAGE)?.object)?;
@@ -615,6 +627,7 @@ pub fn call(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Res
             clock::MONOTONIC => crate::time::now_ns(),
             clock::BOOT => crate::time::boot_ns(),
             clock::UTC => crate::time::utc_ns(),
+            clock::LOCAL => crate::time::local_ns(),
             _ => return Err(FErr::InvalidArgs),
         }),
         nr::FUTEX_WAIT => crate::futex::wait(a0, a1 as u32, deadline_ticks(a2)).map(|_| (0, 0)),
@@ -736,6 +749,11 @@ fn system_info(t: u64, buf: u64, len: u64) -> Result<u64, FErr> {
                 out.extend_from_slice(&[0, 0]);
                 out.extend_from_slice(&img[12..64]);
             }
+        }
+        topic::CLOCK_ZONE => {
+            let z = crate::time::zone();
+            out.extend_from_slice(&z.offset_min.to_le_bytes());
+            out.extend_from_slice(&[z.rtc_local as u8, 0]);
         }
         topic::GOP_MODES => {
             if let Some(bi) = crate::boot_info() {

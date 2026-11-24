@@ -392,6 +392,8 @@ pub mod clock {
     pub const MONOTONIC: u64 = 0;
     pub const BOOT: u64 = 1;
     pub const UTC: u64 = 2;
+    /// UTC plus the zone's offset (`FreallyClock`, TASK-180A).
+    pub const LOCAL: u64 = 3;
 }
 
 /// `system_info` topics.
@@ -416,6 +418,8 @@ pub mod topic {
     /// release, 1 dev, 2 e2e), 0 u16, then the verified header's version (32
     /// bytes, NUL-padded) and build id (20 bytes, the git commit).
     pub const IMAGE: u64 = 9;
+    /// The zone in use: `offset_min i16, rtc_local u8, 0 u8` (TASK-180A).
+    pub const CLOCK_ZONE: u64 = 10;
 }
 
 /// Where the kernel found the TSC's frequency (TASK-073): `system_info(CPUS)`'s

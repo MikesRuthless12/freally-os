@@ -370,6 +370,7 @@ impl Conductor {
             c::BOOT_STATE => self.boot_state(&caller),
             c::BOOT_TRIAL => self.boot_trial(&caller, payload),
             c::BOOT_SWITCH => self.boot_switch(&caller),
+            c::SET_ZONE => self.set_zone(&caller, payload),
             #[cfg(feature = "flavour-dev")]
             c::SWAP => self.swap(&caller, payload, &mut handles),
             #[cfg(feature = "flavour-dev")]
@@ -430,6 +431,33 @@ impl Conductor {
         }
         self.boot.switch_to_other().map_err(|e| (FErr::BadState, e))?;
         fstd::info!("conductor: the next boot is from slot {}", fbootctl::slot_name(1 - self.boot.slot));
+        Ok((fwire::to_payload(&()), Vec::new()))
+    }
+
+    /// The zone (Settings ▸ Time and language alone, TASK-180A): the kernel
+    /// takes it at once, then writes `FreallyClock`; a firmware that won't
+    /// keep it leaves it set until the restart, and says so.
+    fn set_zone(&mut self, caller: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<Handle>), (FErr, String)> {
+        if caller != "settings" {
+            return Err((FErr::AccessDenied, alloc::format!("{caller} may not change the zone")));
+        }
+        let z: c::Zone = fwire::from_payload(payload).map_err(|e| (FErr::InvalidArgs, String::from(e.describe())))?;
+        let zone = fbootctl::clock::Zone { offset_min: z.offset_min, rtc_local: z.rtc_local };
+        if !zone.valid() {
+            return Err((
+                FErr::InvalidArgs,
+                String::from("a zone is a whole quarter hour from UTC\u{2212}12:00 to UTC+14:00"),
+            ));
+        }
+        let keeps = if zone.rtc_local { "local time" } else { "UTC" };
+        if let Err(e) = fstd::sys::uefi_set_var(fbootctl::clock::NAME, &zone.encode()) {
+            fstd::warn!(
+                "conductor: the zone is {} until the restart: the firmware didn't keep it ({e:?})",
+                zone.name()
+            );
+            return Err((e, String::from("Set until the restart: this computer's firmware won't keep it.")));
+        }
+        fstd::info!("conductor: the zone is {}; the RTC keeps {keeps}", zone.name());
         Ok((fwire::to_payload(&()), Vec::new()))
     }
 

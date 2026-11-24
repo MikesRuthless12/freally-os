@@ -247,7 +247,7 @@ ktest!(hardware_access_stays_inside_each_grant, {
     result
 });
 
-ktest!(uefi_set_var_writes_freallybootctl_and_nothing_else, {
+ktest!(uefi_set_var_writes_freallybootctl_and_freallyclock_and_nothing_else, {
     use fcore_abi::grant;
     let p = proc::create("bootctl-test", grant::BOOT_CONTROL)?;
     let plain = proc::create("plain-test", 0)?;
@@ -299,7 +299,37 @@ ktest!(uefi_set_var_writes_freallybootctl_and_nothing_else, {
         put(name, &record)?;
         call(nr::UEFI_SET_VAR, BUF, name.len() as u64, BUF + 64, 32, 0, 0)
             .map(|_| ())
-            .map_err(|_| "the firmware's SetVariable failed")
+            .map_err(|_| "the firmware's SetVariable failed")?;
+        // FreallyClock (TASK-180A): 12 bytes, refused damaged or at another
+        // size; taken, its zone is the kernel's at once.
+        let clock = fbootctl::clock::NAME.as_bytes();
+        let central = fbootctl::clock::Zone { offset_min: -360, rtc_local: true };
+        let was = crate::time::zone();
+        put(clock, &central.encode())?;
+        if e(call(nr::UEFI_SET_VAR, BUF, clock.len() as u64, BUF + 64, 32, 0, 0)) != Some(FErr::InvalidArgs) {
+            return Err("uefi_set_var took FreallyClock at the boot record's size");
+        }
+        let mut bad = central.encode();
+        bad[4] ^= 1;
+        put(clock, &bad)?;
+        if e(call(nr::UEFI_SET_VAR, BUF, clock.len() as u64, BUF + 64, 12, 0, 0)) != Some(FErr::InvalidArgs) {
+            return Err("uefi_set_var took a damaged FreallyClock");
+        }
+        if crate::time::zone() != was {
+            return Err("a refused FreallyClock changed the zone");
+        }
+        put(clock, &central.encode())?;
+        let r = call(nr::UEFI_SET_VAR, BUF, clock.len() as u64, BUF + 64, 12, 0, 0);
+        let taken = crate::time::zone() == central;
+        // Put back what the firmware kept before.
+        put(clock, &was.encode())?;
+        let back = call(nr::UEFI_SET_VAR, BUF, clock.len() as u64, BUF + 64, 12, 0, 0);
+        r.map_err(|_| "the firmware's SetVariable failed for FreallyClock")?;
+        back.map_err(|_| "FreallyClock couldn't be put back")?;
+        if !taken {
+            return Err("FreallyClock was written but the kernel didn't take its zone");
+        }
+        Ok(())
     })?;
     proc::terminate(&p, 0);
     proc::terminate(&plain, 0);

@@ -450,6 +450,13 @@
       "what": "The tab list one stop, its arrows cycling (Home, End); each row one stop, worked by its keys; Tab reaches OK and Cancel and comes round; Shift+Tab back; Escape cancels."
     },
     {
+      "id": "settings.time",
+      "task": "TASK-180A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "Time and language: until the zone is set, the true time is wrong by the host's offset (QEMU's RTC keeps local time, as Windows keeps a PC's); the zone stepped to the host's (both stepper keys) and Local time chosen; Escape puts a change back; Apply saves it through conductor, and the true time is then the host's UTC and the time here its local time; kept over a restart (the kernel reads FreallyClock at boot); Restore Defaults puts UTC back."
+    },
+    {
       "id": "settings.accounts",
       "task": "TASK-104",
       "setup": "e2e-gpt-session",

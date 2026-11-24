@@ -209,9 +209,28 @@ pub fn image() -> Option<Image> {
     parse_image(&read(topic::IMAGE)?)
 }
 
+/// `CLOCK_ZONE`'s answer: the offset in minutes east of UTC, and whether
+/// the RTC keeps local time.
+pub fn parse_zone(b: &[u8]) -> Option<(i16, bool)> {
+    (b.len() == 4 && b[2] <= 1 && b[3] == 0).then(|| (i16::from_le_bytes([b[0], b[1]]), b[2] == 1))
+}
+
+/// The zone in use (TASK-180A).
+pub fn zone() -> Option<(i16, bool)> {
+    parse_zone(&read(topic::CLOCK_ZONE)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_zone_topic_reads_back() {
+        assert_eq!(parse_zone(&[0xA8, 0xFE, 1, 0]), Some((-344, true)));
+        assert_eq!(parse_zone(&[0x4A, 0x01, 0, 0]), Some((330, false)));
+        assert_eq!(parse_zone(&[0, 0, 2, 0]), None);
+        assert_eq!(parse_zone(&[0, 0, 0]), None);
+    }
 
     #[test]
     fn the_image_topic_reads_back() {

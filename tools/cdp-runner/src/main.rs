@@ -120,6 +120,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("update.switch-back", update::switch_back),
     ("update.fallback", update::fallback),
     ("settings.keyboard", settings::keyboard),
+    ("settings.time", settings::time),
     ("settings.accounts", settings::accounts),
     ("files.browse", files::browse),
     ("files.edit", files::edit),
