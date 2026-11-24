@@ -35,6 +35,17 @@ pub fn test_cmd(args: &[String]) -> Result<(), String> {
     verdict.map(|summary| println!("{summary}"))
 }
 
+/// The test kernel's summary line (`ktests: 384 of 384 pass`), not its
+/// first (`ktests: 48 to run, on each of 8 CPUs`).
+fn is_summary(l: &str) -> bool {
+    l.starts_with("ktests: ") && l.contains(" of ") && l.trim_end().ends_with(" pass")
+}
+
+/// Whether the test kernel has said its summary on COM1.
+fn summary_said(o: &VmOptions) -> bool {
+    std::fs::read_to_string(o.com1_log()).is_ok_and(|l| l.lines().any(is_summary))
+}
+
 /// Builds, boots and reads the test kernel. `Ok((results, verdict))`; `Err` only
 /// when it couldn't run at all.
 pub fn run(timeout_secs: u64) -> Result<(Vec<Outcome>, Result<String, String>), String> {
@@ -48,9 +59,28 @@ pub fn run(timeout_secs: u64) -> Result<(Vec<Outcome>, Result<String, String>), 
     o.port_offset = 500;
     let start = Instant::now();
     let mut vm = run::start_built(&o, &built)?;
+    let mut summary_at: Option<Instant> = None;
+    let mut wakes = 0u64;
     let code = loop {
         if let Some(status) = vm.try_wait().map_err(|e| e.to_string())? {
             break status.code();
+        }
+        // QEMU 10.2's exit after the kernel's isa-debug-exit write can wait for
+        // its main loop to wake: after the ktests' runtime SetVariable calls,
+        // 2 of 5 runs were still up 60 s after the summary, each gone 0.3 s
+        // after a QMP command (none of 6 without those calls). So once the
+        // kernel has said its summary, a QMP command every 2 s until QEMU
+        // goes; the verdict is still the kernel's exit code.
+        if summary_at.is_none() && summary_said(&o) {
+            summary_at = Some(Instant::now());
+        }
+        if let Some(t) = summary_at
+            && t.elapsed() > Duration::from_secs(2 * (wakes + 1))
+        {
+            wakes += 1;
+            let said = cdp_proto::qmp::Qmp::connect(&o.qmp_socket(), Duration::from_secs(2))
+                .and_then(|mut q| q.execute("query-status", None).map(|_| ()));
+            eprintln!("ktest: QEMU still up {} s after the kernel's summary: woke its main loop ({said:?})", 2 * wakes);
         }
         if start.elapsed() > timeout {
             let _ = vm.kill();
@@ -80,7 +110,7 @@ pub fn run(timeout_secs: u64) -> Result<(Vec<Outcome>, Result<String, String>), 
     }
     let pass = results.iter().filter(|r| r.pass).count();
     let fail = results.len() - pass;
-    let summary = log.lines().find(|l| l.starts_with("ktests: ") && l.contains(" of "));
+    let summary = log.lines().find(|l| is_summary(l));
     let mins = start.elapsed().as_secs_f64() / 60.0;
     let verdict = match (code, summary) {
         (Some(33), Some(_)) if fail == 0 => Ok(format!("ktests: {pass} of {pass} pass ({mins:.1} min)")),
@@ -94,4 +124,15 @@ pub fn run(timeout_secs: u64) -> Result<(Vec<Outcome>, Result<String, String>), 
         }
     };
     Ok((results, verdict))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_summary_is_the_last_line_not_the_first() {
+        assert!(super::is_summary("ktests: 384 of 384 pass"));
+        assert!(super::is_summary("ktests: 383 of 384 pass "));
+        assert!(!super::is_summary("ktests: 48 to run, on each of 8 CPUs"));
+        assert!(!super::is_summary("ktest time::x … pass (0 Mticks)"));
+    }
 }
