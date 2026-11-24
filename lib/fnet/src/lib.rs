@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod dhcp;
+pub mod ipv6;
 
 use alloc::vec::Vec;
 

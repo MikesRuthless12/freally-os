@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use fnet::dhcp::{self, Lease, Reply};
+use fnet::ipv6::Ipv6;
 use fnet::{Ipv4, Mac};
 
 const SECOND: u64 = 1_000_000_000;
@@ -117,18 +118,27 @@ pub fn next_hop(dst: Ipv4, ours: Ipv4, prefix: u8, router: Option<Ipv4>) -> Opti
     if u32::from_be_bytes(dst) & m == u32::from_be_bytes(ours) & m { Some(dst) } else { router }
 }
 
-/// The ARP cache: at most [`ArpCache::MAX`] entries, each kept 5 minutes;
-/// when full, the oldest goes.
-#[derive(Debug, Default)]
-pub struct ArpCache {
-    entries: Vec<(Ipv4, Mac, u64)>,
+/// A neighbour cache (ARP's for IPv4, NDP's for IPv6): at most
+/// [`Neighbors::MAX`] entries, each kept 5 minutes; when full, the oldest goes.
+#[derive(Debug)]
+pub struct Neighbors<A> {
+    entries: Vec<(A, Mac, u64)>,
 }
 
-impl ArpCache {
+impl<A> Default for Neighbors<A> {
+    fn default() -> Self {
+        Neighbors { entries: Vec::new() }
+    }
+}
+
+/// IPv4's neighbours, by ARP.
+pub type ArpCache = Neighbors<Ipv4>;
+
+impl<A: Copy + PartialEq> Neighbors<A> {
     pub const MAX: usize = 64;
     pub const KEEP: u64 = 300 * SECOND;
 
-    pub fn learn(&mut self, ip: Ipv4, mac: Mac, now: u64) {
+    pub fn learn(&mut self, ip: A, mac: Mac, now: u64) {
         self.entries.retain(|e| e.0 != ip);
         if self.entries.len() == Self::MAX
             && let Some(oldest) = self.entries.iter().enumerate().min_by_key(|(_, e)| e.2).map(|(i, _)| i)
@@ -138,7 +148,7 @@ impl ArpCache {
         self.entries.push((ip, mac, now));
     }
 
-    pub fn find(&self, ip: Ipv4, now: u64) -> Option<Mac> {
+    pub fn find(&self, ip: A, now: u64) -> Option<Mac> {
         self.entries.iter().find(|e| e.0 == ip && now.saturating_sub(e.2) < Self::KEEP).map(|e| e.1)
     }
 
@@ -148,6 +158,135 @@ impl ArpCache {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+/// What SLAAC asks to send next.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Slaac6 {
+    /// A neighbour solicitation from :: for `target` (duplicate address detection).
+    Dad(Ipv6),
+    /// A router solicitation from the link-local address.
+    RouterSolicitation,
+}
+
+/// IPv6 by SLAAC (RFC 4862): a link-local address from a random interface
+/// id (never the MAC), checked by DAD (one solicitation, a second's wait),
+/// then up to three router solicitations 4 s apart; each autonomous /64 a
+/// router advertises gives a global address, checked by DAD too.
+#[derive(Debug)]
+pub struct Slaac {
+    pub iid: [u8; 8],
+    pub link_local: Ipv6,
+    /// Addresses in use, and the one being checked (with when its check ends).
+    pub addresses: Vec<(Ipv6, u8)>,
+    checking: Option<(Ipv6, u8, u64)>,
+    pending: Vec<(Ipv6, u8)>,
+    pub router: Option<(Ipv6, Mac)>,
+    pub dns: Vec<Ipv6>,
+    solicitations: u32,
+    /// When [`Slaac::due`] next has something to do (`u64::MAX`: nothing).
+    pub next: u64,
+    /// An address someone else holds (DAD failed): IPv6 is off.
+    pub conflict: Option<Ipv6>,
+}
+
+impl Slaac {
+    pub fn new(iid: [u8; 8], now: u64) -> Slaac {
+        let ll = fnet::ipv6::link_local(iid);
+        Slaac {
+            iid,
+            link_local: ll,
+            addresses: Vec::new(),
+            checking: None,
+            pending: alloc::vec![(ll, 64)],
+            router: None,
+            dns: Vec::new(),
+            solicitations: 0,
+            next: now,
+            conflict: None,
+        }
+    }
+
+    /// Whether `a` is one of ours (in use).
+    pub fn ours(&self, a: &Ipv6) -> bool {
+        self.addresses.iter().any(|(x, _)| x == a)
+    }
+
+    /// What to send now, if its time has come; the next time is set.
+    pub fn due(&mut self, now: u64) -> Option<Slaac6> {
+        if self.conflict.is_some() || now < self.next {
+            return None;
+        }
+        // A check that ran its second without an answer: the address is ours.
+        if let Some((a, p, until)) = self.checking
+            && now >= until
+        {
+            self.checking = None;
+            self.addresses.push((a, p));
+            if a == self.link_local {
+                self.next = now;
+            }
+        }
+        if self.checking.is_none()
+            && let Some((a, p)) = self.pending.pop()
+        {
+            self.checking = Some((a, p, now + SECOND));
+            self.next = now + SECOND;
+            return Some(Slaac6::Dad(a));
+        }
+        if self.checking.is_some() {
+            return None;
+        }
+        if self.router.is_none() && self.ours(&self.link_local) && self.solicitations < 3 {
+            self.solicitations += 1;
+            self.next = now + 4 * SECOND;
+            return Some(Slaac6::RouterSolicitation);
+        }
+        self.next = u64::MAX;
+        None
+    }
+
+    /// A neighbour advertisement for `target`: a duplicate, if we were checking it.
+    pub fn advertised(&mut self, target: &Ipv6) {
+        if self.checking.is_some_and(|(a, _, _)| a == *target) || (self.ours(target) && *target == self.link_local) {
+            self.conflict = Some(*target);
+            self.checking = None;
+            self.next = u64::MAX;
+        }
+    }
+
+    /// A router's advertisement, from `src`: its prefixes make addresses (checked first).
+    pub fn router_ad(&mut self, src: Ipv6, ad: &fnet::ipv6::RouterAd, now: u64) {
+        if ad.router_lifetime_s > 0 {
+            self.router = ad.mac.map(|m| (src, m)).or(self.router);
+        }
+        if !ad.dns.is_empty() {
+            self.dns = ad.dns.clone();
+        }
+        for (prefix, plen, _) in &ad.prefixes {
+            let mut a = *prefix;
+            a[8..].copy_from_slice(&self.iid);
+            let known =
+                self.ours(&a) || self.pending.iter().any(|(x, _)| *x == a) || self.checking.is_some_and(|c| c.0 == a);
+            if !known {
+                self.pending.push((a, *plen));
+                self.next = self.next.min(now);
+            }
+        }
+    }
+
+    /// Whether `dst` is on the link: link-local, or inside one of our prefixes.
+    pub fn on_link(&self, dst: &Ipv6) -> bool {
+        dst[..2] == [0xFE, 0x80] || self.addresses.iter().any(|(a, p)| *p == 64 && a[..8] == dst[..8])
+    }
+
+    /// The address to send to `dst` from: link-local for link-local, else a global one.
+    pub fn source_for(&self, dst: &Ipv6) -> Option<Ipv6> {
+        if dst[..2] == [0xFE, 0x80] {
+            return self.ours(&self.link_local).then_some(self.link_local);
+        }
+        self.addresses.iter().map(|(a, _)| *a).find(|a| a[..2] != [0xFE, 0x80])
     }
 }
 

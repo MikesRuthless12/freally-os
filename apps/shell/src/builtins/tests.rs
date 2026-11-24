@@ -131,7 +131,7 @@ impl System for Pretend {
     fn interfaces(&mut self) -> Result<Vec<Interface>, String> {
         self.net.clone().ok_or_else(|| "netstack isn't running (no network)".into())
     }
-    fn ping(&mut self, _to: [u8; 4], _seq: u16) -> Result<u32, String> {
+    fn ping(&mut self, _to: Target, _seq: u16) -> Result<u32, String> {
         if self.pongs.is_empty() { Err("no answer".into()) } else { self.pongs.remove(0) }
     }
 }
@@ -146,6 +146,9 @@ fn eth0(ipv4: Option<([u8; 4], u8)>) -> Interface {
         router: ipv4.map(|_| [10, 0, 2, 2]),
         dns: if ipv4.is_some() { vec![[10, 0, 2, 3]] } else { vec![] },
         lease_s: if ipv4.is_some() { 86_400 } else { 0 },
+        ipv6: vec![],
+        router6: None,
+        dns6: vec![],
     }
 }
 
@@ -168,9 +171,19 @@ fn ip_shows_each_interface() {
 
 #[test]
 fn ping_says_each_round_trip() {
-    assert_eq!(ok("ping 10.0.2.2"), Command::Ping { to: [10, 0, 2, 2], count: 3 });
-    assert_eq!(ok("ping 10.0.2.2 5"), Command::Ping { to: [10, 0, 2, 2], count: 5 });
-    for bad in ["ping", "ping 10.0.2", "ping 10.0.2.256", "ping 10.0.2.2.1", "ping 10.0.2.+2", "ping example.com"] {
+    assert_eq!(ok("ping 10.0.2.2"), Command::Ping { to: Target::V4([10, 0, 2, 2]), count: 3 });
+    assert_eq!(ok("ping 10.0.2.2 5"), Command::Ping { to: Target::V4([10, 0, 2, 2]), count: 5 });
+    let fec0_2 = [0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+    assert_eq!(ok("ping fec0::2 1"), Command::Ping { to: Target::V6(fec0_2), count: 1 });
+    for bad in [
+        "ping",
+        "ping 10.0.2",
+        "ping 10.0.2.256",
+        "ping 10.0.2.2.1",
+        "ping 10.0.2.+2",
+        "ping example.com",
+        "ping fec0:::2",
+    ] {
         assert!(parse(bad, false).is_err(), "{bad}");
     }
     assert!(parse("ping 10.0.2.2 11", false).unwrap_err().contains("the count is 1 to 10"));
@@ -305,4 +318,25 @@ fn what_they_print() {
     run(&Command::Restart { service: "logger".into() }, &mut s);
     assert_eq!((s.theme, s.scale, s.restarted.as_slice()), (Some(false), Some(200), &["logger".to_string()][..]));
     assert!(run(&Command::Reboot { other: false }, &mut s).text.starts_with("reboot: not yet"));
+}
+
+#[test]
+fn ip_shows_ipv6_too() {
+    let mut i = eth0(Some(([10, 0, 2, 15], 24)));
+    let ll = fnet::ipv6::parse_text("fe80::1234:5678:9abc:def0").unwrap();
+    let global = fnet::ipv6::parse_text("fec0::1234:5678:9abc:def0").unwrap();
+    i.ipv6 = vec![(ll, 64), (global, 64)];
+    i.router6 = fnet::ipv6::parse_text("fe80::2");
+    i.dns6 = vec![fnet::ipv6::parse_text("fec0::3").unwrap()];
+    let mut p = Pretend { net: Some(vec![i]), ..Pretend::default() };
+    assert_eq!(
+        run(&ok("ip"), &mut p).text,
+        "eth0  drv-virtio-net  52:54:00:12:34:56  link up\n  inet 10.0.2.15/24  router 10.0.2.2  dns 10.0.2.3  lease 86400 s\n\
+         \x20 inet6 fe80::1234:5678:9abc:def0/64\n  inet6 fec0::1234:5678:9abc:def0/64  router fe80::2  dns fec0::3\n"
+    );
+    let mut q = Pretend { pongs: vec![Ok(250)], ..Pretend::default() };
+    assert_eq!(
+        run(&ok("ping fec0::2 1"), &mut q).text,
+        "reply from fec0::2: seq=1 time=0.25 ms\n1 sent, 1 answered.\n"
+    );
 }

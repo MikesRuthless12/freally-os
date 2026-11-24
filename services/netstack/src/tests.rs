@@ -121,3 +121,75 @@ fn the_arp_cache_forgets_and_has_a_limit() {
     assert_eq!(a.find([10, 0, 2, 2], 21 * S), None, "the oldest went first");
     assert_eq!(a.find([10, 0, 3, 99], 200 * S), Some([99; 6]));
 }
+
+mod slaac {
+    use super::super::*;
+    use fnet::ipv6::RouterAd;
+
+    const IID: [u8; 8] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+    const S: u64 = SECOND;
+    const FEC0: Ipv6 = [0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const ROUTER: Ipv6 = [0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+
+    fn global() -> Ipv6 {
+        let mut a = FEC0;
+        a[8..].copy_from_slice(&IID);
+        a
+    }
+
+    #[test]
+    fn link_local_is_checked_then_routers_asked_three_times() {
+        let mut s = Slaac::new(IID, 0);
+        assert_eq!(s.link_local[..2], [0xFE, 0x80]);
+        assert_eq!(s.link_local[8..], IID, "the random id, never the MAC");
+        assert_eq!(s.due(0), Some(Slaac6::Dad(s.link_local)));
+        assert_eq!(s.due(S / 2), None, "a second's wait");
+        assert!(!s.ours(&s.link_local));
+        assert_eq!(s.due(S), Some(Slaac6::RouterSolicitation));
+        assert!(s.ours(&s.link_local));
+        assert_eq!(s.due(3 * S), None);
+        assert_eq!(s.due(5 * S), Some(Slaac6::RouterSolicitation));
+        assert_eq!(s.due(9 * S), Some(Slaac6::RouterSolicitation));
+        assert_eq!(s.due(13 * S), None, "three, then quiet");
+        assert_eq!(s.next, u64::MAX, "nothing moves while idle");
+    }
+
+    #[test]
+    fn a_router_advertisement_gives_a_global_address() {
+        let mut s = Slaac::new(IID, 0);
+        s.due(0);
+        s.due(S);
+        let ad = RouterAd {
+            router_lifetime_s: 1800,
+            mac: Some([0x52, 0x56, 0, 0, 0, 2]),
+            prefixes: alloc::vec![(FEC0, 64, 86_400)],
+            dns: alloc::vec![[0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]],
+        };
+        s.router_ad(ROUTER, &ad, 2 * S);
+        assert_eq!(s.router, Some((ROUTER, [0x52, 0x56, 0, 0, 0, 2])));
+        assert_eq!(s.dns.len(), 1);
+        assert_eq!(s.due(2 * S), Some(Slaac6::Dad(global())));
+        assert_eq!(s.due(3 * S), None);
+        assert!(s.ours(&global()));
+        let mut gw = FEC0;
+        gw[15] = 2;
+        assert!(s.on_link(&gw));
+        assert_eq!(s.source_for(&gw), Some(global()));
+        assert_eq!(s.source_for(&ROUTER), Some(s.link_local));
+        assert!(!s.on_link(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]));
+        // The same advertisement again adds nothing.
+        s.router_ad(ROUTER, &ad, 4 * S);
+        assert_eq!(s.addresses.len(), 2);
+    }
+
+    #[test]
+    fn someone_holding_our_address_stops_ipv6() {
+        let mut s = Slaac::new(IID, 0);
+        let ll = s.link_local;
+        s.due(0);
+        s.advertised(&ll);
+        assert_eq!(s.conflict, Some(ll));
+        assert_eq!(s.due(S), None);
+        assert!(!s.ours(&ll));
+    }
+}

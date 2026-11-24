@@ -227,14 +227,25 @@ impl System for Sys {
                 router: i.router,
                 dns: i.dns,
                 lease_s: i.lease_s,
+                ipv6: i.ipv6,
+                router6: i.router6,
+                dns6: i.dns6,
             })
             .collect())
     }
 
-    fn ping(&mut self, to: [u8; 4], seq: u16) -> Result<u32, String> {
-        let req = nt::Ping { to, seq, timeout_ms: 2000 };
+    fn ping(&mut self, to: builtins::Target, seq: u16) -> Result<u32, String> {
         let wait = Instant::after(Duration::from_secs(3));
-        match self.netstack()?.call::<_, nt::Pong>(nt::PING, &req, Vec::new(), wait) {
+        let net = self.netstack()?;
+        let answer = match to {
+            builtins::Target::V4(to) => {
+                net.call::<_, nt::Pong>(nt::PING, &nt::Ping { to, seq, timeout_ms: 2000 }, Vec::new(), wait)
+            }
+            builtins::Target::V6(to) => {
+                net.call::<_, nt::Pong>(nt::PING6, &nt::Ping6 { to, seq, timeout_ms: 2000 }, Vec::new(), wait)
+            }
+        };
+        match answer {
             Ok((p, _)) => Ok(p.rtt_us),
             Err(fstd::ipc::CallError::Remote(_, why)) => Err(why),
             Err(e) => Err(self.net_failed(e)),

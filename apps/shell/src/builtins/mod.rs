@@ -46,6 +46,25 @@ pub struct Interface {
     pub router: Option<[u8; 4]>,
     pub dns: Vec<[u8; 4]>,
     pub lease_s: u32,
+    pub ipv6: Vec<([u8; 16], u8)>,
+    pub router6: Option<[u8; 16]>,
+    pub dns6: Vec<[u8; 16]>,
+}
+
+/// Where a ping goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    V4([u8; 4]),
+    V6([u8; 16]),
+}
+
+impl Target {
+    fn words(&self) -> String {
+        match self {
+            Target::V4(a) => dotted(*a),
+            Target::V6(a) => fnet::ipv6::text(a),
+        }
+    }
 }
 
 /// What the built-ins reach.
@@ -85,7 +104,7 @@ pub trait System {
     /// The network's interfaces (TASK-174).
     fn interfaces(&mut self) -> Result<Vec<Interface>, String>;
     /// One echo request to `to`: its round trip in µs.
-    fn ping(&mut self, to: [u8; 4], seq: u16) -> Result<u32, String>;
+    fn ping(&mut self, to: Target, seq: u16) -> Result<u32, String>;
 }
 
 /// "10.0.2.15".
@@ -135,6 +154,20 @@ fn interface_words(i: &Interface) -> String {
             s.push_str(&format!("  lease {} s\n", i.lease_s));
         }
         None => s.push_str("  no address yet (asking DHCP)\n"),
+    }
+    let last = i.ipv6.len().saturating_sub(1);
+    for (n, (a, p)) in i.ipv6.iter().enumerate() {
+        s.push_str(&format!("  inet6 {}/{p}", fnet::ipv6::text(a)));
+        if n == last {
+            if let Some(r) = i.router6 {
+                s.push_str(&format!("  router {}", fnet::ipv6::text(&r)));
+            }
+            if !i.dns6.is_empty() {
+                let dns: Vec<String> = i.dns6.iter().map(fnet::ipv6::text).collect();
+                s.push_str(&format!("  dns {}", dns.join(" ")));
+            }
+        }
+        s.push('\n');
     }
     s
 }
@@ -190,7 +223,7 @@ pub enum Command {
     Mkfile { path: String, bytes: u64 },
     Cp { sources: Vec<String>, dest: String, verify: bool },
     Ip,
-    Ping { to: [u8; 4], count: u16 },
+    Ping { to: Target, count: u16 },
 }
 
 /// Every built-in, its usage and what it does.
@@ -304,7 +337,10 @@ pub fn parse(line: &str, dev: bool) -> Result<Option<Command>, String> {
         "ip" => none(Command::Ip),
         "ping" => {
             let to = |a: &str| {
-                ipv4_of(a).ok_or(format!("ping: {a} isn't an IPv4 address (like 10.0.2.2). {}", usage("ping")))
+                ipv4_of(a)
+                    .map(Target::V4)
+                    .or_else(|| fnet::ipv6::parse_text(a).map(Target::V6))
+                    .ok_or(format!("ping: {a} isn't an IPv4 or IPv6 address. {}", usage("ping")))
             };
             match args {
                 [a] => Ok(Some(Command::Ping { to: to(a)?, count: 3 })),
@@ -556,11 +592,11 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
                         answered += 1;
                         s.push_str(&format!(
                             "reply from {}: seq={seq} time={:.2} ms\n",
-                            dotted(*to),
+                            to.words(),
                             us as f64 / 1000.0
                         ));
                     }
-                    Err(e) => s.push_str(&format!("no reply from {}: seq={seq} ({e})\n", dotted(*to))),
+                    Err(e) => s.push_str(&format!("no reply from {}: seq={seq} ({e})\n", to.words())),
                 }
             }
             s.push_str(&format!("{count} sent, {answered} answered.\n"));

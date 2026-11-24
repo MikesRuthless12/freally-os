@@ -169,3 +169,122 @@ fn a_dhcp_message_not_for_this_client_or_malformed_is_refused() {
     untyped[240..243].copy_from_slice(&[0, 0, 0]);
     assert_eq!(dhcp::parse(&untyped, 7, ME), Err(Bad::Unsupported));
 }
+
+mod v6 {
+    use crate::Bad;
+    use crate::ipv6::*;
+    use alloc::vec;
+
+    const A: Ipv6 = [0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+    const ROUTER: Ipv6 = [0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+
+    #[test]
+    fn an_ipv6_packet_both_ways() {
+        let p = ip6(A, ROUTER, NEXT_ICMPV6, 255, b"ping");
+        let r = Ip6::parse(&p).unwrap();
+        assert_eq!((r.src, r.dst, r.next, r.hops, r.payload), (A, ROUTER, NEXT_ICMPV6, 255, &b"ping"[..]));
+        assert_eq!(Ip6::parse(&p[..39]), Err(Bad::Short));
+        let mut v4 = p.clone();
+        v4[0] = 0x45;
+        assert_eq!(Ip6::parse(&v4), Err(Bad::Version));
+        let mut long = p.clone();
+        long[5] = 200;
+        assert_eq!(Ip6::parse(&long), Err(Bad::TotalLength));
+    }
+
+    #[test]
+    fn icmpv6_checksums_cover_the_addresses() {
+        let m = icmp6(&A, &ROUTER, kind::ECHO_REQUEST, 0, &[0x46, 0x52, 0, 1, 9, 9]);
+        assert_eq!(icmp6_parse(&A, &ROUTER, &m), Ok((kind::ECHO_REQUEST, 0, &[0x46, 0x52, 0, 1, 9, 9][..])));
+        assert_eq!(icmp6_parse(&ROUTER, &A, &m).map(|_| ()), Ok(()), "swapped addresses sum the same");
+        let mut other = A;
+        other[15] ^= 1;
+        assert_eq!(icmp6_parse(&other, &ROUTER, &m), Err(Bad::Checksum));
+        let mut bad = m.clone();
+        bad[6] ^= 1;
+        assert_eq!(icmp6_parse(&A, &ROUTER, &bad), Err(Bad::Checksum));
+    }
+
+    #[test]
+    fn multicast_addresses() {
+        let one = link_local([0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(solicited_node(&one), [0xFF, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xFF, 0, 0, 1]);
+        assert_eq!(multicast_mac(&solicited_node(&A)), [0x33, 0x33, 0xFF, 0xBC, 0xDE, 0xF0]);
+        assert_eq!(multicast_mac(&ALL_ROUTERS), [0x33, 0x33, 0, 0, 0, 2]);
+    }
+
+    /// A router advertisement as QEMU's user network sends one: its MAC,
+    /// fec0::/64 on-link and autonomous for a day, RDNSS fec0::3.
+    fn qemu_ad(flags: u8) -> alloc::vec::Vec<u8> {
+        let mut b = vec![64, 0, 0x07, 0x08, 0, 0, 0, 0, 0, 0, 0, 0];
+        b.extend_from_slice(&[1, 1, 0x52, 0x56, 0, 0, 0, 2]);
+        b.extend_from_slice(&[3, 4, 64, flags, 0, 1, 0x51, 0x80, 0, 1, 0x51, 0x80, 0, 0, 0, 0]);
+        b.extend_from_slice(&[0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        b.extend_from_slice(&[25, 3, 0, 0, 0, 0, 0x0E, 0x10]);
+        b.extend_from_slice(&[0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+        b
+    }
+
+    #[test]
+    fn a_router_advertisement_is_read() {
+        let ad = router_ad(&qemu_ad(0xC0)).unwrap();
+        assert_eq!(ad.router_lifetime_s, 1800);
+        assert_eq!(ad.mac, Some([0x52, 0x56, 0, 0, 0, 2]));
+        assert_eq!(ad.prefixes, [([0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 64, 86_400)]);
+        assert_eq!(ad.dns, [[0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]]);
+        // Not autonomous: no address is made from it.
+        assert!(router_ad(&qemu_ad(0x80)).unwrap().prefixes.is_empty());
+        // An option of length 0, or running past the end: refused, never looped on.
+        let mut zero = qemu_ad(0xC0);
+        zero[13] = 0;
+        assert_eq!(router_ad(&zero), Err(Bad::Short));
+        let mut past = qemu_ad(0xC0);
+        past[13] = 40;
+        assert_eq!(router_ad(&past), Err(Bad::Short));
+        assert_eq!(router_ad(&[0; 11]), Err(Bad::Short));
+    }
+
+    #[test]
+    fn neighbour_messages_both_ways() {
+        let ns = neighbor_solicitation(&ROUTER, Some([1, 2, 3, 4, 5, 6]));
+        assert_eq!(neighbor(&ns), Ok((ROUTER, Some([1, 2, 3, 4, 5, 6]))));
+        assert_eq!(neighbor(&neighbor_solicitation(&A, None)), Ok((A, None)), "DAD asks with no address");
+        let na = neighbor_advertisement(&A, [9; 6], true);
+        assert_eq!(na[0], 0x60, "solicited and override");
+        assert_eq!(neighbor(&na), Ok((A, Some([9; 6]))));
+        assert_eq!(neighbor(&na[..19]), Err(Bad::Short));
+        assert_eq!(router_solicitation(Some([9; 6])).len(), 12);
+    }
+}
+
+mod v6_text {
+    use crate::ipv6::{parse_text, text};
+
+    #[test]
+    fn addresses_are_written_as_rfc_5952_says() {
+        for s in [
+            "fe80::1234:5678:9abc:def0",
+            "fec0::2",
+            "::",
+            "::1",
+            "2001:db8::1:0:0:1",
+            "2001:db8:0:1:1:1:1:1",
+            "ff02::1:ff00:1",
+        ] {
+            let a = parse_text(s).unwrap_or_else(|| panic!("{s}"));
+            assert_eq!(text(&a), s);
+        }
+        // The longest zero run is the one shortened; one zero group stays.
+        assert_eq!(text(&parse_text("2001:0:0:1:0:0:0:1").unwrap()), "2001:0:0:1::1");
+        assert_eq!(text(&parse_text("2001:DB8:0000:0000:0000:0000:0000:0001").unwrap()), "2001:db8::1");
+    }
+
+    #[test]
+    fn mistyped_addresses_are_refused() {
+        for s in
+            ["", "fec0::2::1", "fec0:::2", "1:2:3:4:5:6:7:8:9", "1:2:3", "fec0::g", "fec0::12345", "10.0.2.2", "fec0:2"]
+        {
+            assert_eq!(parse_text(s), None, "{s}");
+        }
+    }
+}

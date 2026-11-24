@@ -52,7 +52,7 @@ pub fn ping(ctx: &mut Ctx) -> Result<(), String> {
         &["reply from 10.0.2.2: seq=1 time=", "reply from 10.0.2.2: seq=3 time=", "3 sent, 3 answered."],
     )?;
     shell_until(ctx, "ping 10.0.2.99 1", &["no reply from 10.0.2.99: seq=1", "1 sent, 0 answered."])?;
-    shell_until(ctx, "ping 10.0.2", &["isn't an IPv4 address", "usage: ping <address> [count]"])?;
+    shell_until(ctx, "ping 10.0.2", &["isn't an IPv4 or IPv6 address", "usage: ping <address> [count]"])?;
     Ok(())
 }
 
@@ -135,5 +135,18 @@ pub fn virtio(ctx: &mut Ctx) -> Result<(), String> {
     if !none.iter().any(|l| l.contains("no ARP reply in 2 s")) {
         return Err(format!("an unanswered ARP said {none:?}"));
     }
+    Ok(())
+}
+
+/// `@net.ipv6`: netstack's link-local address (a random interface id, checked
+/// by DAD), a global one by SLAAC from QEMU's router advertisement (fec0::/64),
+/// both in the shell's `ip`, and `ping fec0::2` answered over IPv6, its
+/// neighbour found by NDP (TASK-175).
+pub fn ipv6(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: fe80::")?;
+    ctx.expect_log("/64 by SLAAC, router fe80::")?;
+    open(ctx)?;
+    shell_until(ctx, "ip", &["  inet6 fe80::", "  inet6 fec0::"])?;
+    shell_until(ctx, "ping fec0::2", &["reply from fec0::2: seq=1 time=", "3 sent, 3 answered."])?;
     Ok(())
 }

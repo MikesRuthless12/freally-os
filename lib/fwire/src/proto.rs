@@ -1382,6 +1382,8 @@ pub mod net {
     pub const INTERFACES: u32 = 1;
     /// `Ping` → `Pong`.
     pub const PING: u32 = 2;
+    /// `Ping6` → `Pong`.
+    pub const PING6: u32 = 3;
 
     wire_struct! {
         pub struct Interface {
@@ -1393,6 +1395,9 @@ pub mod net {
             pub router: Option<[u8; 4]>,
             pub dns: Vec<[u8; 4]>,
             pub lease_s: u32,
+            pub ipv6: Vec<([u8; 16], u8)>,
+            pub router6: Option<[u8; 16]>,
+            pub dns6: Vec<[u8; 16]>,
         }
     }
     wire_struct! {
@@ -1400,6 +1405,9 @@ pub mod net {
     }
     wire_struct! {
         pub struct Ping { pub to: [u8; 4], pub seq: u16, pub timeout_ms: u32 }
+    }
+    wire_struct! {
+        pub struct Ping6 { pub to: [u8; 16], pub seq: u16, pub timeout_ms: u32 }
     }
     wire_struct! {
         pub struct Pong { pub rtt_us: u32 }
@@ -1546,7 +1554,7 @@ pub mod inventory {
         ("terminal", &[(term::FEED, "feed"), (term::TYPE, "type"), (term::SCREEN, "screen")]),
         ("cdpd", &[(cd::CALL, "call")]),
         ("drv-nvme", &[(blk::INFO, "info"), (blk::READ, "read"), (blk::WRITE, "write"), (blk::FLUSH, "flush")]),
-        ("netstack", &[(nt::INTERFACES, "interfaces"), (nt::PING, "ping")]),
+        ("netstack", &[(nt::INTERFACES, "interfaces"), (nt::PING, "ping"), (nt::PING6, "ping6")]),
         ("drv-e1000", &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")]),
         (
             "drv-virtio-net",
