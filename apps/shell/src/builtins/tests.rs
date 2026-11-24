@@ -12,6 +12,9 @@ struct Pretend {
     dev: bool,
     /// Files by path (folders hold None).
     files: alloc::collections::BTreeMap<String, Option<Vec<u8>>>,
+    /// The network: its interfaces (None: netstack isn't running), and each ping's answer.
+    net: Option<Vec<Interface>>,
+    pongs: Vec<Result<u32, String>>,
 }
 
 impl System for Pretend {
@@ -125,6 +128,59 @@ impl System for Pretend {
         }
         Ok((sources.len() as u64, bytes, 500_000_000))
     }
+    fn interfaces(&mut self) -> Result<Vec<Interface>, String> {
+        self.net.clone().ok_or_else(|| "netstack isn't running (no network)".into())
+    }
+    fn ping(&mut self, _to: [u8; 4], _seq: u16) -> Result<u32, String> {
+        if self.pongs.is_empty() { Err("no answer".into()) } else { self.pongs.remove(0) }
+    }
+}
+
+fn eth0(ipv4: Option<([u8; 4], u8)>) -> Interface {
+    Interface {
+        name: "eth0".into(),
+        driver: "drv-virtio-net".into(),
+        mac: [0x52, 0x54, 0, 0x12, 0x34, 0x56],
+        link: true,
+        ipv4,
+        router: ipv4.map(|_| [10, 0, 2, 2]),
+        dns: if ipv4.is_some() { vec![[10, 0, 2, 3]] } else { vec![] },
+        lease_s: if ipv4.is_some() { 86_400 } else { 0 },
+    }
+}
+
+#[test]
+fn ip_shows_each_interface() {
+    assert_eq!(ok("ip"), Command::Ip);
+    assert!(parse("ip addr", false).unwrap_err().contains("ip takes nothing more"));
+    let mut p = Pretend { net: Some(vec![eth0(Some(([10, 0, 2, 15], 24)))]), ..Pretend::default() };
+    assert_eq!(
+        run(&ok("ip"), &mut p).text,
+        "eth0  drv-virtio-net  52:54:00:12:34:56  link up\n  inet 10.0.2.15/24  router 10.0.2.2  dns 10.0.2.3  lease 86400 s\n"
+    );
+    p.net = Some(vec![eth0(None)]);
+    assert!(run(&ok("ip"), &mut p).text.ends_with("  no address yet (asking DHCP)\n"));
+    p.net = Some(vec![]);
+    assert_eq!(run(&ok("ip"), &mut p).text, "No network interfaces.\n");
+    p.net = None;
+    assert_eq!(run(&ok("ip"), &mut p).text, "ip: netstack isn't running (no network)\n");
+}
+
+#[test]
+fn ping_says_each_round_trip() {
+    assert_eq!(ok("ping 10.0.2.2"), Command::Ping { to: [10, 0, 2, 2], count: 3 });
+    assert_eq!(ok("ping 10.0.2.2 5"), Command::Ping { to: [10, 0, 2, 2], count: 5 });
+    for bad in ["ping", "ping 10.0.2", "ping 10.0.2.256", "ping 10.0.2.2.1", "ping 10.0.2.+2", "ping example.com"] {
+        assert!(parse(bad, false).is_err(), "{bad}");
+    }
+    assert!(parse("ping 10.0.2.2 11", false).unwrap_err().contains("the count is 1 to 10"));
+    assert!(parse("ping 10.0.2.2 0", false).is_err());
+    let mut p = Pretend { pongs: vec![Ok(420), Err("no answer".into()), Ok(1500)], ..Pretend::default() };
+    assert_eq!(
+        run(&ok("ping 10.0.2.2"), &mut p).text,
+        "reply from 10.0.2.2: seq=1 time=0.42 ms\nno reply from 10.0.2.2: seq=2 (no answer)\n\
+         reply from 10.0.2.2: seq=3 time=1.50 ms\n3 sent, 2 answered.\n"
+    );
 }
 
 #[test]

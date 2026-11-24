@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = netstack
+binary      = /system/services/netstack
+description = Speaks IPv4 over the network device: an address by DHCP, ARP and ping, for the clients the Network page lists.
+start       = boot
+after       = logger, drv-virtio-net
+restart     = on-failure
+class       = background
+# The network joins the release flavour at Phase 8's closeout, with the Network page (TASK-183).
+flavours    = dev, e2e

@@ -39,6 +39,8 @@ mod files;
 mod kernel;
 #[path = "../../../e2e/os/specs/monitor.rs"]
 mod monitor;
+#[path = "../../../e2e/os/specs/net.rs"]
+mod net;
 #[path = "../../../e2e/os/specs/saver.rs"]
 mod saver;
 #[path = "../../../e2e/os/specs/services.rs"]
@@ -157,6 +159,9 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("monitor.last_panic", monitor::last_panic),
     ("log.screen", services::log_screen),
     ("log.screen_hands_over", services::log_screen_hands_over),
+    ("net.virtio", net::virtio),
+    ("net.dhcp", net::dhcp),
+    ("net.ping", net::ping),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).

@@ -41,6 +41,8 @@ fstd = { path = "lib/fstd" }
 fapp = { path = "lib/fapp" }
 fdecimal = { path = "lib/fdecimal" }
 fwire = { path = "lib/fwire" }
+drv-virtio-net = { path = "drivers/virtio-net" }
+fnet = { path = "lib/fnet" }
 cdp-proto = { path = "tools/cdp-proto" }
 
 [workspace.lints.rust]

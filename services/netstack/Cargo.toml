@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "svc-netstack"
+description = "netstack: Ethernet, ARP, IPv4, ICMP, UDP and DHCP over every network driver; the net protocol for the clients the Network page lists."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "netstack"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fnet.workspace = true
+frandom.workspace = true
+fstd.workspace = true
+fwire.workspace = true
+
+[lints]
+workspace = true

@@ -21,4 +21,5 @@ pub const STAGING: [u8; 32] = [
 
 /// The release key, from the key ceremony (TASK-109): `None` until then.
 /// Once it's here, a release bootloader trusts it alone.
+#[cfg_attr(not(feature = "flavour-release"), allow(dead_code))]
 pub const RELEASE: Option<[u8; 32]> = None;

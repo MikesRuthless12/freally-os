@@ -1315,6 +1315,97 @@ pub mod accounts {
     }
 }
 
+/// netdev (TASK-172, PRD § 4, FR-060): a network driver (drv-virtio-net,
+/// drv-e1000) to netstack, and conductor's test door in e2e images. Frames
+/// are Ethernet frames without the FCS, 14 to 1514 bytes.
+pub mod netdev {
+    use crate::{HandleRef, wire_struct};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `()` → `Info`.
+    pub const INFO: u32 = 1;
+    /// `()` → `Subscribed`: the frames received, and the link's changes.
+    pub const SUBSCRIBE: u32 = 2;
+    /// `Frames` → `Sent`.
+    pub const SEND: u32 = 3;
+    /// `()` → `Stats`.
+    pub const STATS: u32 = 4;
+
+    /// On the subscriber's channel: `Frames`, as the device received them.
+    pub const EV_FRAMES: u32 = 1;
+    /// On the subscriber's channel: `Link`.
+    pub const EV_LINK: u32 = 2;
+
+    /// The smallest and largest frame (a header; a header and 1500 bytes).
+    pub const FRAME_MIN: usize = 14;
+    pub const FRAME_MAX: usize = 1514;
+    /// The most frames, and bytes, one message carries.
+    pub const BATCH_FRAMES: usize = 32;
+    pub const BATCH_BYTES: usize = 60 * 1024;
+
+    wire_struct! {
+        pub struct Info { pub driver: String, pub mac: [u8; 6], pub mtu: u16, pub link: bool }
+    }
+    wire_struct! {
+        pub struct Subscribed { pub events: HandleRef }
+    }
+    wire_struct! {
+        pub struct Frames { pub frames: Vec<Vec<u8>> }
+    }
+    wire_struct! {
+        pub struct Sent { pub sent: u32 }
+    }
+    wire_struct! {
+        pub struct Link { pub up: bool }
+    }
+    wire_struct! {
+        pub struct Stats {
+            pub rx_frames: u64,
+            pub rx_bytes: u64,
+            pub rx_dropped: u64,
+            pub tx_frames: u64,
+            pub tx_bytes: u64,
+            pub tx_dropped: u64,
+        }
+    }
+}
+
+/// net (TASK-174, PRD § 4, FR-060): clients to netstack, the ones the
+/// Network page lists.
+pub mod net {
+    use crate::wire_struct;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `()` → `Interfaces`.
+    pub const INTERFACES: u32 = 1;
+    /// `Ping` → `Pong`.
+    pub const PING: u32 = 2;
+
+    wire_struct! {
+        pub struct Interface {
+            pub name: String,
+            pub driver: String,
+            pub mac: [u8; 6],
+            pub link: bool,
+            pub ipv4: Option<([u8; 4], u8)>,
+            pub router: Option<[u8; 4]>,
+            pub dns: Vec<[u8; 4]>,
+            pub lease_s: u32,
+        }
+    }
+    wire_struct! {
+        pub struct Interfaces { pub list: Vec<Interface> }
+    }
+    wire_struct! {
+        pub struct Ping { pub to: [u8; 4], pub seq: u16, pub timeout_ms: u32 }
+    }
+    wire_struct! {
+        pub struct Pong { pub rtt_us: u32 }
+    }
+}
+
 /// The inventory's ordinals (TASK-063, FR-040, e2e images only): every
 /// process answers `ASK` itself (fstd, never passed to the service) with how
 /// often each request ordinal reached it. `SERVICES` lists what each
@@ -1381,7 +1472,7 @@ pub mod inventory {
         pub struct Served { pub ordinals: Vec<(u32, u32)> }
     }
 
-    use super::{accounts as acc, block as blk, ffs as fs, updater as up, vfs as vf};
+    use super::{accounts as acc, block as blk, ffs as fs, net as nt, netdev as nd, updater as up, vfs as vf};
     use super::{
         cdpd as cd, conductor as c, devmgr as d, display as disp, input as inp, logger as l, monitor as mon,
         serial as s, stage as st, terminal as term,
@@ -1455,6 +1546,11 @@ pub mod inventory {
         ("terminal", &[(term::FEED, "feed"), (term::TYPE, "type"), (term::SCREEN, "screen")]),
         ("cdpd", &[(cd::CALL, "call")]),
         ("drv-nvme", &[(blk::INFO, "info"), (blk::READ, "read"), (blk::WRITE, "write"), (blk::FLUSH, "flush")]),
+        ("netstack", &[(nt::INTERFACES, "interfaces"), (nt::PING, "ping")]),
+        (
+            "drv-virtio-net",
+            &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")],
+        ),
         (
             "updater",
             &[

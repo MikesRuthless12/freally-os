@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "drv-virtio-net"
+description = "drv-virtio-net: a virtio network device (virtio 1.x over PCI), serving the netdev protocol."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "drv-virtio-net"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fstd.workspace = true
+fwire.workspace = true
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@
 //! - `stage …`: windows through stage's own protocol (`door_stage.rs`).
 //! - `terminal …`: the terminal's screen, fed and read (`door_terminal.rs`).
 //! - `monitor …`: what Monitor shows (`door_monitor.rs`).
+//! - `netdev …`: the network device, before netstack (`door_netdev.rs`).
 //! - `cdpd <Method> <params as JSON>` → `json <result>` (one line): a CDP
 //!   method cdpd serves (TASK-063), for cdp-host.
 //! - `echo <n> [ms]`: `ok`, then the next `n` bytes that arrive go straight
@@ -52,6 +53,8 @@ pub struct Door {
     terminal: crate::door_terminal::TermDoor,
     /// Monitor's (`monitor …`).
     monitor: crate::door_monitor::MonDoor,
+    /// The network device's (`netdev …`, TASK-172).
+    netdev: crate::door_netdev::NetDoor,
     /// Test sessions (`vfs session <user>`, TASK-100).
     vfs: crate::door_vfs::VfsDoor,
     /// Accounts (`accounts ...`, TASK-101).
@@ -71,6 +74,7 @@ impl Door {
             stage: crate::door_stage::StageDoor::default(),
             terminal: crate::door_terminal::TermDoor::default(),
             monitor: crate::door_monitor::MonDoor::default(),
+            netdev: crate::door_netdev::NetDoor::default(),
             vfs: crate::door_vfs::VfsDoor::default(),
             accounts: crate::door_accounts::AccountsDoor::default(),
             cdpd: None,
@@ -358,6 +362,11 @@ impl Door {
             }
             "monitor" => {
                 for line in self.monitor.run(c, arg) {
+                    self.send(&line);
+                }
+            }
+            "netdev" => {
+                for line in self.netdev.run(c, arg) {
                     self.send(&line);
                 }
             }

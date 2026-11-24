@@ -30,6 +30,7 @@ use fui::theme::{Mode, Theme};
 use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::logger as lg;
+use fwire::proto::net as nt;
 use fwire::proto::stage as st;
 use fwire::proto::terminal as term;
 
@@ -50,6 +51,8 @@ fn deadline() -> u64 {
 struct Sys {
     stage: Option<Client>,
     logger: Option<Client>,
+    /// netstack, once `ip` or `ping` asks (TASK-174).
+    net: Option<Client>,
 }
 
 /// The boot's stages, by id (the protocol's own list).
@@ -206,9 +209,56 @@ impl System for Sys {
             }
         }
     }
+
+    fn interfaces(&mut self) -> Result<Vec<builtins::Interface>, String> {
+        let (list, _) = self
+            .netstack()?
+            .call::<_, nt::Interfaces>(nt::INTERFACES, &(), Vec::new(), deadline())
+            .map_err(|e| self.net_failed(e))?;
+        Ok(list
+            .list
+            .into_iter()
+            .map(|i| builtins::Interface {
+                name: i.name,
+                driver: i.driver,
+                mac: i.mac,
+                link: i.link,
+                ipv4: i.ipv4,
+                router: i.router,
+                dns: i.dns,
+                lease_s: i.lease_s,
+            })
+            .collect())
+    }
+
+    fn ping(&mut self, to: [u8; 4], seq: u16) -> Result<u32, String> {
+        let req = nt::Ping { to, seq, timeout_ms: 2000 };
+        let wait = Instant::after(Duration::from_secs(3));
+        match self.netstack()?.call::<_, nt::Pong>(nt::PING, &req, Vec::new(), wait) {
+            Ok((p, _)) => Ok(p.rtt_us),
+            Err(fstd::ipc::CallError::Remote(_, why)) => Err(why),
+            Err(e) => Err(self.net_failed(e)),
+        }
+    }
 }
 
 impl Sys {
+    /// netstack's client, connected the first time.
+    fn netstack(&mut self) -> Result<&mut Client, String> {
+        if self.net.is_none() {
+            let ch =
+                fstd::service::connect("netstack").map_err(|_| String::from("netstack isn't running (no network)"))?;
+            self.net = Some(Client::new(ch));
+        }
+        self.net.as_mut().ok_or_else(|| String::from("netstack isn't running (no network)"))
+    }
+
+    /// A call that failed: connect again next time.
+    fn net_failed(&mut self, e: fstd::ipc::CallError) -> String {
+        self.net = None;
+        alloc::format!("{e:?}")
+    }
+
     fn stage_call(&mut self, ordinal: u32, req: &impl fwire::Wire) -> Result<(), String> {
         let s = self.stage.as_mut().ok_or("stage isn't there")?;
         s.call::<_, ()>(ordinal, req, Vec::new(), deadline()).map(|_| ()).map_err(|e| alloc::format!("{e:?}"))
@@ -330,7 +380,7 @@ impl Term {
             theme,
             grid: Grid::new(COLS as usize, ROWS as usize),
             editor: Editor::new(),
-            sys: Sys { stage: sys_stage, logger: None },
+            sys: Sys { stage: sys_stage, logger: None, net: None },
             follow: None,
             back: 0,
             selection: None,

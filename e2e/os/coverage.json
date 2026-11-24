@@ -21,7 +21,8 @@
     "e2e-gpt-update": { "flavour": "e2e", "gpt": true, "updates": true },
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
-    "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" }
+    "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" },
+    "e2e-net": { "flavour": "e2e", "nic": "virtio-net-pci" }
   },
   "features": [
     {
@@ -625,6 +626,27 @@
       "setup": "e2e",
       "spec": "e2e/os/specs/crisp.rs",
       "what": "Every UI scale 100-300 %: stage and the desktop take the art made for it, the title strip is its own pixels, nothing drawn larger than it is or from another scale (the crisp guard)."
+    },
+    {
+      "id": "net.virtio",
+      "task": "TASK-172",
+      "setup": "e2e-net",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "drv-virtio-net on a virtio-net-pci card on QEMU's user network: QEMU's MAC and the link up; an ARP request for the gateway goes out and its answer comes back, the driver's counts moving; an address no one has is said in 2 s."
+    },
+    {
+      "id": "net.dhcp",
+      "task": "TASK-174",
+      "setup": "e2e-net",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "netstack gets QEMU's 10.0.2.15/24 for a day by DHCP as it starts (a restricted network: no router, no DNS server); the shell's ip shows the interface, its driver, MAC, link, address and lease."
+    },
+    {
+      "id": "net.ping",
+      "task": "TASK-174",
+      "setup": "e2e-net",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "The shell's ping 10.0.2.2: three echo requests answered, the gateway found by ARP first; an address no one has: no reply, said in time; a mistyped address refused with the usage."
     }
   ]
 }

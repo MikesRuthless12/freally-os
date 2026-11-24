@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fnet"
+description = "fnet: the network's wire formats (Ethernet, ARP, IPv4, ICMP, UDP, DHCP), read and written, host-tested; netstack's parsers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

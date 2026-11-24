@@ -176,6 +176,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-virtio-net"
+version = "0.8.0"
+dependencies = [
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
+
+[[package]]
 name = "drv-xhci"
 version = "0.8.0"
 
@@ -251,6 +260,10 @@ version = "0.8.0"
 
 [[package]]
 name = "fjson"
+version = "0.8.0"
+
+[[package]]
+name = "fnet"
 version = "0.8.0"
 
 [[package]]
@@ -407,6 +420,7 @@ dependencies = [
 name = "svc-devmgr"
 version = "0.8.0"
 dependencies = [
+ "drv-virtio-net",
  "facpi",
  "fcore-abi",
  "fstd",
@@ -430,6 +444,17 @@ version = "0.8.0"
 dependencies = [
  "fcore-abi",
  "fscreen",
+ "fstd",
+ "fwire",
+]
+
+[[package]]
+name = "svc-netstack"
+version = "0.8.0"
+dependencies = [
+ "fcore-abi",
+ "fnet",
+ "frandom",
  "fstd",
  "fwire",
 ]

@@ -57,6 +57,8 @@ pub struct Hardware {
     /// The first NVMe controller (class 01, subclass 08, interface 02): its
     /// PCI address, its configuration page and its BAR0 (TASK-092).
     nvme: Option<Nvme>,
+    /// The first virtio network device (TASK-172).
+    net: Option<VirtioNet>,
     framebuffer: (u64, u64, u32, u32, u32, u32),
     edid_len: u64,
     madt: Vec<u8>,
@@ -95,8 +97,10 @@ impl Hardware {
         let mut pci = Vec::new();
         let mut bars = Vec::new();
         let mut storage = Vec::new();
+        let mut nets = Vec::new();
         for e in get(&mut mem, b"MCFG").map(|t| facpi::mcfg(&t)).unwrap_or_default() {
-            scan(root.raw(), &e, e.start_bus, &mut pci, &mut bars, &mut storage, 0);
+            let mut found = Found { pci: &mut pci, bars: &mut bars, storage: &mut storage, nets: &mut nets };
+            scan(root.raw(), &e, e.start_bus, &mut found, 0);
         }
         let fb = &bi.framebuffer;
         let display = holder(&bars, fb.base);
@@ -110,6 +114,7 @@ impl Hardware {
             firmware,
             display,
             nvme: storage.into_iter().next(),
+            net: nets.into_iter().next(),
             framebuffer: (fb.base, fb.size, fb.width, fb.height, fb.stride_px, fb.format as u32),
             edid_len: bi.edid.len,
             madt,
@@ -192,6 +197,38 @@ impl Hardware {
                 }
                 devices.push(at);
             }
+            // The virtio structures' spans in each BAR (and the MSI-X table's
+            // page), the configuration page, and where each structure is.
+            "drv-virtio-net" => {
+                let v = self.net.clone().ok_or(FErr::NotFound)?;
+                add("config", self.carve(resource::MMIO, v.config, 4096)?, &mut handles);
+                values.push((String::from("config"), v.config));
+                values.push((String::from("notify-mul"), v.caps.notify_mul as u64));
+                let mut regions = Vec::new();
+                for (name, r) in [
+                    ("common", v.caps.common),
+                    ("notify", v.caps.notify),
+                    ("isr", v.caps.isr),
+                    ("device", v.caps.device),
+                ] {
+                    let Some(r) = r else { continue };
+                    let phys = v.bars[r.bar as usize] + r.offset as u64;
+                    values.push((String::from(name), phys));
+                    values.push((alloc::format!("{name}-len"), r.length as u64));
+                    regions.push((r.bar, phys, r.length as u64));
+                }
+                if let Some((cap, bir, table)) = v.msix {
+                    values.push((String::from("msix-cap"), cap));
+                    values.push((String::from("msix-table"), table));
+                    regions.push((bir, table & !0xFFF, 4096));
+                }
+                for (bar, base, len) in spans(&regions) {
+                    add(&alloc::format!("bar{bar}"), self.carve(resource::MMIO, base, len)?, &mut handles);
+                    values.push((alloc::format!("bar{bar}"), base));
+                    values.push((alloc::format!("bar{bar}-len"), len));
+                }
+                devices.push(v.at);
+            }
             "drv-uart16550" => {
                 for (name, port, irq) in [("com2", 0x2F8u64, 3u8), ("com3", 0x3E8, 4)] {
                     add(name, self.carve(resource::IO_PORT, port, 8)?, &mut handles);
@@ -229,6 +266,95 @@ struct Nvme {
     config: u64,
     bar0: u64,
     msix: Option<(u64, u64)>,
+}
+
+/// A virtio network device (TASK-172): its PCI address, configuration page,
+/// its structures as its capabilities give them, each BAR's base, and its
+/// MSI-X capability's offset, table BAR and table address.
+#[derive(Clone)]
+struct VirtioNet {
+    at: String,
+    config: u64,
+    caps: drv_virtio_net::Caps,
+    bars: [u64; 6],
+    msix: Option<(u64, u8, u64)>,
+}
+
+/// What a scan collects.
+struct Found<'a> {
+    pci: &'a mut Vec<d::PciDevice>,
+    bars: &'a mut Vec<(String, u64)>,
+    storage: &'a mut Vec<Nvme>,
+    nets: &'a mut Vec<VirtioNet>,
+}
+
+/// The most one granted span may be.
+const SPAN_MAX: u64 = 1 << 20;
+
+/// Each BAR's span, page-aligned, holding every region in it: `(bar, base,
+/// len)` from `(bar, address, len)`. A region of 0 bytes holds nothing; a
+/// span past [`SPAN_MAX`] isn't granted.
+fn spans(regions: &[(u8, u64, u64)]) -> Vec<(u8, u64, u64)> {
+    let mut out = Vec::new();
+    for bar in 0..6u8 {
+        let mut it = regions.iter().filter(|r| r.0 == bar && r.2 > 0);
+        let Some(first) = it.next() else { continue };
+        let (mut lo, mut hi) = (first.1, first.1 + first.2);
+        for r in it {
+            (lo, hi) = (lo.min(r.1), hi.max(r.1 + r.2));
+        }
+        let (lo, hi) = (lo & !0xFFF, hi.next_multiple_of(4096));
+        if hi - lo <= SPAN_MAX {
+            out.push((bar, lo, hi - lo));
+        }
+    }
+    out
+}
+
+/// The six BARs' bases: a 64-bit BAR whole in its first slot (its second
+/// 0); an I/O BAR or an unassigned one 0.
+fn bar_bases(va: u64) -> [u64; 6] {
+    let mut out = [0u64; 6];
+    let mut i = 0usize;
+    while i < 6 {
+        // SAFETY: the BARs, inside the mapped configuration page.
+        let lo = unsafe { fstd::mmio::read32(va + 0x10 + 4 * i as u64) } as u64;
+        if lo & 1 == 0 {
+            if (lo >> 1) & 3 == 2 && i < 5 {
+                // SAFETY: as above.
+                let hi = unsafe { fstd::mmio::read32(va + 0x14 + 4 * i as u64) } as u64;
+                out[i] = (hi << 32) | (lo & !0xF);
+                i += 1;
+            } else {
+                out[i] = lo & !0xF;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A virtio device's MSI-X: its capability's offset, its table's BAR, and
+/// the table's address (the table may be in any BAR).
+fn msix_any(va: u64, bars: &[u64; 6]) -> Option<(u64, u8, u64)> {
+    if cfg16(va, 6) & 1 << 4 == 0 {
+        return None;
+    }
+    let mut at = (cfg8(va, 0x34) & 0xFC) as u64;
+    for _ in 0..48 {
+        if at < 0x40 {
+            return None;
+        }
+        if cfg8(va, at) == 0x11 {
+            // SAFETY: the table register, inside the mapped configuration page.
+            let table = unsafe { fstd::mmio::read32(va + at + 4) } as u64;
+            let bir = (table & 7) as u8;
+            let base = *bars.get(bir as usize)?;
+            return (base != 0).then_some((at, bir, base + (table & !7)));
+        }
+        at = (cfg8(va, at + 1) & 0xFC) as u64;
+    }
+    None
 }
 
 /// The MSI-X capability (id 0x11) in the function's list: its offset, and
@@ -284,16 +410,9 @@ fn memory_bars(va: u64) -> Vec<u64> {
 
 /// Every function on `bus` and the buses behind its bridges; each display
 /// controller's memory BARs into `bars`; each NVMe controller's address,
-/// configuration page and BAR0 into `storage`.
-fn scan(
-    root: u32,
-    e: &facpi::Ecam,
-    bus: u8,
-    out: &mut Vec<d::PciDevice>,
-    bars: &mut Vec<(String, u64)>,
-    storage: &mut Vec<Nvme>,
-    depth: u32,
-) {
+/// configuration page and BAR0 into `storage`; each virtio network device
+/// into `nets`.
+fn scan(root: u32, e: &facpi::Ecam, bus: u8, found: &mut Found, depth: u32) {
     if depth > 32 || bus < e.start_bus || bus > e.end_bus {
         return;
     }
@@ -324,7 +443,7 @@ fn scan(
                 };
                 if p.class == 0x03 && header & 0x7F == 0 {
                     let at = pci_address(&p);
-                    bars.extend(memory_bars(va).into_iter().map(|b| (at.clone(), b)));
+                    found.bars.extend(memory_bars(va).into_iter().map(|b| (at.clone(), b)));
                 }
                 if (p.class, p.subclass, p.prog_if) == (0x01, 0x08, 0x02)
                     && header & 0x7F == 0
@@ -332,7 +451,7 @@ fn scan(
                     && bar0 != 0
                 {
                     if storage_allowed(cfg!(feature = "flavour-release"), p.vendor) {
-                        storage.push(Nvme { at: pci_address(&p), config: phys, bar0, msix: msix(va, bar0) });
+                        found.storage.push(Nvme { at: pci_address(&p), config: phys, bar0, msix: msix(va, bar0) });
                     } else {
                         fstd::info!(
                             "devmgr: the NVMe controller at {} ({:04x}:{:04x}) is left alone: this build's storage is for virtual machines",
@@ -342,11 +461,25 @@ fn scan(
                         );
                     }
                 }
-                out.push(p);
+                if drv_virtio_net::is_net(p.vendor, p.id) && header & 0x7F == 0 {
+                    let caps = drv_virtio_net::caps(|o| cfg8(va, o as u64));
+                    let bars = bar_bases(va);
+                    let placed = |r: Option<drv_virtio_net::Region>| r.is_none_or(|r| bars[r.bar as usize] != 0);
+                    if caps.usable() && [caps.common, caps.notify, caps.isr, caps.device].into_iter().all(placed) {
+                        let msix = msix_any(va, &bars);
+                        found.nets.push(VirtioNet { at: pci_address(&p), config: phys, caps, bars, msix });
+                    } else {
+                        fstd::info!(
+                            "devmgr: the virtio network device at {} has no usable virtio 1 structures",
+                            pci_address(&p)
+                        );
+                    }
+                }
+                found.pci.push(p);
                 if header & 0x7F == 1 {
                     let secondary = cfg8(va, 0x19);
                     if secondary > bus {
-                        scan(root, e, secondary, out, bars, storage, depth + 1);
+                        scan(root, e, secondary, found, depth + 1);
                     }
                 }
             }
@@ -361,6 +494,27 @@ fn scan(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn each_bars_span_holds_its_regions_page_aligned() {
+        // QEMU's virtio-net-pci: four structures in BAR 4, the MSI-X table in BAR 1.
+        let base4 = 0xFE00_0000u64;
+        let regions = [
+            (4u8, base4, 0x1000u64),
+            (4, base4 + 0x1000, 0x1000),
+            (4, base4 + 0x2000, 0x1000),
+            (4, base4 + 0x3000, 0x1000),
+            (1, 0xFEB0_0000, 4096),
+        ];
+        assert_eq!(super::spans(&regions), [(1, 0xFEB0_0000, 4096), (4, base4, 0x4000)]);
+        // Regions inside pages: the pages that hold them; one running over a
+        // page's end takes the next page too.
+        assert_eq!(super::spans(&[(0, 0x1010, 0x20), (0, 0x2FE0, 0x20)]), [(0, 0x1000, 0x2000)]);
+        assert_eq!(super::spans(&[(0, 0x1010, 0x20), (0, 0x2FF0, 0x20)]), [(0, 0x1000, 0x3000)]);
+        // An empty region holds nothing; a span past 1 MiB isn't granted.
+        assert_eq!(super::spans(&[(2, 0x5000, 0)]), []);
+        assert_eq!(super::spans(&[(2, 0, 0x1000), (2, 0x20_0000, 0x1000)]), []);
+    }
+
     #[test]
     fn a_release_build_takes_only_a_virtual_machines_disk() {
         for vm in [0x1B36, 0x80EE, 0x15AD] {

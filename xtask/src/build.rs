@@ -98,6 +98,18 @@ pub const PROGRAMS: &[UserProgram] = &[
     UserProgram { package: "drv-gop-fb", bin: "drv-gop-fb", path: "/system/drivers/gop-fb", kind: fsi::Kind::Driver },
     UserProgram { package: "drv-i8042", bin: "drv-i8042", path: "/system/drivers/i8042", kind: fsi::Kind::Driver },
     UserProgram { package: "drv-nvme", bin: "drv-nvme", path: "/system/drivers/nvme", kind: fsi::Kind::Driver },
+    UserProgram {
+        package: "drv-virtio-net",
+        bin: "drv-virtio-net",
+        path: "/system/drivers/virtio-net",
+        kind: fsi::Kind::Driver,
+    },
+    UserProgram {
+        package: "svc-netstack",
+        bin: "netstack",
+        path: "/system/services/netstack",
+        kind: fsi::Kind::Service,
+    },
     UserProgram { package: "svc-stage", bin: "stage", path: "/system/services/stage", kind: fsi::Kind::Service },
     UserProgram { package: "svc-desktop", bin: "desktop", path: "/system/services/desktop", kind: fsi::Kind::Service },
     UserProgram { package: "svc-ffs", bin: "ffs", path: "/system/services/ffs", kind: fsi::Kind::Service },

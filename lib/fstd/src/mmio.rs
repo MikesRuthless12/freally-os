@@ -51,6 +51,13 @@ pub unsafe fn read64(at: u64) -> u64 {
 }
 
 /// # Safety
+/// `at` is mapped device memory (or memory) this process may write.
+pub unsafe fn write8(at: u64, v: u8) {
+    // SAFETY: as this function's.
+    unsafe { asm!("mov byte ptr [{at}], {v}", at = in(reg) at, v = in(reg_byte) v, options(nostack, preserves_flags)) };
+}
+
+/// # Safety
 /// `at` is mapped device memory (or memory) this process may write; 2-byte aligned.
 pub unsafe fn write16(at: u64, v: u16) {
     // SAFETY: as this function's.
@@ -84,5 +91,14 @@ mod tests {
         assert_eq!(m[3], 0, "nothing written before");
         assert_eq!(&m[4..10], &[0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22]);
         assert_eq!(m[10], 0, "nothing written after");
+    }
+
+    #[test]
+    fn a_byte_write_touches_one_byte() {
+        let mut m = [0x55u8; 4];
+        let at = m.as_mut_ptr() as u64;
+        // SAFETY: inside `m`.
+        unsafe { write8(at + 1, 0xA7) };
+        assert_eq!(m, [0x55, 0xA7, 0x55, 0x55]);
     }
 }

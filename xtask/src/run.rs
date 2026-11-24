@@ -57,6 +57,9 @@ pub struct VmOptions {
     pub carry: Option<(PathBuf, String)>,
     /// The update packages `@update.*` use, put in /system/updates (TASK-110).
     pub updates: bool,
+    /// A network card of this QEMU model (`virtio-net-pci`, `e1000`, `e1000e`)
+    /// on QEMU's user network (TASK-172), else none. `--nic <model>`.
+    pub nic: Option<String>,
 }
 
 impl VmOptions {
@@ -80,6 +83,7 @@ impl VmOptions {
             keep_disk: false,
             carry: None,
             updates: false,
+            nic: None,
         }
     }
 
@@ -92,6 +96,7 @@ impl VmOptions {
         o.gpt = args.iter().any(|a| a == "--gpt");
         o.tcg = args.iter().any(|a| a == "--tcg") || !Path::new("/dev/kvm").exists();
         o.image_override = arg("--image").map(PathBuf::from);
+        o.nic = arg("--nic");
         if let Some(b) = arg("--tamper") {
             o.tamper_byte = Some(b.parse().map_err(|_| "--tamper takes a byte offset")?);
         }
@@ -231,7 +236,17 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
         // disk stalled a fresh VM's firmware on its first boot.
         c.arg("-drive").arg(format!("if=virtio,format=raw,readonly=on,file=fat:{}", esp.display()));
     }
-    c.args(["-nic", "none"]);
+    // A network card on QEMU's user network, restricted: the guest reaches
+    // QEMU's own gateway, DHCP and DNS, never the host's network or beyond.
+    match &o.nic {
+        Some(model) => {
+            c.args(["-netdev", "user,id=n0,restrict=on"]);
+            c.arg("-device").arg(format!("{model},netdev=n0"));
+        }
+        None => {
+            c.args(["-nic", "none"]);
+        }
+    }
     c.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
     c.arg("-qmp").arg(format!("unix:{},server=on,wait=off", o.qmp_socket().display()));
 

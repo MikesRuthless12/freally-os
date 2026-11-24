@@ -35,6 +35,19 @@ pub struct Fault {
     pub message: String,
 }
 
+/// A network interface, as netstack says it (TASK-174).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interface {
+    pub name: String,
+    pub driver: String,
+    pub mac: [u8; 6],
+    pub link: bool,
+    pub ipv4: Option<([u8; 4], u8)>,
+    pub router: Option<[u8; 4]>,
+    pub dns: Vec<[u8; 4]>,
+    pub lease_s: u32,
+}
+
 /// What the built-ins reach.
 pub trait System {
     fn services(&mut self) -> Result<Vec<Service>, String>;
@@ -69,6 +82,61 @@ pub trait System {
     /// A copy through the engine (TASK-105A), names taken replaced: (items,
     /// bytes, ns it took).
     fn copy(&mut self, sources: &[String], dest: &str, verify: bool) -> Result<(u64, u64, u64), String>;
+    /// The network's interfaces (TASK-174).
+    fn interfaces(&mut self) -> Result<Vec<Interface>, String>;
+    /// One echo request to `to`: its round trip in µs.
+    fn ping(&mut self, to: [u8; 4], seq: u16) -> Result<u32, String>;
+}
+
+/// "10.0.2.15".
+fn dotted(a: [u8; 4]) -> String {
+    format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3])
+}
+
+/// "10.0.2.15" → its four bytes.
+pub fn ipv4_of(s: &str) -> Option<[u8; 4]> {
+    let mut out = [0u8; 4];
+    let mut parts = s.split('.');
+    for b in out.iter_mut() {
+        let p = parts.next()?;
+        if p.is_empty() || p.len() > 3 || !p.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        *b = p.parse().ok()?;
+    }
+    parts.next().is_none().then_some(out)
+}
+
+/// `ip`'s words for one interface.
+fn interface_words(i: &Interface) -> String {
+    let m = i.mac;
+    let mut s = format!(
+        "{}  {}  {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}  link {}\n",
+        i.name,
+        i.driver,
+        m[0],
+        m[1],
+        m[2],
+        m[3],
+        m[4],
+        m[5],
+        if i.link { "up" } else { "down" }
+    );
+    match i.ipv4 {
+        Some((a, prefix)) => {
+            s.push_str(&format!("  inet {}/{prefix}", dotted(a)));
+            if let Some(r) = i.router {
+                s.push_str(&format!("  router {}", dotted(r)));
+            }
+            if !i.dns.is_empty() {
+                let dns: Vec<String> = i.dns.iter().map(|d| dotted(*d)).collect();
+                s.push_str(&format!("  dns {}", dns.join(" ")));
+            }
+            s.push_str(&format!("  lease {} s\n", i.lease_s));
+        }
+        None => s.push_str("  no address yet (asking DHCP)\n"),
+    }
+    s
 }
 
 /// "64M" → 67,108,864 (K, M, G are powers of 1,024); at most 1 GiB.
@@ -121,6 +189,8 @@ pub enum Command {
     Whoami,
     Mkfile { path: String, bytes: u64 },
     Cp { sources: Vec<String>, dest: String, verify: bool },
+    Ip,
+    Ping { to: [u8; 4], count: u16 },
 }
 
 /// Every built-in, its usage and what it does.
@@ -147,6 +217,12 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("whoami", "whoami", "Shows which account this session belongs to."),
     ("mkfile", "mkfile <path> <size>", "Makes a file of that size (512, 64K, 8M, at most 1G), to try copies with."),
     ("cp", "cp [--verify] <from>... <folder>", "Copies into a folder through the copy engine, and says how fast."),
+    ("ip", "ip", "Shows each network interface: its driver, MAC, link, address, router and DNS."),
+    (
+        "ping",
+        "ping <address> [count]",
+        "Sends echo requests (3, or count up to 10), each after the last's answer, and shows each round trip.",
+    ),
 ];
 
 /// The words for `help` or `help <command>`.
@@ -225,6 +301,20 @@ pub fn parse(line: &str, dev: bool) -> Result<Option<Command>, String> {
             _ => Err(usage("restart")),
         },
         "whoami" => none(Command::Whoami),
+        "ip" => none(Command::Ip),
+        "ping" => {
+            let to = |a: &str| {
+                ipv4_of(a).ok_or(format!("ping: {a} isn't an IPv4 address (like 10.0.2.2). {}", usage("ping")))
+            };
+            match args {
+                [a] => Ok(Some(Command::Ping { to: to(a)?, count: 3 })),
+                [a, n] => match n.parse::<u16>() {
+                    Ok(c) if (1..=10).contains(&c) => Ok(Some(Command::Ping { to: to(a)?, count: c })),
+                    _ => Err(format!("ping: the count is 1 to 10. {}", usage("ping"))),
+                },
+                _ => Err(usage("ping")),
+            }
+        }
         "ls" | "cat" | "mkdir" | "rm" => {
             let path = match (name, args) {
                 ("ls", []) => "/",
@@ -452,6 +542,30 @@ pub fn run(cmd: &Command, sys: &mut impl System) -> Output {
             Ok(u) => text(format!("{u}\n")),
             Err(e) => fail(format!("whoami: {e}")),
         },
+        Command::Ip => match sys.interfaces() {
+            Ok(list) if list.is_empty() => text(String::from("No network interfaces.\n")),
+            Ok(list) => text(list.iter().map(interface_words).collect()),
+            Err(e) => fail(format!("ip: {e}")),
+        },
+        Command::Ping { to, count } => {
+            let mut s = String::new();
+            let mut answered = 0;
+            for seq in 1..=*count {
+                match sys.ping(*to, seq) {
+                    Ok(us) => {
+                        answered += 1;
+                        s.push_str(&format!(
+                            "reply from {}: seq={seq} time={:.2} ms\n",
+                            dotted(*to),
+                            us as f64 / 1000.0
+                        ));
+                    }
+                    Err(e) => s.push_str(&format!("no reply from {}: seq={seq} ({e})\n", dotted(*to))),
+                }
+            }
+            s.push_str(&format!("{count} sent, {answered} answered.\n"));
+            text(s)
+        }
     }
 }
 

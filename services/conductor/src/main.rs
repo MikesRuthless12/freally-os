@@ -14,6 +14,8 @@ mod door_accounts;
 #[cfg(feature = "flavour-e2e")]
 mod door_monitor;
 #[cfg(feature = "flavour-e2e")]
+mod door_netdev;
+#[cfg(feature = "flavour-e2e")]
 mod door_stage;
 #[cfg(feature = "flavour-e2e")]
 mod door_terminal;
