@@ -451,13 +451,6 @@
       "what": "The tab list one stop, its arrows cycling (Home, End); each row one stop, worked by its keys; Tab reaches OK and Cancel and comes round; Shift+Tab back; Escape cancels."
     },
     {
-      "id": "settings.time",
-      "task": "TASK-180A",
-      "setup": "e2e-gpt-session",
-      "spec": "e2e/os/specs/settings.rs",
-      "what": "Time and language: until the zone is set, the true time is wrong by the host's offset (QEMU's RTC keeps local time, as Windows keeps a PC's); the zone stepped to the host's (both stepper keys) and Local time chosen; Escape puts a change back; Apply saves it through conductor, and the true time is then the host's UTC and the time here its local time; kept over a restart (the kernel reads FreallyClock at boot); Restore Defaults puts UTC back."
-    },
-    {
       "id": "settings.accounts",
       "task": "TASK-104",
       "setup": "e2e-gpt-session",
@@ -569,6 +562,13 @@
       "what": "cargo xtask bench copy: a 64 MiB file by reflink and through the buffer read back (MB/s), 200 files of 4 KiB both ways (files/s), through mkfile and cp, in QEMU."
     },
     {
+      "id": "nvme.slow",
+      "task": "TASK-185",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/files.rs",
+      "what": "A disk slower than 5 s over a command is waited for, not failed: QEMU slows the NVMe disk's writes to 8 KiB a second, a 256 KiB file is written whole, and drv-nvme says which command was slow, never that one didn't complete."
+    },
+    {
       "id": "accounts.move_out",
       "task": "TASK-106",
       "setup": "e2e-gpt-session",
@@ -589,6 +589,13 @@
       "setup": "e2e-gpt-session",
       "spec": "e2e/os/specs/session.rs",
       "what": "Restart from Login: ffs unmounts cleanly, the machine restarts, mounts without ffsck, and Login is up again."
+    },
+    {
+      "id": "settings.time",
+      "task": "TASK-180A",
+      "setup": "e2e-gpt-session",
+      "spec": "e2e/os/specs/settings.rs",
+      "what": "Time and language: until the zone is set, the true time is wrong by the host's offset (QEMU's RTC keeps local time, as Windows keeps a PC's); the zone stepped to the host's (both stepper keys) and Local time chosen; Escape puts a change back; Apply saves it through conductor, and the true time is then the host's UTC and the time here its local time; kept over a restart (the kernel reads FreallyClock at boot); Restore Defaults puts UTC back."
     },
     {
       "id": "login.shutdown",

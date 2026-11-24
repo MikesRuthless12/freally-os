@@ -39,7 +39,8 @@ struct BlockStore {
 impl BlockStore {
     fn call<Req: fwire::Wire, Rep: fwire::Wire>(&mut self, ordinal: u32, req: &Req) -> Result<Rep, FsError> {
         self.disk
-            .call::<_, Rep>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(10)))
+            // Past drv-nvme's own 30 s for a command: its answer, not ours, says it failed.
+            .call::<_, Rep>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(35)))
             .map(|(r, _)| r)
             .map_err(|e| {
                 fstd::error!("ffs: the disk: {e:?}");

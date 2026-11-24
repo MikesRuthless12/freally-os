@@ -849,7 +849,8 @@ impl Stack {
         let open = self
             .sockets
             .iter()
-            .filter(|k| k.tcb.state != svc_netstack::tcp::State::Closed)
+            // Those a program holds: one it closed (FIN-WAIT, TIME-WAIT) isn't open.
+            .filter(|k| !k.closed && k.tcb.state != svc_netstack::tcp::State::Closed)
             .map(|k| nt::Open {
                 who: self.names.get(k.client).cloned().unwrap_or_else(|| String::from("?")),
                 to: k.to,

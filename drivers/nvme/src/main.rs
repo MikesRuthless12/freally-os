@@ -25,6 +25,11 @@ use fwire::proto::block as blk;
 use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
 
+/// How long an I/O command may take (Linux's `io_timeout`): a VM's disk can
+/// stall for seconds behind its host's writes (the soak and the CDP leg saw
+/// 5 s pass, TASK-185), and a read given up loses the copy in hand.
+const IO_WAIT: u64 = 30_000_000_000;
+
 fstd::program!(run);
 
 /// Entries in each queue.
@@ -164,10 +169,17 @@ impl Nvme {
         self.run_within(false, Command::identify(1, 0, page), 2_000_000_000).map(|_| ())
     }
 
-    /// Submits `cmd` on the admin queue (or the I/O queue) and polls for its
-    /// completion, up to 5 s.
+    /// Submits `cmd` on the admin queue (5 s) or the I/O queue (`IO_WAIT`)
+    /// and waits for its completion.
     fn run(&mut self, io: bool, cmd: Command) -> Result<Completion, String> {
-        self.run_within(io, cmd, 5_000_000_000)
+        let start = Instant::now();
+        let done = self.run_within(io, cmd, if io { IO_WAIT } else { 5_000_000_000 });
+        // A slow disk is said, not failed (a VM's behind its host's writes).
+        let took = start.elapsed();
+        if done.is_ok() && took > Duration::from_secs(5) {
+            fstd::warn!("drv-nvme: command {:#x} took {:.1} s", cmd.opcode, took.as_secs_f64());
+        }
+        done
     }
 
     /// As [`run`], giving up after `timeout` ns.

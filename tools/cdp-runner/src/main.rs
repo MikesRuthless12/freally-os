@@ -130,6 +130,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("files.copy.pause", files::copy_pause),
     ("files.copy.drag", files::copy_drag),
     ("bench.copy", files::bench),
+    ("nvme.slow", files::nvme_slow),
     ("accounts.move_out", accounts::move_out),
     ("accounts.move", accounts::move_in),
     ("stage.windows", stage::windows),
@@ -283,8 +284,9 @@ impl Ctx {
         }
     }
 
-    /// Every request ordinal the services have been sent so far.
-    fn note_served(&mut self) {
+    /// Every request ordinal the services have been sent so far (a spec that
+    /// restarts the machine says so first: the counts start again).
+    pub fn note_served(&mut self) {
         if let Ok(r) = self.cdp.call("Freally.ordinals", Value::Obj(Vec::new())) {
             for s in r.get("services").and_then(Value::as_array).unwrap_or_default() {
                 let name = s.get("service").and_then(Value::as_str).unwrap_or("");

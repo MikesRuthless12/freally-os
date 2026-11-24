@@ -213,7 +213,8 @@ pub(crate) fn expect(ctx: &Ctx, line: &str, want: &[&str]) -> Result<String, Str
 /// e2e image, `theme` and `scale` reach stage (TASK-061, FR-033).
 pub fn builtins(ctx: &mut Ctx) -> Result<(), String> {
     open(ctx)?;
-    expect(ctx, "help", &["Commands", "log [service] [-f]", "theme dark|light"])?;
+    // The list outgrows the screen: its last commands are on it.
+    expect(ctx, "help", &["ping <address> [count]", "nslookup <name>", "fetch [--root <file>] <url>"])?;
     expect(ctx, "version", &[VERSION_LINE.as_str()])?;
     expect(ctx, "ps", &["SERVICE", "STATE", "stage", "Running", "terminal"])?;
     expect(ctx, "boot", &["B0", "S4", "B0 to S4:"])?;

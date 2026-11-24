@@ -73,11 +73,11 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log_count("desktop: started monitor", started + 1)?;
     until_q(ctx, &format!("{MON} TAB"))?;
     until_attr(ctx, MON, "data-focused", "true")?;
-    // Tab: the first control; seven more (the other four tabs, Service,
+    // Tab: the first control; eight more (the other five tabs, Service,
     // State): Sort by Memory; Enter sorts.
     press(ctx, "Tab")?;
     focused(ctx, "tab-processes")?;
-    for _ in 0..7 {
+    for _ in 0..8 {
         press(ctx, "Tab")?;
     }
     focused(ctx, "sort-memory")?;
@@ -88,17 +88,19 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     focused(ctx, "sort-state")?;
     press(ctx, "Space")?;
     monitor_says(ctx, |l| l.starts_with("sort State"))?;
-    // Three back (Service, Devices): the Log tab; Enter shows it; Tab to
-    // the chips, which move the filter on.
-    for _ in 0..3 {
+    // Four back (Service, Network, Devices): the Log tab; Enter shows it;
+    // Tab to the chips, which move the filter on.
+    for _ in 0..4 {
         with(ctx, "ShiftLeft", "Tab")?;
     }
     focused(ctx, "tab-log")?;
     press(ctx, "Enter")?;
     monitor_says(ctx, |l| l == "tab Log")?;
-    // Past the Devices tab to the chips.
+    // Past the Devices and Network tabs to the chips.
     press(ctx, "Tab")?;
     focused(ctx, "tab-devices")?;
+    press(ctx, "Tab")?;
+    focused(ctx, "tab-network")?;
     press(ctx, "Tab")?;
     focused(ctx, "chip-service")?;
     press(ctx, "Enter")?;

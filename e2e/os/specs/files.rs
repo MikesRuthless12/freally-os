@@ -61,6 +61,36 @@ fn open_files(ctx: &mut Ctx) -> Result<(), String> {
     until_attr(ctx, &sel("files-path"), "aria-valuenow", "/home/mike")
 }
 
+/// `@nvme.slow` (TASK-185): a disk that takes longer than 5 s over a command
+/// (a VM behind its host's writes) is waited for, not failed: QEMU slows the
+/// NVMe disk's writes to 8 KiB a second, a 256 KiB file is written and read
+/// back whole, and drv-nvme says which command was slow, never that it
+/// didn't complete. The disk's speed comes back after.
+pub fn nvme_slow(ctx: &mut Ctx) -> Result<(), String> {
+    use fjson::Value;
+    crate::settings::signed_in(ctx)?;
+    let throttle = |ctx: &mut Ctx, bps: f64| {
+        ctx.cdp
+            .call("Freally.qemuThrottle", Value::obj([("writeBps", Value::Num(bps))]))
+            .map(|_| ())
+            .map_err(|e| format!("Freally.qemuThrottle: {e}"))
+    };
+    let failed = ctx.log_count("never completed");
+    let slow = ctx.log_count("drv-nvme: command 0x1 took");
+    throttle(ctx, 8192.0)?;
+    let made = made(ctx, &["mkfile /home/mike/slow.bin 256K"]);
+    throttle(ctx, 0.0)?;
+    made?;
+    if ctx.log_count("never completed") > failed {
+        return Err("drv-nvme gave up on a slow command".into());
+    }
+    if ctx.log_count("drv-nvme: command 0x1 took") == slow {
+        return Err("no write took over 5 s: the disk wasn't slowed".into());
+    }
+    crate::terminal::once(ctx, "ls /home/mike", &["slow.bin"])?;
+    crate::terminal::once(ctx, "rm /home/mike/slow.bin", &[])
+}
+
 /// The shell makes what the specs work on (each only once). A big
 /// `mkfile` keeps the Terminal busy past the door's answer: it's waited out.
 fn made(ctx: &mut Ctx, lines: &[&str]) -> Result<(), String> {

@@ -60,6 +60,22 @@ pub fn call(
         "Target.getTargets" => Ok(Value::obj([("targetInfos", Value::Arr(vec![desktop_target()]))])),
         // The harness's view of QEMU's PCI bus (QMP query-pci), to check devmgr's.
         "Freally.qemuPci" => qmp.execute("query-pci", None).map_err(|e| (-32000, e)),
+        // The NVMe disk slowed (QMP block_set_io_throttle on `disk0`): writes
+        // at `writeBps` bytes a second, 0 for none (TASK-185, @nvme.slow).
+        "Freally.qemuThrottle" => {
+            let bps = params.get("writeBps").and_then(Value::as_f64).unwrap_or(0.0).max(0.0);
+            let n = |v: f64| Value::Num(v);
+            let args = Value::obj([
+                ("device", "disk0".into()),
+                ("bps", n(0.0)),
+                ("bps_rd", n(0.0)),
+                ("bps_wr", n(bps)),
+                ("iops", n(0.0)),
+                ("iops_rd", n(0.0)),
+                ("iops_wr", n(0.0)),
+            ]);
+            qmp.execute("block_set_io_throttle", Some(args)).map_err(|e| (-32000, e))
+        }
         // Every place guest RAM holds a byte pattern (TASK-101: no key after logout).
         "Freally.scanMemory" => scan_memory(qmp, shot_dir, params).map_err(|e| (-32000, e)),
         "Freally.quit" => {

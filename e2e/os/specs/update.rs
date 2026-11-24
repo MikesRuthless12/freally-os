@@ -168,6 +168,8 @@ fn restarted_into(ctx: &mut Ctx, next: &str) -> Result<(), String> {
     record_has(ctx, &format!("slot B Trial 3 {next}"))?;
     record_has(ctx, "active B")?;
     let before = mounts(ctx);
+    // What the services were asked before the restart counts for the inventory.
+    ctx.note_served();
     restart_until(ctx, "freally-boot: booting slot B (trial, 2 tries left)")?;
     ctx.expect_log(&format!("conductor: started from slot B (Trial, {next})"))?;
     mounted(ctx, before + 1)?;
