@@ -20,6 +20,7 @@ pub struct AesGcm {
     aes: Aes,
     h: u128,
     /// AES-NI and PCLMULQDQ do the work.
+    #[cfg_attr(not(all(target_arch = "x86_64", feature = "aesni")), allow(dead_code))]
     ni: bool,
 }
 
@@ -53,7 +54,7 @@ impl AesGcm {
 
     /// The same key on the software path, whatever the CPU has (tests only:
     /// the two paths checked against each other).
-    #[cfg(test)]
+    #[cfg(all(test, target_arch = "x86_64", feature = "aesni"))]
     fn software(key: &[u8]) -> Option<AesGcm> {
         AesGcm::new(key).map(|g| AesGcm { ni: false, ..g })
     }
