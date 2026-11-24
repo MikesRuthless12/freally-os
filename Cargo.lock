@@ -381,6 +381,13 @@ name = "fwire"
 version = "0.8.0"
 
 [[package]]
+name = "fx509"
+version = "0.8.0"
+dependencies = [
+ "fcrypto",
+]
+
+[[package]]
 name = "svc-accounts"
 version = "0.8.0"
 dependencies = [

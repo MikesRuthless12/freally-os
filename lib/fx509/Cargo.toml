@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fx509"
+description = "fx509: DER and X.509 certificates for TLS 1.3: read, checked, chained to a root compiled in."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcrypto.workspace = true
+
+[lints]
+workspace = true
