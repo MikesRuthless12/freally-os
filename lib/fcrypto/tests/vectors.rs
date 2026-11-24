@@ -1136,3 +1136,44 @@ fn aes_gcm_cases() {
     }
     assert!(AesGcm::new(&[0; 24]).is_none());
 }
+
+/// RSA verification against 24 signatures from an independent RSA
+/// (`gen_rsa.py`: 2,048 to 4,096-bit keys, SHA-256/384/512, PKCS#1 v1.5 and
+/// PSS), each refused once anything is changed: the digest, the signature, the
+/// scheme, the hash.
+#[test]
+fn rsa_signatures_verify_and_tampering_is_refused() {
+    use fcrypto::rsa::{Hash, PublicKey};
+    for line in include_str!("rsa_cases.txt").lines() {
+        let f: Vec<&str> = line.split(' ').collect();
+        let key = PublicKey::new(&unhex(f[0]), &unhex(f[1])).expect("a 2,048-4,096-bit key");
+        let hash = match f[2] {
+            "256" => Hash::Sha256,
+            "384" => Hash::Sha384,
+            _ => Hash::Sha512,
+        };
+        let (digest, sig) = (unhex(f[4]), unhex(f[5]));
+        let verify = |d: &[u8], s: &[u8], pss: bool| {
+            if pss { key.verify_pss(hash, d, s) } else { key.verify_pkcs1(hash, d, s) }
+        };
+        let pss = f[3] == "pss";
+        let shown = &line[line.len() - 16..];
+        assert!(verify(&digest, &sig, pss), "{} {} {shown}", f[2], f[3]);
+        assert!(!verify(&digest, &sig, !pss), "the other scheme refuses it");
+        let mut d2 = digest.clone();
+        d2[0] ^= 1;
+        assert!(!verify(&d2, &sig, pss), "another digest");
+        let mut s2 = sig.clone();
+        let mid = s2.len() / 2;
+        s2[mid] ^= 1;
+        assert!(!verify(&digest, &s2, pss), "a changed signature");
+        assert!(!verify(&digest, &sig[1..], pss), "a short signature");
+        let other = if hash == Hash::Sha256 { Hash::Sha384 } else { Hash::Sha256 };
+        let d3 = vec![0u8; other.size()];
+        let pk = if pss { key.verify_pss(other, &d3, &sig) } else { key.verify_pkcs1(other, &d3, &sig) };
+        assert!(!pk, "another hash");
+    }
+    // Keys outside 2,048-4,096 bits, or an even exponent: refused.
+    assert!(PublicKey::new(&[0xFF; 128], &[1, 0, 1]).is_none(), "1,024 bits");
+    assert!(PublicKey::new(&[0xFF; 256], &[1, 0, 2]).is_none(), "an even exponent");
+}
