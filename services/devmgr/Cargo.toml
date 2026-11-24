@@ -17,6 +17,7 @@ flavour-dev = []
 flavour-e2e = []
 
 [dependencies]
+drv-e1000.workspace = true
 drv-virtio-net.workspace = true
 facpi.workspace = true
 fcore-abi.workspace = true

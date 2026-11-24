@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "drv-e1000"
+description = "drv-e1000: Intel 82540EM, 82545EM and 82574L network cards in legacy descriptor mode, serving the netdev protocol."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "drv-e1000"
+path = "src/main.rs"
+
+[features]
+flavour-release = []
+flavour-dev = []
+flavour-e2e = []
+
+[dependencies]
+fcore-abi.workspace = true
+fnetdev.workspace = true
+fstd.workspace = true
+fwire.workspace = true
+
+[lints]
+workspace = true

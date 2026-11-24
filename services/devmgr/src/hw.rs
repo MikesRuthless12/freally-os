@@ -59,6 +59,9 @@ pub struct Hardware {
     nvme: Option<Nvme>,
     /// The first virtio network device (TASK-172).
     net: Option<VirtioNet>,
+    /// The first e1000-family card: its PCI address, configuration page and
+    /// BAR 0 (TASK-173).
+    e1000: Option<(String, u64, u64)>,
     framebuffer: (u64, u64, u32, u32, u32, u32),
     edid_len: u64,
     madt: Vec<u8>,
@@ -98,8 +101,10 @@ impl Hardware {
         let mut bars = Vec::new();
         let mut storage = Vec::new();
         let mut nets = Vec::new();
+        let mut e1000s = Vec::new();
         for e in get(&mut mem, b"MCFG").map(|t| facpi::mcfg(&t)).unwrap_or_default() {
-            let mut found = Found { pci: &mut pci, bars: &mut bars, storage: &mut storage, nets: &mut nets };
+            let mut found =
+                Found { pci: &mut pci, bars: &mut bars, storage: &mut storage, nets: &mut nets, e1000s: &mut e1000s };
             scan(root.raw(), &e, e.start_bus, &mut found, 0);
         }
         let fb = &bi.framebuffer;
@@ -115,6 +120,7 @@ impl Hardware {
             display,
             nvme: storage.into_iter().next(),
             net: nets.into_iter().next(),
+            e1000: e1000s.into_iter().next(),
             framebuffer: (fb.base, fb.size, fb.width, fb.height, fb.stride_px, fb.format as u32),
             edid_len: bi.edid.len,
             madt,
@@ -229,6 +235,15 @@ impl Hardware {
                 }
                 devices.push(v.at);
             }
+            // The registers (BAR 0's 128 KiB) and the configuration page.
+            "drv-e1000" => {
+                let (at, config, bar0) = self.e1000.clone().ok_or(FErr::NotFound)?;
+                add("registers", self.carve(resource::MMIO, bar0, drv_e1000::reg::SIZE)?, &mut handles);
+                add("config", self.carve(resource::MMIO, config, 4096)?, &mut handles);
+                values.push((String::from("bar0"), bar0));
+                values.push((String::from("config"), config));
+                devices.push(at);
+            }
             "drv-uart16550" => {
                 for (name, port, irq) in [("com2", 0x2F8u64, 3u8), ("com3", 0x3E8, 4)] {
                     add(name, self.carve(resource::IO_PORT, port, 8)?, &mut handles);
@@ -286,6 +301,7 @@ struct Found<'a> {
     bars: &'a mut Vec<(String, u64)>,
     storage: &'a mut Vec<Nvme>,
     nets: &'a mut Vec<VirtioNet>,
+    e1000s: &'a mut Vec<(String, u64, u64)>,
 }
 
 /// The most one granted span may be.
@@ -474,6 +490,13 @@ fn scan(root: u32, e: &facpi::Ecam, bus: u8, found: &mut Found, depth: u32) {
                             pci_address(&p)
                         );
                     }
+                }
+                if drv_e1000::is_e1000(p.vendor, p.id)
+                    && header & 0x7F == 0
+                    && let Some(&bar0) = memory_bars(va).first()
+                    && bar0 != 0
+                {
+                    found.e1000s.push((pci_address(&p), phys, bar0));
                 }
                 found.pci.push(p);
                 if header & 0x7F == 1 {

@@ -22,7 +22,9 @@
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
     "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" },
-    "e2e-net": { "flavour": "e2e", "nic": "virtio-net-pci" }
+    "e2e-net": { "flavour": "e2e", "nic": "virtio-net-pci" },
+    "e2e-net-e1000": { "flavour": "e2e", "nic": "e1000" },
+    "e2e-net-e1000e": { "flavour": "e2e", "nic": "e1000e" }
   },
   "features": [
     {
@@ -647,6 +649,20 @@
       "setup": "e2e-net",
       "spec": "e2e/os/specs/net.rs",
       "what": "The shell's ping 10.0.2.2: three echo requests answered, the gateway found by ARP first; an address no one has: no reply, said in time; a mistyped address refused with the usage."
+    },
+    {
+      "id": "net.e1000",
+      "task": "TASK-173",
+      "setup": "e2e-net-e1000",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "drv-e1000 on QEMU's e1000 (an 82540EM, VirtualBox's default card): QEMU's MAC, the link up, the gateway's ARP answered with the driver's counts moving, and netstack's address by DHCP over it."
+    },
+    {
+      "id": "net.e1000e",
+      "task": "TASK-173",
+      "setup": "e2e-net-e1000e",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "drv-e1000 on QEMU's e1000e (an 82574L): the same, MAC, link, ARP and DHCP."
     }
   ]
 }

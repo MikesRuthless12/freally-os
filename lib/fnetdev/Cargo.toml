@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "fnetdev"
+description = "fnetdev: the netdev protocol served one way for every network driver; a driver brings its hardware."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fcore-abi.workspace = true
+fstd.workspace = true
+fwire.workspace = true
+
+[lints]
+workspace = true

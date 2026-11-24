@@ -104,6 +104,7 @@ pub const PROGRAMS: &[UserProgram] = &[
         path: "/system/drivers/virtio-net",
         kind: fsi::Kind::Driver,
     },
+    UserProgram { package: "drv-e1000", bin: "drv-e1000", path: "/system/drivers/e1000", kind: fsi::Kind::Driver },
     UserProgram {
         package: "svc-netstack",
         bin: "netstack",

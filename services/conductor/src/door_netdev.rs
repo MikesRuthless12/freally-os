@@ -66,7 +66,8 @@ fn arp_reply(frame: &[u8], me: [u8; 6], target: [u8; 4]) -> Option<[u8; 6]> {
 impl NetDoor {
     pub fn run(&mut self, c: &mut Conductor, arg: &str) -> Vec<String> {
         if self.client.is_none() {
-            self.client = c.open_connection("drv-virtio-net", "conductor").map(Client::new);
+            self.client =
+                ["drv-virtio-net", "drv-e1000"].iter().find_map(|d| c.open_connection(d, "conductor")).map(Client::new);
             self.events = None;
         }
         let r = match arg.split_once(' ').unwrap_or((arg, "")) {

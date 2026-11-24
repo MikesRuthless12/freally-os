@@ -21,6 +21,7 @@ flavour-e2e = []
 
 [dependencies]
 fcore-abi.workspace = true
+fnetdev.workspace = true
 fstd.workspace = true
 fwire.workspace = true
 

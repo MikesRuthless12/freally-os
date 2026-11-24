@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+name        = drv-e1000
+binary      = /system/drivers/e1000
+description = Sends and receives an Intel e1000-family card's network frames, for netstack alone.
+start       = boot
+after       = logger, devmgr
+restart     = on-failure
+class       = background
+grants      = dma
+# The network joins the release flavour at Phase 8's closeout, with the Network page (TASK-183).
+flavours    = dev, e2e

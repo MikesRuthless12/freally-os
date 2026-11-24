@@ -3,7 +3,7 @@ name        = netstack
 binary      = /system/services/netstack
 description = Speaks IPv4 over the network device: an address by DHCP, ARP and ping, for the clients the Network page lists.
 start       = boot
-after       = logger, drv-virtio-net
+after       = logger, drv-virtio-net, drv-e1000
 restart     = on-failure
 class       = background
 # The network joins the release flavour at Phase 8's closeout, with the Network page (TASK-183).

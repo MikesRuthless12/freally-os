@@ -257,8 +257,11 @@ impl Stack {
 }
 
 fn open() -> Result<(Stack, Channel), String> {
-    let ch = fstd::service::connect_within("drv-virtio-net", Duration::from_secs(5))
-        .map_err(|_| String::from("no network device"))?;
+    // Whichever driver found its card (one without a card ends at once).
+    let ch = ["drv-virtio-net", "drv-e1000"]
+        .iter()
+        .find_map(|d| fstd::service::connect_within(d, Duration::from_secs(5)).ok())
+        .ok_or_else(|| String::from("no network device"))?;
     let mut dev = Client::new(ch);
     let deadline = || Instant::after(Duration::from_secs(2));
     let (info, _) =

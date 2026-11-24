@@ -70,6 +70,41 @@ fn counts(ctx: &Ctx) -> Result<(u64, u64), String> {
     Ok((field("rx=")?, field("tx=")?))
 }
 
+/// The driver `name` up with QEMU's MAC and the link; the door's `netdev
+/// info` agreeing; the gateway's ARP answered, the counts moving.
+fn driver_up(ctx: &mut Ctx, name: &str) -> Result<(), String> {
+    ctx.expect_log(&format!("{name}: up, MAC 52:54:00:12:34:56, link up"))?;
+    let info = ctx.door("netdev info")?;
+    let want = format!("info {name} mac=52:54:00:12:34:56 mtu=1500 link=up");
+    if info.first() != Some(&want) {
+        return Err(format!("netdev info said {info:?}, not {want:?}"));
+    }
+    let (rx0, tx0) = counts(ctx)?;
+    let reply = ctx.door("netdev arp 10.0.2.2")?;
+    if !reply.iter().any(|l| l.starts_with("reply 10.0.2.2 is-at ")) {
+        return Err(format!("no answer from the gateway: {reply:?}"));
+    }
+    let (rx1, tx1) = counts(ctx)?;
+    if tx1 <= tx0 || rx1 <= rx0 {
+        return Err(format!("the counts didn't move: rx {rx0} → {rx1}, tx {tx0} → {tx1}"));
+    }
+    Ok(())
+}
+
+/// `@net.e1000`: drv-e1000 on QEMU's `e1000` (an 82540EM, as VirtualBox's
+/// default card): QEMU's MAC, the link up, the gateway's ARP answered, and
+/// netstack's address by DHCP over it (TASK-173).
+pub fn e1000(ctx: &mut Ctx) -> Result<(), String> {
+    driver_up(ctx, "drv-e1000")?;
+    ctx.expect_log("netstack: up on drv-e1000 (eth0), asking DHCP")?;
+    ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")
+}
+
+/// `@net.e1000e`: the same on QEMU's `e1000e` (an 82574L) (TASK-173).
+pub fn e1000e(ctx: &mut Ctx) -> Result<(), String> {
+    e1000(ctx)
+}
+
 /// `@net.virtio`: drv-virtio-net comes up on a virtio-net-pci card with
 /// QEMU's MAC (52:54:00:12:34:56), the link up; an ARP request for the
 /// gateway (10.0.2.2) goes out and its answer comes back (the frames read

@@ -1547,6 +1547,7 @@ pub mod inventory {
         ("cdpd", &[(cd::CALL, "call")]),
         ("drv-nvme", &[(blk::INFO, "info"), (blk::READ, "read"), (blk::WRITE, "write"), (blk::FLUSH, "flush")]),
         ("netstack", &[(nt::INTERFACES, "interfaces"), (nt::PING, "ping")]),
+        ("drv-e1000", &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")]),
         (
             "drv-virtio-net",
             &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")],

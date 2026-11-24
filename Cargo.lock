@@ -138,6 +138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-e1000"
+version = "0.8.0"
+dependencies = [
+ "fcore-abi",
+ "fnetdev",
+ "fstd",
+ "fwire",
+]
+
+[[package]]
 name = "drv-gop-fb"
 version = "0.8.0"
 dependencies = [
@@ -180,6 +190,7 @@ name = "drv-virtio-net"
 version = "0.8.0"
 dependencies = [
  "fcore-abi",
+ "fnetdev",
  "fstd",
  "fwire",
 ]
@@ -265,6 +276,15 @@ version = "0.8.0"
 [[package]]
 name = "fnet"
 version = "0.8.0"
+
+[[package]]
+name = "fnetdev"
+version = "0.8.0"
+dependencies = [
+ "fcore-abi",
+ "fstd",
+ "fwire",
+]
 
 [[package]]
 name = "frandom"
@@ -420,6 +440,7 @@ dependencies = [
 name = "svc-devmgr"
 version = "0.8.0"
 dependencies = [
+ "drv-e1000",
  "drv-virtio-net",
  "facpi",
  "fcore-abi",

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! drv-virtio-net (TASK-172): the first virtio network device devmgr finds,
 //! driven with one receive and one transmit queue. Completions interrupt on
-//! one MSI-X vector (polled every 10 ms without one). It serves the netdev
-//! protocol (PRD § 4) to netstack alone, and to conductor's test door in e2e
-//! images. With no device it says so and ends.
+//! one MSI-X vector (polled without one). It serves the netdev protocol
+//! (PRD § 4) through `fnetdev`, as every network driver does. With no device
+//! it says so and ends.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -11,20 +11,16 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use drv_virtio_net::{self as vn, Mem, Queue, common, netcfg, status};
-use fcore_abi::{FErr, cache, perm, signal, syscall as nr, well_known};
+use fcore_abi::{FErr, cache, perm, syscall as nr, well_known};
 use fstd::handle::Handle;
-use fstd::ipc::{Channel, Client};
+use fstd::ipc::Client;
 use fstd::time::{Duration, Instant};
-use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
-use fwire::proto::netdev as nd;
 
 fstd::program!(run);
 
 /// Each buffer: a header and the largest frame, rounded up.
 const BUF: u64 = 2048;
-/// Frames a subscriber may leave unread before the rest are dropped.
-const BACKLOG: usize = 256;
 
 /// Memory the device reaches by DMA: one physical run, mapped here.
 struct Dma {
@@ -102,18 +98,11 @@ struct Net {
     /// Transmit descriptors not with the device.
     tx_free: Vec<u16>,
     mac: [u8; 6],
-    link: bool,
     status_known: bool,
     irq: Option<Handle>,
-    stats: nd::Stats,
-    /// Who subscribed (at most [`SUBSCRIBERS`]), and the frames received
-    /// for them not yet sent.
-    subs: Vec<Channel>,
-    waiting: Vec<Vec<u8>>,
+    /// Frames posted since the transmit doorbell last rang.
+    tx_posted: bool,
 }
-
-/// The most subscribers at once: netstack, and the test door beside it.
-const SUBSCRIBERS: usize = 4;
 
 fn value(r: &d::Resources, name: &str) -> u64 {
     r.values.iter().find(|(k, _)| k == name).map_or(0, |(_, v)| *v)
@@ -319,14 +308,10 @@ impl Net {
             tx,
             tx_free,
             mac,
-            link: true,
             status_known: agreed & vn::feature::NET_STATUS != 0,
             irq: irq.map(|(h, _)| h),
-            stats: nd::Stats { rx_frames: 0, rx_bytes: 0, rx_dropped: 0, tx_frames: 0, tx_bytes: 0, tx_dropped: 0 },
-            subs: Vec::new(),
-            waiting: Vec::new(),
+            tx_posted: false,
         };
-        n.link = n.read_link();
         for id in 0..n.rx.q.size {
             let (_, phys) = n.rx.buf(id);
             n.rx.q.post(&mut Page(n.rx.page.va), id, phys, BUF as u32, true);
@@ -366,22 +351,29 @@ impl Net {
         // SAFETY: inside the mapped device structure.
         !self.status_known || unsafe { fstd::mmio::read16(self.device + netcfg::STATUS) } & netcfg::LINK_UP != 0
     }
+}
 
-    /// Every frame the device has received, kept for the subscriber (or
-    /// counted as dropped), and each buffer handed back.
-    fn receive(&mut self) {
+impl fnetdev::Device for Net {
+    fn name(&self) -> &'static str {
+        "drv-virtio-net"
+    }
+
+    fn mac(&self) -> [u8; 6] {
+        self.mac
+    }
+
+    fn link(&mut self) -> bool {
+        self.read_link()
+    }
+
+    fn receive(&mut self, each: &mut dyn FnMut(&[u8])) {
         let mut back = false;
         while let Some((id, len)) = self.rx.q.take(&Page(self.rx.page.va)) {
             let (va, phys) = self.rx.buf(id);
             // SAFETY: the buffer the device just finished with.
             let buf = unsafe { core::slice::from_raw_parts(va as *const u8, BUF as usize) };
-            match vn::frame(buf, len) {
-                Some(f) if !self.subs.is_empty() && self.waiting.len() < BACKLOG => {
-                    self.stats.rx_frames += 1;
-                    self.stats.rx_bytes += f.len() as u64;
-                    self.waiting.push(f.to_vec());
-                }
-                _ => self.stats.rx_dropped += 1,
+            if let Some(f) = vn::frame(buf, len) {
+                each(f);
             }
             self.rx.q.post(&mut Page(self.rx.page.va), id, phys, BUF as u32, true);
             back = true;
@@ -392,84 +384,35 @@ impl Net {
         }
     }
 
-    /// The transmit buffers the device is done with, free again.
-    fn sent(&mut self) {
+    fn reclaim(&mut self) {
         while let Some((id, _)) = self.tx.q.take(&Page(self.tx.page.va)) {
             self.tx_free.push(id);
         }
     }
 
-    /// Gives `frames` to the device in order, while it has room; how many.
-    fn send(&mut self, frames: &[Vec<u8>]) -> Result<u32, (FErr, &'static str)> {
-        if frames.iter().any(|f| f.len() < nd::FRAME_MIN || f.len() > nd::FRAME_MAX) {
-            return Err((FErr::InvalidArgs, "a frame is 14 to 1514 bytes"));
+    fn send(&mut self, f: &[u8]) -> bool {
+        let Some(id) = self.tx_free.pop() else { return false };
+        let (va, phys) = self.tx.buf(id);
+        // SAFETY: a transmit buffer the device doesn't hold: a zero header, then the frame.
+        unsafe {
+            core::ptr::write_bytes(va as *mut u8, 0, vn::NET_HDR);
+            core::ptr::copy_nonoverlapping(f.as_ptr(), (va + vn::NET_HDR as u64) as *mut u8, f.len());
         }
-        self.sent();
-        let mut n = 0u32;
-        for f in frames {
-            let Some(id) = self.tx_free.pop() else {
-                self.stats.tx_dropped += (frames.len() - n as usize) as u64;
-                break;
-            };
-            let (va, phys) = self.tx.buf(id);
-            // SAFETY: a transmit buffer the device doesn't hold: a zero header, then the frame.
-            unsafe {
-                core::ptr::write_bytes(va as *mut u8, 0, vn::NET_HDR);
-                core::ptr::copy_nonoverlapping(f.as_ptr(), (va + vn::NET_HDR as u64) as *mut u8, f.len());
-            }
-            self.tx.q.post(&mut Page(self.tx.page.va), id, phys, (vn::NET_HDR + f.len()) as u32, false);
-            self.stats.tx_frames += 1;
-            self.stats.tx_bytes += f.len() as u64;
-            n += 1;
-        }
-        if n > 0 {
+        self.tx.q.post(&mut Page(self.tx.page.va), id, phys, (vn::NET_HDR + f.len()) as u32, false);
+        self.tx_posted = true;
+        true
+    }
+
+    fn flush(&mut self) {
+        if core::mem::take(&mut self.tx_posted) {
             self.tx.q.publish(&mut Page(self.tx.page.va));
             self.tx.ring_doorbell();
         }
-        Ok(n)
     }
 
-    /// What's waiting goes to every subscriber, a batch a message; a link
-    /// that changed is said. A subscriber gone is forgotten.
-    fn deliver(&mut self) {
-        let link = self.read_link();
-        let changed = link != self.link;
-        self.link = link;
-        if changed && let Ok(m) = fwire::event(nd::EV_LINK, &nd::Link { up: link }) {
-            self.subs.retain(|s| !matches!(s.send(&m, Vec::new()), Err(FErr::PeerClosed)));
-        }
-        while !self.waiting.is_empty() {
-            let (mut count, mut bytes) = (0, 0);
-            for f in &self.waiting {
-                if count == nd::BATCH_FRAMES || bytes + f.len() > nd::BATCH_BYTES {
-                    break;
-                }
-                count += 1;
-                bytes += f.len() + 2;
-            }
-            let batch = nd::Frames { frames: self.waiting.drain(..count).collect() };
-            let Ok(m) = fwire::event(nd::EV_FRAMES, &batch) else { break };
-            let dropped = &mut self.stats.rx_dropped;
-            self.subs.retain(|s| match s.send(&m, Vec::new()) {
-                Ok(()) => true,
-                Err(FErr::PeerClosed) => false,
-                // A subscriber that isn't reading: these are dropped, never waited for.
-                Err(_) => {
-                    *dropped += batch.frames.len() as u64;
-                    true
-                }
-            });
-        }
+    fn irq(&self) -> Option<u32> {
+        self.irq.as_ref().map(Handle::raw)
     }
-
-    fn info(&self) -> nd::Info {
-        nd::Info { driver: String::from("drv-virtio-net"), mac: self.mac, mtu: 1500, link: self.link }
-    }
-}
-
-/// Who may use the device: netstack; and conductor's test door in e2e images.
-fn allowed(client: &str) -> bool {
-    client == "netstack" || (cfg!(feature = "flavour-e2e") && matches!(client, "conductor" | "cdpd"))
 }
 
 fn run(_bootstrap: u32) -> i64 {
@@ -477,7 +420,7 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     let _ = fstd::log::connect();
-    let mut net = match Net::open() {
+    let net = match Net::open() {
         Ok(n) => n,
         Err(e) if e == NO_DEVICE => {
             fstd::info!("drv-virtio-net: no virtio network device: nothing to do");
@@ -497,99 +440,10 @@ fn run(_bootstrap: u32) -> i64 {
         m[3],
         m[4],
         m[5],
-        if net.link { "up" } else { "down" },
+        if net.read_link() { "up" } else { "down" },
         if net.irq.is_some() { "MSI-X" } else { "polled" },
         net.rx.q.size,
         net.tx.q.size
     );
-    let Ok((listen, give)) = Channel::pair() else { return 1 };
-    if fstd::service::register(give).is_err() {
-        return 1;
-    }
-    let mut clients: Vec<Channel> = Vec::new();
-    loop {
-        let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
-        let irq_at = net.irq.as_ref().map(|h| {
-            items.push([h.raw(), signal::SIGNALED]);
-            items.len() - 1
-        });
-        let first = items.len();
-        items.extend(clients.iter().map(|ch| [ch.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
-        // With an interrupt, a second's backstop; polled, 10 ms.
-        let wait = if net.irq.is_some() { 1000 } else { 10 };
-        match fstd::sys::wait_many(&items, Instant::after(Duration::from_millis(wait))) {
-            Ok(0) => {
-                while let Ok(m) = listen.try_recv() {
-                    if let Ok((h, p)) = fwire::parse(&m.bytes)
-                        && h.ordinal == c::INCOMING
-                        && let Ok(inc) = fwire::from_payload::<c::Incoming>(p)
-                        && let Some(ch) = m.handles.into_iter().next()
-                    {
-                        if allowed(&inc.client) {
-                            clients.push(Channel(ch));
-                        } else {
-                            fstd::warn!("drv-virtio-net: {} may not use the network device", inc.client);
-                        }
-                    }
-                }
-            }
-            Ok(k) if Some(k) == irq_at => {}
-            Ok(k) if k >= first => {
-                if !serve(&mut net, &clients[k - first]) {
-                    clients.remove(k - first);
-                }
-            }
-            Ok(_) | Err(FErr::TimedOut) => {}
-            Err(_) => fstd::time::sleep(Duration::from_millis(10)),
-        }
-        if let Some(h) = &net.irq {
-            let _ = fstd::sys::call1(nr::INTERRUPT_ACK, [h.raw() as u64, 0, 0, 0, 0, 0]);
-        }
-        net.receive();
-        net.sent();
-        net.deliver();
-    }
-}
-
-/// Answers every request waiting from one client; false once it's gone.
-fn serve(net: &mut Net, ch: &Channel) -> bool {
-    loop {
-        let m = match ch.try_recv() {
-            Ok(m) => m,
-            Err(FErr::ShouldWait) => return true,
-            Err(_) => return false,
-        };
-        if fstd::inventory::seen(ch, &m.bytes) {
-            continue;
-        }
-        let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
-        let (reply, handles) = match h.ordinal {
-            nd::INFO => (fwire::reply(h.txid, h.ordinal, &net.info()), Vec::new()),
-            nd::SUBSCRIBE if net.subs.len() >= SUBSCRIBERS => {
-                (fwire::error_reply(h.txid, h.ordinal, FErr::NoMemory as i32, "four subscribers already"), Vec::new())
-            }
-            nd::SUBSCRIBE => match Channel::pair() {
-                Ok((mine, theirs)) => {
-                    net.subs.push(mine);
-                    (
-                        fwire::reply(h.txid, h.ordinal, &nd::Subscribed { events: fwire::HandleRef(0) }),
-                        alloc::vec![theirs.0],
-                    )
-                }
-                Err(_) => (fwire::error_reply(h.txid, h.ordinal, FErr::NoMemory as i32, "no channel"), Vec::new()),
-            },
-            nd::SEND => match fwire::from_payload::<nd::Frames>(p).map_err(|_| (FErr::InvalidArgs, "unreadable")) {
-                Ok(f) => match net.send(&f.frames) {
-                    Ok(sent) => (fwire::reply(h.txid, h.ordinal, &nd::Sent { sent }), Vec::new()),
-                    Err((e, why)) => (fwire::error_reply(h.txid, h.ordinal, e as i32, why), Vec::new()),
-                },
-                Err((e, why)) => (fwire::error_reply(h.txid, h.ordinal, e as i32, why), Vec::new()),
-            },
-            nd::STATS => (fwire::reply(h.txid, h.ordinal, &net.stats), Vec::new()),
-            _ => (fwire::error_reply(h.txid, h.ordinal, FErr::NotSupported as i32, "not served"), Vec::new()),
-        };
-        if let Ok(m) = reply {
-            let _ = ch.send(&m, handles);
-        }
-    }
+    fnetdev::serve(net)
 }
