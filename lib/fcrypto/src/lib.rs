@@ -18,6 +18,8 @@
 
 pub mod aead;
 pub mod aes;
+#[cfg(all(target_arch = "x86_64", feature = "aesni"))]
+pub mod aes_ni;
 pub mod argon2;
 pub mod bignum;
 pub mod blake2b;

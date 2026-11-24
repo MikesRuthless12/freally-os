@@ -14,3 +14,6 @@ workspace = true
 # SHA-256 with the x86 SHA extensions when the CPU has them (TASK-076): the
 # bootloader turns it on; the kernel's soft-float build never does.
 shani = []
+# AES-GCM with AES-NI and PCLMULQDQ when the CPU has them (TASK-178): ftls
+# turns it on (user space and the host); never the soft-float builds.
+aesni = []

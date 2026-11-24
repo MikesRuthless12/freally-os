@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fcrypto.workspace = true
+fcrypto = { workspace = true, features = ["aesni"] }
 fx509 = { path = "../fx509" }
 
 [lints]

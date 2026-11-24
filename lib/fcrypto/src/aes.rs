@@ -5,8 +5,9 @@
 //! **Constant time, no tables:** the S-box is computed, not looked up (a
 //! table indexed by key or data leaks both through the cache): the inverse
 //! in GF(2^8) as x^254 by a fixed chain of multiplications, each multiply
-//! branch-free, then the affine map. It's slow (a few microseconds a block);
-//! the AES-NI path comes with TASK-178's hardware step.
+//! branch-free, then the affine map. It's slow (a few microseconds a block):
+//! where the CPU has AES-NI, AES-GCM takes these round keys to
+//! [`crate::aes_ni`] instead (TASK-178).
 
 /// The round keys, 11 (AES-128) or 15 (AES-256) of 16 bytes.
 #[derive(Clone)]
@@ -79,6 +80,11 @@ impl Aes {
             }
         }
         Some(Aes { keys, rounds })
+    }
+
+    /// The round keys (`rounds` + 1 of them are used) and the rounds.
+    pub fn round_keys(&self) -> (&[[u8; 16]; 15], usize) {
+        (&self.keys, self.rounds)
     }
 
     /// Encrypts one block (FIPS 197 § 5.1).

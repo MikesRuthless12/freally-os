@@ -371,6 +371,9 @@ fn pieces(s: &Session) -> Vec<Piece> {
     let mut c = Client::new("test.freally.local", &roots, s.now, &s.entropy).unwrap();
     let (mut rest, mut out) = (&s.server[..], Vec::new());
     let mut read: Option<(Secret, Protection)> = None;
+    let stale = |e: &dyn core::fmt::Debug| -> ! {
+        panic!("{}: {e:?}: stale? (a changed ClientHello: tests/openssl.rs's record_seeds records them again)", s.name)
+    };
     while !rest.is_empty() {
         let (record, after) = rest.split_at(5 + usize::from(u16::from_be_bytes([rest[3], rest[4]])));
         rest = after;
@@ -380,12 +383,12 @@ fn pieces(s: &Session) -> Vec<Piece> {
             if read.as_ref().is_none_or(|(s, _)| s.as_slice() != secret.as_slice()) {
                 read = Some((secret.clone(), Protection::new(suite, &secret)));
             }
-            let (ty, body) = open(&mut read.as_mut().unwrap().1, record).unwrap();
+            let (ty, body) = open(&mut read.as_mut().unwrap().1, record).unwrap_or_else(|e| stale(&e));
             Piece { ty, body, key: Some((suite, secret)), after_handshake }
         } else {
             Piece { ty: record[0], body: record[5..].to_vec(), key: None, after_handshake }
         };
-        c.feed(record).unwrap_or_else(|e| panic!("{}: {e:?}", s.name));
+        c.feed(record).unwrap_or_else(|e| stale(&e));
         out.push(piece);
     }
     assert!(c.is_connected(), "{}", s.name);

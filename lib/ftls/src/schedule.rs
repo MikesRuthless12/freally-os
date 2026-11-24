@@ -14,9 +14,12 @@ pub enum Suite {
 }
 
 impl Suite {
-    /// The suites offered, in the client's order of preference: ChaCha20 first,
-    /// the fastest of the three while AES runs in software.
-    pub const OFFERED: [Suite; 3] = [Suite::ChaCha20Poly1305Sha256, Suite::Aes128GcmSha256, Suite::Aes256GcmSha384];
+    /// The suites offered, in the client's order of preference: AES-GCM
+    /// first, the fastest with AES-NI and PCLMULQDQ (fcrypto's `aesni`, ~750
+    /// MB/s here against ChaCha20's tens), which every CPU Freally OS's user
+    /// space runs on has (it needs AVX2: Haswell and Zen on, each with both);
+    /// ChaCha20 last, for a server that wants it (TASK-178).
+    pub const OFFERED: [Suite; 3] = [Suite::Aes128GcmSha256, Suite::Aes256GcmSha384, Suite::ChaCha20Poly1305Sha256];
 
     pub fn id(self) -> u16 {
         match self {
