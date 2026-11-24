@@ -162,8 +162,8 @@ pub fn browse(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// `@files.edit`: a new folder named as it's made; rename with F2 (an
-/// empty name and a taken one refused, Escape leaves it); Delete to the
-/// bin, Restore, and Empty the bin for good.
+/// empty name and a taken one refused) and with the Rename key (Escape
+/// leaves it); Delete to the bin, Restore, and Empty the bin for good.
 pub fn edit(ctx: &mut Ctx) -> Result<(), String> {
     signed_in(ctx)?;
     made(ctx, &["write /home/mike/draft.txt words"])?;
@@ -191,7 +191,8 @@ pub fn edit(ctx: &mut Ctx) -> Result<(), String> {
     press(ctx, "Enter")?;
     until_q(ctx, &row("letter"))?;
     until_gone(ctx, &row("draft.txt"))?;
-    press(ctx, "F2")?;
+    press_id(ctx, &sel("files-rename"))?;
+    until_attr(ctx, &sel("files-name"), "aria-valuenow", "letter")?;
     typed(ctx, "x")?;
     press(ctx, "Escape")?;
     until_gone(ctx, &sel("files-name"))?;

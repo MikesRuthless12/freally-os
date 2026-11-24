@@ -242,11 +242,16 @@ impl Doc {
         let inside = |b: (i32, i32, u32, u32)| x >= b.0 && y >= b.1 && x < b.0 + b.2 as i32 && y < b.1 + b.3 as i32;
         let top = self.nodes[0].children.iter().rev().copied().find(|&w| inside(self.nodes[w].bounds))?;
         let window = self.nodes[top].window;
-        (0..self.nodes.len()).rev().find(|&i| {
-            self.nodes[i].window == window
-                && self.nodes[i].role.is_some_and(ax::interactive)
-                && inside(self.nodes[i].bounds)
-        })
+        // The smallest control holding the point: a stepper's arrow, not the
+        // row around it, whatever their order (ties: the later one).
+        (0..self.nodes.len())
+            .rev()
+            .filter(|&i| {
+                self.nodes[i].window == window
+                    && self.nodes[i].role.is_some_and(ax::interactive)
+                    && inside(self.nodes[i].bounds)
+            })
+            .min_by_key(|&i| self.nodes[i].bounds.2 as u64 * self.nodes[i].bounds.3 as u64)
     }
 
     /// The control with the keyboard: in the focused window, the

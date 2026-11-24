@@ -509,7 +509,7 @@
       "task": "TASK-110",
       "setup": "e2e-gpt-update",
       "spec": "e2e/os/specs/update.rs",
-      "what": "Settings ▸ Update: a package signed by no trusted key refused when chosen; one with a byte of its image changed refused when installed, slot B left Empty and slot A active."
+      "what": "Settings ▸ Update: a package signed by no trusted key refused when chosen; one with a byte of its image changed refused when installed, slot B left Empty and slot A active; one cut short given up when it ends (the updater's install cancelled), slot B Empty."
     },
     {
       "id": "update.install",

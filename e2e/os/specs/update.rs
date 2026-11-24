@@ -106,7 +106,8 @@ fn restart_until(ctx: &mut Ctx, then: &str) -> Result<(), String> {
 
 /// `@update.bad-signature`: a package signed by no trusted key is refused
 /// when it's chosen; one whose image was changed is refused when it's
-/// installed, and leaves the other slot as it was.
+/// installed, and leaves the other slot as it was; one cut short is given
+/// up when it ends (Settings cancels the updater's install), the slot Empty.
 pub fn bad_signature(ctx: &mut Ctx) -> Result<(), String> {
     let (_, next, _) = versions();
     update_panel(ctx)?;
@@ -128,6 +129,14 @@ pub fn bad_signature(ctx: &mut Ctx) -> Result<(), String> {
     if ctx.log_count("written to slot B and checked") != 0 {
         return Err("the changed image was taken".into());
     }
+    let said = choose(ctx, "short.fup")?;
+    if !said.starts_with(&format!("Freally OS {next} · signed with the dev key")) {
+        return Err(format!("short.fup, its header whole: {said:?}"));
+    }
+    press_id(ctx, "settings-update-install")?;
+    waits_for(ctx, "settings-update-note", "The update file ended early.", 300)?;
+    record_has(ctx, "slot B Empty")?;
+    record_has(ctx, "active A")?;
     Ok(())
 }
 

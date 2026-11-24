@@ -254,10 +254,14 @@ impl Ctx {
         }
     }
 
-    /// A key is about to go down: the control with the keyboard is worked
-    /// (asked at most every 400 ms: a word typed is one question).
-    pub fn note_key(&mut self) {
-        if self.door_open != Some(true) || self.key_probe.is_some_and(|t| t.elapsed() < Duration::from_millis(400)) {
+    /// A key (`code`) is about to go down: the control with the keyboard is
+    /// worked. Typing is asked about at most every 400 ms (a word typed is one
+    /// question); a key that moves or acts (Tab, an arrow, Enter, Space …)
+    /// always is, since the next one may be on another control.
+    pub fn note_key(&mut self, code: &str) {
+        let typing = code.starts_with("Key") || code.starts_with("Digit");
+        let recent = self.key_probe.is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+        if self.door_open != Some(true) || (typing && recent) {
             return;
         }
         self.key_probe = Some(Instant::now());

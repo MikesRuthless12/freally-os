@@ -61,7 +61,8 @@ pub fn bump(version: &str, by: u64) -> String {
 /// disk `to` before it boots: the next version; a copy of it with one byte of
 /// its image changed (a reflink and one block, so it costs nothing); its
 /// header with the key's id rubbed out (signed by no key the system
-/// trusts); and a version whose system never starts.
+/// trusts); its first half (the header whole, the file ending early); and a
+/// version whose system never starts.
 pub fn stock(to: &Path, flavour: fcore_abi::Flavour) -> Result<(), String> {
     use svc_ffs::inode::FileKind;
     use svc_ffs::subvol::SYSTEM;
@@ -92,7 +93,9 @@ pub fn stock(to: &Path, flavour: fcore_abi::Flavour) -> Result<(), String> {
         let off = good.len() as u64 - 100;
         v.write(SYSTEM, c, off, &[good[off as usize] ^ 1])?;
         let f = fresh(v, at, "foreign.fup")?;
-        v.write(SYSTEM, f, 0, &foreign)
+        v.write(SYSTEM, f, 0, &foreign)?;
+        let s = fresh(v, at, "short.fup")?;
+        crate::carry::write_whole(v, s, &good[..good.len() / 2])
     })?;
     drop(good);
     let crash = std::fs::read(dir.join(&crash_name)).map_err(|e| e.to_string())?;
@@ -100,7 +103,10 @@ pub fn stock(to: &Path, flavour: fcore_abi::Flavour) -> Result<(), String> {
         let f = fresh(v, at, &crash_name)?;
         crate::carry::write_whole(v, f, &crash)
     })?;
-    println!("fup: {good_name}, changed.fup, foreign.fup and {crash_name} in /system/updates on {}", to.display());
+    println!(
+        "fup: {good_name}, changed.fup, foreign.fup, short.fup and {crash_name} in /system/updates on {}",
+        to.display()
+    );
     Ok(())
 }
 
