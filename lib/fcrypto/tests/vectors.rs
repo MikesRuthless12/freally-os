@@ -1177,3 +1177,34 @@ fn rsa_signatures_verify_and_tampering_is_refused() {
     assert!(PublicKey::new(&[0xFF; 128], &[1, 0, 1]).is_none(), "1,024 bits");
     assert!(PublicKey::new(&[0xFF; 256], &[1, 0, 2]).is_none(), "an even exponent");
 }
+
+/// ECDSA on P-256 and P-384 against 24 signatures from an independent ECDSA
+/// (`gen_ecdsa.py`, which checks the curve constants first), with SHA-256,
+/// -384 and -512 digests; each refused once anything changes, and r or s of
+/// 0 or n, or a key off the curve, refused outright.
+#[test]
+fn ecdsa_signatures_verify_and_tampering_is_refused() {
+    use fcrypto::ecdsa::{Curve, verify};
+    let n256 = unhex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+    for line in include_str!("ecdsa_cases.txt").lines() {
+        let cols: Vec<&str> = line.split(' ').collect();
+        let curve = if cols[0] == "256" { Curve::P256 } else { Curve::P384 };
+        let f: Vec<Vec<u8>> = cols.iter().map(|c| if c.len() % 2 == 0 { unhex(c) } else { Vec::new() }).collect();
+        let (x, y, digest, r, s) = (&f[1], &f[2], &f[4], &f[5], &f[6]);
+        assert!(verify(curve, x, y, digest, r, s), "{line}");
+        let flip = |v: &Vec<u8>, i: usize| {
+            let mut w = v.clone();
+            w[i] ^= 1;
+            w
+        };
+        assert!(!verify(curve, x, y, &flip(digest, 0), r, s), "another digest");
+        assert!(!verify(curve, x, y, digest, &flip(r, 5), s), "another r");
+        assert!(!verify(curve, x, y, digest, r, &flip(s, 5)), "another s");
+        assert!(!verify(curve, &flip(x, 31), y, digest, r, s), "a key off the curve");
+        assert!(!verify(curve, x, y, digest, &vec![0; r.len()], s), "r = 0");
+        if curve == Curve::P256 {
+            assert!(!verify(curve, x, y, digest, r, &n256), "s = n");
+        }
+        assert!(!verify(curve, x, y, digest, &r[1..], s), "a short r");
+    }
+}

@@ -3,7 +3,8 @@
 //!
 //! - [`sha2`]: SHA-256, SHA-384 and SHA-512 (FIPS 180-4).
 //! - [`aes`], [`gcm`]: AES-128/256 (FIPS 197) and AES-GCM (SP 800-38D), for TLS 1.3.
-//! - [`rsa`] on [`bignum`]: RSA signature verification (RFC 8017: PKCS#1 v1.5, PSS).
+//! - [`rsa`] and [`ecdsa`] on [`bignum`]: RSA (RFC 8017: PKCS#1 v1.5, PSS) and
+//!   ECDSA (P-256, P-384; FIPS 186-4) signature verification.
 //! - [`sha1`]: SHA-1 (FIPS 180-4), **for the WebSocket handshake only** (RFC 6455).
 //!   It's broken for anything that needs collision resistance; never use it for that.
 //! - [`ed25519`]: Ed25519 signing and verification (RFC 8032), constant-time
@@ -22,6 +23,7 @@ pub mod blake2b;
 pub mod chacha;
 pub mod crc32c;
 pub mod ct;
+pub mod ecdsa;
 pub mod ed25519;
 pub mod gcm;
 pub mod hkdf;
