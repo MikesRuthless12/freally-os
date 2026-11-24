@@ -3,12 +3,13 @@
 # toolchain, QEMU and OVMF. `cargo xtask ci-linux` clones the commit into it
 # fresh, runs every gate under QEMU's TCG (no KVM here), and compares the build's
 # hashes with the WSL build's. The container never holds a signing key.
+# OpenSSL's command line tool is the far end of ftls's interop test (TASK-180).
 FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends \
-      build-essential ca-certificates curl git qemu-system-x86 ovmf \
+      build-essential ca-certificates curl git openssl qemu-system-x86 ovmf \
  && rm -rf /var/lib/apt/lists/*
 
 # rustup, then exactly the toolchain the repository pins.

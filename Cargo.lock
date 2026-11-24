@@ -368,6 +368,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ftls"
+version = "0.8.0"
+dependencies = [
+ "fcrypto",
+ "fx509",
+]
+
+[[package]]
 name = "fui"
 version = "0.8.0"
 dependencies = [
