@@ -147,7 +147,7 @@ pub fn notes<'a>(h: &Head, notes: &'a [u8]) -> Result<&'a str, FupError> {
 }
 
 /// "0.8.0" (and "0.8.0-test") as numbers to compare.
-fn numbers(v: &str) -> [u64; 3] {
+pub(crate) fn numbers(v: &str) -> [u64; 3] {
     let mut out = [0u64; 3];
     let core = v.split(['-', '+']).next().unwrap_or("");
     for (i, p) in core.split('.').take(3).enumerate() {

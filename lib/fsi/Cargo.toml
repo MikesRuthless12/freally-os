@@ -8,8 +8,10 @@ license.workspace = true
 publish = false
 
 [features]
-# The builder needs `alloc`; the bootloader only verifies and doesn't enable it.
-build = []
+# The builder and the update index need `alloc`; the bootloader only
+# verifies and enables neither.
+alloc = []
+build = ["alloc"]
 
 [dependencies]
 fcrypto.workspace = true

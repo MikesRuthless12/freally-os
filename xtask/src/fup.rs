@@ -4,12 +4,22 @@
 //! the flavour's image packed as version V, signed with the flavour's key,
 //! with its release notes. `--crash` makes one whose system never starts
 //! (`@update.fallback`).
+//!
+//! `cargo xtask fup index <folder> [--flavour F]` (TASK-182, FR-061): the
+//! update index (PRD § 3) for the packages in that folder, signed with the
+//! flavour's key, written beside them as `index.fui`.
 
 use crate::{build, keys, pack, util};
 use std::path::{Path, PathBuf};
 
 pub fn fup_cmd(args: &[String]) -> Result<(), String> {
     let flavour = pack::flavour_arg(args)?;
+    if args.first().map(String::as_str) == Some("index") {
+        let dir = args.get(1).filter(|a| !a.starts_with("--")).ok_or("fup index <folder> [--flavour F]")?;
+        let out = index(Path::new(dir), flavour)?;
+        println!("fup: {} ({})", out.display(), flavour.name());
+        return Ok(());
+    }
     let version = util::flag(args, "--version").ok_or("--version <the version it brings>")?;
     let notes = match util::flag(args, "--notes") {
         Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?,
@@ -46,6 +56,46 @@ pub fn make(
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(out, f).map_err(|e| format!("{}: {e}", out.display()))
+}
+
+/// The update index for every `.fup` in `dir` (each one's version, oldest,
+/// size, SHA-256, name and notes, as its header and bytes say), signed with
+/// the flavour's key: `dir/index.fui`.
+pub fn index(dir: &Path, flavour: fcore_abi::Flavour) -> Result<PathBuf, String> {
+    if flavour == fcore_abi::Flavour::Release {
+        return Err("a release index is signed in the release pipeline, with the release key".into());
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".fup"))
+        .collect();
+    names.sort();
+    let mut entries = Vec::new();
+    for name in names {
+        let b = std::fs::read(dir.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+        let (oldest, notes, _) = fsi::fup::unpack(&b).map_err(|e| format!("{name}: {e}"))?;
+        if b[10] as u32 != flavour as u32 {
+            return Err(format!("{name} is for another flavour"));
+        }
+        let end = b[24..56].iter().position(|&c| c == 0).unwrap_or(32);
+        let version = std::str::from_utf8(&b[24..24 + end]).map_err(|_| format!("{name}: its version isn't text"))?;
+        entries.push(fsi::index::Entry {
+            version: version.to_string(),
+            oldest: oldest.to_string(),
+            size: b.len() as u64,
+            sha256: fcrypto::sha2::sha256(&b),
+            name,
+            notes: notes.to_string(),
+        });
+    }
+    let seed = keys::load_seed(pack::signing_key(flavour))?;
+    let issued = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let ix = fsi::index::make(flavour as u8, issued, &entries, &seed)?;
+    let out = dir.join("index.fui");
+    std::fs::write(&out, ix).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(out)
 }
 
 /// `version` with its patch number raised by `by` (0.4.0 → 0.4.1).

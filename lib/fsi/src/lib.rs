@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The Freally system image (`.fsi`), format 1. The byte layout is in
 //! `docs/fsi-format.md`; this crate reads and verifies it with no allocation
-//! (for the bootloader), and builds and signs it with the `build` feature.
+//! (for the bootloader), and builds and signs it with the `build` feature;
+//! the update index (`index`) needs `alloc` (the updater's).
 #![no_std]
 
-#[cfg(feature = "build")]
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[cfg(feature = "build")]
 mod build;
 pub mod fup;
+#[cfg(feature = "alloc")]
+pub mod index;
 mod merkle;
 mod toc;
 
