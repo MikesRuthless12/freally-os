@@ -717,6 +717,13 @@
       "what": "One client holds at most 16 TCP connections at once: against a listener on the host that keeps every connection open, the 17th is refused (too many connections), and once they're closed a new one opens."
     },
     {
+      "id": "net.waiting",
+      "task": "TASK-185",
+      "setup": "e2e-testnet",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "One client has at most 8 pings and 8 lookups waiting at once: ten pings to an address nobody has, and ten lookups of names the test network's DNS never answers, 8 wait and 2 are refused; with none waiting, a new one is taken."
+    },
+    {
       "id": "net.https",
       "task": "TASK-181",
       "setup": "e2e-testnet",

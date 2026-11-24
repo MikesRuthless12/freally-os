@@ -10,6 +10,12 @@
 //!   closes them all: `opened <k> of <n>`, and the first refusal's words
 //!   (TASK-185: netstack's limit per client).
 //!
+//! - `net waiting ping <ip> <n>` sends `n` pings to `<ip>` (3 s each) at
+//!   once, and `net waiting resolve <n>` `n` lookups of names the test
+//!   network's DNS never answers; 2 s later: `waiting <k>, refused <r>,
+//!   answered <a>`, and the first refusal's words (TASK-185: what one client
+//!   may have waiting). The rest are answered later, and not read.
+//!
 //! Any failure: `error: …`, netstack's reason in it (`refused`, `no answer`).
 
 use crate::services::Conductor;
@@ -22,6 +28,8 @@ use fwire::proto::net as nt;
 #[derive(Default)]
 pub struct TcpDoor {
     client: Option<Client>,
+    /// Requests `net waiting` has sent: where its next txids start.
+    asked: u32,
 }
 
 const USAGE: &str =
@@ -78,6 +86,70 @@ impl TcpDoor {
             self.client = None;
             alloc::vec![alloc::format!("error: {e}")]
         })
+    }
+
+    /// `net waiting …`: many requests sent before any answer is read.
+    pub fn waiting(&mut self, c: &mut Conductor, arg: &str) -> Vec<String> {
+        const USAGE: &str = "net waiting ping <ip> <n, at most 64> | net waiting resolve <n, at most 64>";
+        if self.client.is_none() {
+            self.client = c.open_connection("netstack", "conductor").map(Client::new);
+        }
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        // Txids of their own, above any the client's calls reach, and new
+        // each time: an earlier time's late answers aren't this one's.
+        let first = 0x4000_0000 + self.asked;
+        let txid = |k: u16| first + u32::from(k);
+        let asks: Option<Vec<_>> = match words.as_slice() {
+            ["waiting", "ping", ip, n] => match (crate::door_netdev::ipv4(ip), n.parse::<u16>()) {
+                (Some(to), Ok(n)) if n <= 64 => (0..n)
+                    .map(|k| fwire::request(txid(k), nt::PING, &nt::Ping { to, seq: k, timeout_ms: 3_000 }))
+                    .collect::<Result<_, _>>()
+                    .ok(),
+                _ => None,
+            },
+            ["waiting", "resolve", n] => match n.parse::<u16>() {
+                Ok(n) if n <= 64 => (0..n)
+                    .map(|k| {
+                        let q = nt::Resolve { name: alloc::format!("w{k}.silent.freally.local"), kind: 1 };
+                        fwire::request(txid(k), nt::RESOLVE, &q)
+                    })
+                    .collect::<Result<_, _>>()
+                    .ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(asks) = asks else { return alloc::vec![String::from(USAGE)] };
+        let Some(cl) = self.client.as_ref() else { return alloc::vec![String::from("error: netstack isn't up")] };
+        let n = asks.len();
+        self.asked = self.asked.wrapping_add(n as u32) % 0x1000_0000;
+        for m in &asks {
+            if let Err(e) = cl.channel.send(m, Vec::new()) {
+                self.client = None;
+                return alloc::vec![alloc::format!("error: {e:?}")];
+            }
+        }
+        // What netstack did with each in 2 s: a refusal comes at once; a ping
+        // to nobody waits its 3 s, a lookup nobody answers netstack's 10.
+        let (mut refused, mut answered, mut why) = (0, 0, String::new());
+        let deadline = Instant::after(Duration::from_secs(2));
+        while refused + answered < n {
+            let Ok(m) = cl.channel.recv(deadline) else { break };
+            let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
+            if !h.is_reply() || h.txid < txid(0) || h.txid >= txid(n as u16) {
+                continue;
+            }
+            match h.is_error().then(|| fwire::error_of(p)) {
+                Some(Ok((code, text))) if code == fcore_abi::FErr::Busy as i32 => {
+                    refused += 1;
+                    if why.is_empty() {
+                        why = text;
+                    }
+                }
+                _ => answered += 1,
+            }
+        }
+        alloc::vec![alloc::format!("waiting {}, refused {refused}, answered {answered}", n - refused - answered), why]
     }
 
     fn call<Q: fwire::Wire, R: fwire::Wire>(&mut self, ordinal: u32, req: &Q, secs: u64) -> Result<R, String> {

@@ -447,6 +447,40 @@ pub fn limits(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// `@net.waiting` (TASK-185): one client has at most 8 pings and 8 lookups
+/// waiting at once. Ten pings sent together to an address nobody has on the
+/// test network: 2 s later 8 are waiting (their 3 s) and 2 were refused ("too
+/// many pings waiting"); ten lookups of names its DNS never answers: the
+/// same (netstack's 10 s); once those are over, one of each is taken again.
+pub fn waiting(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.77.")?;
+    let log = ctx.log();
+    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
+    let prefix =
+        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let nobody = format!("{prefix}.250");
+    for (what, ask) in [("pings", format!("ping {nobody}")), ("lookups", String::from("resolve"))] {
+        let said = ctx.door(&format!("net waiting {ask} 10"))?;
+        if said.first().map(String::as_str) != Some("waiting 8, refused 2, answered 0")
+            || said.get(1).map(String::as_str) != Some(&*format!("too many {what} waiting"))
+        {
+            return Err(format!("10 {what} at once: {said:?}"));
+        }
+        // Refused while the eight wait; taken once they're over.
+        let start = std::time::Instant::now();
+        loop {
+            let again = ctx.door(&format!("net waiting {ask} 1"))?;
+            if again.first().map(String::as_str) == Some("waiting 1, refused 0, answered 0") {
+                break;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(15) {
+                return Err(format!("15 s on, a new one of the {what} still isn't taken: {again:?}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `@net.grants` (TASK-183): netstack serves the programs its list names
 /// and no one else: a client called `terminal` is served; one called
 /// `intruder` is refused, and the refusal is said in the log.

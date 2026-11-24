@@ -7,7 +7,8 @@
 //! the DNS answers cached are `DNS_CACHE`, the oldest making room; no
 //! fragment is reassembled (fnet refuses them: nothing to grow). From a
 //! client: `SOCKETS_PER_CLIENT` TCP connections at once, each with
-//! `TCP_BUFFER` bytes buffered each way.
+//! `TCP_BUFFER` bytes buffered each way; `PINGS_PER_CLIENT` pings and
+//! `LOOKUPS_PER_CLIENT` DNS lookups waiting (`@net.waiting`).
 
 /// Entries in each neighbour cache, and how long one is kept.
 pub const NEIGHBOURS: usize = crate::ArpCache::MAX;
@@ -16,6 +17,10 @@ pub const NEIGHBOUR_KEEP_S: u64 = crate::ArpCache::KEEP / 1_000_000_000;
 pub const DNS_CACHE: usize = 128;
 /// TCP connections one client may hold at once.
 pub const SOCKETS_PER_CLIENT: usize = 16;
+/// Pings (`ping` and `ping6` together) one client may have waiting at once.
+pub const PINGS_PER_CLIENT: usize = 8;
+/// DNS lookups one client may have waiting at once.
+pub const LOOKUPS_PER_CLIENT: usize = 8;
 /// Bytes a TCP connection buffers each way.
 pub const TCP_BUFFER: usize = crate::tcp::BUFFER;
 

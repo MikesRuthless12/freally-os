@@ -393,6 +393,11 @@ impl Door {
                     self.send(&line);
                 }
             }
+            "net" => {
+                for line in self.tcp.waiting(c, arg) {
+                    self.send(&line);
+                }
+            }
             "tls" => {
                 for line in self.tls.run(c, arg) {
                     self.send(&line);

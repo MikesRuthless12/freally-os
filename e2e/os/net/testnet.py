@@ -78,9 +78,20 @@ def answer(query, udp):
     return struct.pack("!HHHHHH", qid, flags, 1, len(out), 0, 0) + question + body
 
 
+def silent(query):
+    """A question under silent.freally.local: never answered, so a lookup
+    of it waits its whole time (TASK-185: what a client has waiting)."""
+    try:
+        return read_name(query, 12)[0].endswith(".silent.freally.local")
+    except Exception:
+        return False
+
+
 class Udp(socketserver.BaseRequestHandler):
     def handle(self):
         data, sock = self.request
+        if silent(data):
+            return
         try:
             sock.sendto(answer(data, True), self.client_address)
         except Exception as e:  # a malformed query: no answer

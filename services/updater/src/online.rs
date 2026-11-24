@@ -263,19 +263,14 @@ impl Updater {
         let (Some(i), Some(disk)) = (self.install.as_mut(), self.disk.as_mut()) else {
             return Err(failed(String::from("No update is being installed.")));
         };
-        loop {
-            match g.stream.next(net).map_err(|e| failed(alloc::format!("The package: {e}")))? {
-                Some(piece) => {
-                    g.got += piece.len() as u64;
-                    if g.got > g.entry.size {
-                        return Err(failed(String::from("The package is longer than the update list said.")));
-                    }
-                    g.hash.update(&piece);
-                    feed(i, g.image_at, &piece, disk)?;
-                    g.image_at += piece.len() as u64;
-                }
-                None => break,
+        while let Some(piece) = g.stream.next(net).map_err(|e| failed(alloc::format!("The package: {e}")))? {
+            g.got += piece.len() as u64;
+            if g.got > g.entry.size {
+                return Err(failed(String::from("The package is longer than the update list said.")));
             }
+            g.hash.update(&piece);
+            feed(i, g.image_at, &piece, disk)?;
+            g.image_at += piece.len() as u64;
             if Instant::now().as_ns() >= until {
                 return Ok(up::Progress { got: g.got, total: g.entry.size, version: String::new() });
             }

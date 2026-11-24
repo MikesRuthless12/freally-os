@@ -36,6 +36,9 @@ const ARP_RETRY: u64 = 500_000_000;
 const MSS4: u16 = 1460;
 /// Connections a client may hold at once.
 const SOCKETS_PER_CLIENT: usize = svc_netstack::limits::SOCKETS_PER_CLIENT;
+/// Pings and DNS lookups a client may have waiting at once.
+const PINGS_PER_CLIENT: usize = svc_netstack::limits::PINGS_PER_CLIENT;
+const LOOKUPS_PER_CLIENT: usize = svc_netstack::limits::LOOKUPS_PER_CLIENT;
 /// The ephemeral ports (RFC 6335 § 6).
 const EPHEMERAL: core::ops::RangeInclusive<u16> = 49152..=65535;
 
@@ -891,6 +894,9 @@ impl Stack {
         timeout_ms: u32,
     ) -> Result<(), (FErr, &'static str)> {
         let dest = dest.ok_or((FErr::NotFound, "no route"))?;
+        if self.pending.iter().filter(|q| q.client == client).count() >= PINGS_PER_CLIENT {
+            return Err((FErr::Busy, "too many pings waiting"));
+        }
         let t = now();
         let wait = timeout_ms.clamp(1, 10_000) as u64 * 1_000_000;
         self.pending.push(Pending { client, txid, ordinal, dest, seq, sent: None, arp_at: t, deadline: t + wait });
@@ -1068,6 +1074,9 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
                 Err(_) => Err((FErr::InvalidArgs, "unreadable")),
                 Ok(q) if q.kind != fnet::dns::TYPE_A && q.kind != fnet::dns::TYPE_AAAA => {
                     Err((FErr::InvalidArgs, "kind is 1 (A) or 28 (AAAA)"))
+                }
+                Ok(_) if s.resolving.iter().filter(|r| r.1 == i).count() >= LOOKUPS_PER_CLIENT => {
+                    Err((FErr::Busy, "too many lookups waiting"))
                 }
                 Ok(q) => {
                     let mut sends = Vec::new();
