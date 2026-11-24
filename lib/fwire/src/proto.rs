@@ -463,6 +463,9 @@ pub mod stage {
     /// e2e images only, conductor and cdpd only: a window's published
     /// accessibility tree (`ById` → `AxBytes`).
     pub const AX_TREE: u32 = 102;
+    /// e2e images only, conductor only: `()` → `Frames`, how much stage
+    /// has drawn since it started (TASK-120B: nothing moves while idle).
+    pub const FRAMES: u32 = 103;
 
     /// Events on a window's channel, stage to client.
     pub const EV_KEY: u32 = 1;
@@ -628,6 +631,12 @@ pub mod stage {
 
     wire_struct! {
         pub struct PointerAt { pub x: i32, pub y: i32, pub buttons: u8 }
+    }
+
+    wire_struct! {
+        /// `FRAMES`: the times stage composed damage, and put anything on
+        /// the screen at all (the cursor included).
+        pub struct Frames { pub composed: u64, pub shown: u64 }
     }
 
     wire_struct! {
@@ -1439,6 +1448,7 @@ pub mod inventory {
                 (st::LIST_WINDOWS, "list_windows"),
                 (st::POINTER, "pointer"),
                 (st::AX_TREE, "ax_tree"),
+                (st::FRAMES, "frames"),
             ],
         ),
         ("monitor", &[(mon::STATE, "state")]),

@@ -136,7 +136,14 @@ impl StageDoor {
                     .map_err(|e| alloc::format!("{e:?}"))
             }),
             "events" => Ok(core::mem::take(&mut self.events)),
-            _ => Err(String::from("stage open|popup|close|focus|title|cursor|scale|ax|shot|theme|list|pointer|events")),
+            "frames" => self.client().and_then(|cl| {
+                cl.call::<_, st::Frames>(st::FRAMES, &(), Vec::new(), deadline())
+                    .map(|(f, _)| alloc::vec![alloc::format!("frames {} {}", f.composed, f.shown)])
+                    .map_err(|e| alloc::format!("{e:?}"))
+            }),
+            _ => Err(String::from(
+                "stage open|popup|close|focus|title|cursor|scale|ax|shot|theme|list|pointer|events|frames",
+            )),
         };
         r.unwrap_or_else(|e| alloc::vec![alloc::format!("error: {e}")])
     }

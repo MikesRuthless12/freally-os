@@ -200,3 +200,35 @@ fn a_lock_screen_covers_the_rack_and_takes_its_clicks() {
     assert_eq!(ws.hit(980, 780).map(|(id, _)| id), Some(lock), "a click where the Rack is goes to the lock screen");
     assert!(!ws.get(lock).unwrap().decorated());
 }
+
+/// Nothing is drawn out of sight (the fleet's *nothing moves while idle*):
+/// a window's damage hidden by a normal window above it needs no frame.
+#[test]
+fn damage_behind_a_normal_window_above_is_covered() {
+    let mut ws = screen();
+    let under = normal(&mut ws, "under", 300, 200);
+    let over = normal(&mut ws, "over", 800, 600);
+    let s_under = ws.surface_rect(ws.get(under).unwrap());
+    let s_over = ws.surface_rect(ws.get(over).unwrap());
+    assert!(ws.covered(under, s_under), "{s_under:?} lies inside {s_over:?}");
+    // The window on top is never covered, nor is what pokes out from under it.
+    assert!(!ws.covered(over, s_over));
+    assert!(!ws.covered(under, Rect::new(s_over.x - 10, s_over.y + 10, 20, 20)));
+    // The cover's rounded bottom corners let what's under them show: its
+    // last strip's height doesn't cover.
+    let foot = Rect::new(s_over.x + 50, s_over.bottom() - 10, 20, 5);
+    assert!(!ws.covered(under, foot));
+    // Brought forward, the window under is seen again.
+    ws.focus(under);
+    assert!(!ws.covered(under, s_under));
+}
+
+#[test]
+fn a_panel_or_popup_above_covers_nothing() {
+    // Their surfaces are drawn over what's under them, so may let it show.
+    let mut ws = screen();
+    let a = normal(&mut ws, "a", 300, 200);
+    let s = ws.surface_rect(ws.get(a).unwrap());
+    ws.create("pop", Kind::Popup, (1000, 800), (0, 0), (0, 0), ME);
+    assert!(!ws.covered(a, s));
+}

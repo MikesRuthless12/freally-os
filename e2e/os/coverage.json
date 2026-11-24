@@ -158,6 +158,13 @@
       "what": "Super opens the launcher, 560 px wide, centred 30 % down, focused; typing filters it; Esc and Super close it; Super+T starts Terminal."
     },
     {
+      "id": "desktop.still",
+      "task": "TASK-120B",
+      "setup": "e2e",
+      "spec": "e2e/os/specs/desktop.rs",
+      "what": "Nothing moves while idle: the desktop at rest, the pointer still, puts no frame on the screen in 2 s (stage's frames read-back); Monitor open and seen does (its live figures); covered by a window it puts none again: nothing is drawn out of sight."
+    },
+    {
       "id": "terminal.vt",
       "task": "TASK-060",
       "setup": "e2e",

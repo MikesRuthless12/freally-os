@@ -172,6 +172,19 @@ impl Windows {
         Rect::new(w.frame.x, w.frame.y + top as i32, w.w, w.h)
     }
 
+    /// Whether `r` is hidden behind a normal window above `id`, so composing
+    /// it would change nothing on the screen. A normal window's surface is
+    /// opaque (composed over the surface colour) but for its rounded bottom
+    /// corners, which a strip's height left off its foot keeps out.
+    pub fn covered(&self, id: WindowId, r: Rect) -> bool {
+        let Some(i) = self.list.iter().position(|w| w.id == id) else { return false };
+        self.list[i + 1..].iter().filter(|w| w.decorated()).any(|w| {
+            let s = self.surface_rect(w);
+            let opaque = Rect::new(s.x, s.y, s.w, s.h.saturating_sub(self.strip));
+            opaque.intersect(&r) == r
+        })
+    }
+
     pub fn strip_rect(&self, w: &Window) -> Option<Rect> {
         w.decorated().then(|| Rect::new(w.frame.x, w.frame.y, w.frame.w, self.strip))
     }

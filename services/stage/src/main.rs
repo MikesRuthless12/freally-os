@@ -105,6 +105,10 @@ struct Stage {
     /// (Settings' *Automatic*; TASK-104).
     auto_pct: u16,
     scale_auto: bool,
+    /// What `FRAMES` answers: the times damage was composed, and anything
+    /// put on the screen (TASK-120B).
+    #[cfg(feature = "flavour-e2e")]
+    frames: st::Frames,
 }
 
 /// Who may read back the windows and the pointer: the test door (conductor
@@ -308,6 +312,8 @@ fn run(_bootstrap: u32) -> i64 {
         scale_auto: true,
         shortcuts: None,
         stamped: false,
+        #[cfg(feature = "flavour-e2e")]
+        frames: st::Frames { composed: 0, shown: 0 },
         fetching: false,
         art: Art::load(pct),
         screen,
@@ -667,6 +673,11 @@ impl Stage {
             st::AX_TREE if matches!(name.as_str(), "conductor" | "cdpd") => fwire::from_payload::<st::ById>(p)
                 .map_err(|_| (FErr::InvalidArgs, "unreadable"))
                 .map(|b| (fwire::to_payload(&self.ax_bytes(b.window_id)), Vec::new())),
+            #[cfg(feature = "flavour-e2e")]
+            st::FRAMES if name == "conductor" => Ok((
+                fwire::to_payload(&st::Frames { composed: self.frames.composed, shown: self.frames.shown }),
+                Vec::new(),
+            )),
             #[cfg(any(feature = "flavour-e2e", feature = "flavour-dev"))]
             st::POINTER if reads_back(&name) => Ok((
                 fwire::to_payload(&st::PointerAt { x: self.desk.x, y: self.desk.y, buttons: self.desk.buttons }),
@@ -751,8 +762,11 @@ impl Stage {
         } else {
             pr.damage.iter().map(|d| Rect::new(s.x + d.x, s.y + d.y, d.w, d.h).intersect(&s)).collect()
         };
+        // Nothing is drawn out of sight: what a normal window above hides needs no frame.
         for r in rects {
-            self.damage(r);
+            if !self.desk.windows.covered(pr.window_id, r) {
+                self.damage(r);
+            }
         }
         Ok(())
     }
@@ -1117,6 +1131,11 @@ impl Stage {
             return;
         }
         let damage = core::mem::take(&mut self.damage);
+        #[cfg(feature = "flavour-e2e")]
+        {
+            self.frames.shown += 1;
+            self.frames.composed += u64::from(!damage.is_empty());
+        }
         {
             let wins = &self.wins;
             let surface = |id: u32| wins.iter().find(|w| w.id == id).map(|w| &w.pixels as &dyn Pixels);

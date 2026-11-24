@@ -342,3 +342,76 @@ pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
     key(ctx, "Escape", false)?;
     until_gone(ctx, SEARCH)
 }
+
+/// Stage's `frames` read-back: (composed, shown) since it started.
+fn frames(ctx: &Ctx) -> Result<(u64, u64), String> {
+    let lines = ctx.door("stage frames")?;
+    let l = lines.iter().find_map(|l| l.strip_prefix("frames ")).ok_or(format!("stage frames said {lines:?}"))?;
+    let mut n = l.split(' ').map(|v| v.parse::<u64>().map_err(|_| format!("stage frames said {lines:?}")));
+    Ok((n.next().ok_or("no count")??, n.next().ok_or("no count")??))
+}
+
+/// How many frames stage put on the screen over two seconds. A change of
+/// minute redraws the clock, a real change: then it's measured once more.
+fn drawn_over_2s(ctx: &Ctx) -> Result<u64, String> {
+    // The guest's clock is the host's (the RTC), so the host says when a minute turns.
+    let minute = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 60);
+    let mut drawn = 0;
+    for _ in 0..2 {
+        let (m0, (_, a)) = (minute(), frames(ctx)?);
+        std::thread::sleep(Duration::from_secs(2));
+        let ((_, b), m1) = (frames(ctx)?, minute());
+        drawn = b - a;
+        if drawn == 0 || m0 == m1 {
+            return Ok(drawn);
+        }
+    }
+    Ok(drawn)
+}
+
+/// `@desktop.still`: nothing moves while idle (the fleet rule of
+/// 2026-11-22). The desktop at rest, the pointer still, puts no frame on the
+/// screen in two seconds; Monitor, open and seen, does (its live figures,
+/// once a second); covered by a window, it puts none again: nothing is drawn
+/// out of sight (TASK-120B).
+pub fn still(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("desktop: the Rack is up")?;
+    move_to(ctx, 200, 200)?;
+    // The ring catches up with the dot, then stops.
+    std::thread::sleep(Duration::from_millis(800));
+    let idle = drawn_over_2s(ctx)?;
+    if idle != 0 {
+        return Err(format!("the idle desktop put {idle} frames on the screen in 2 s"));
+    }
+    key(ctx, "MetaLeft", true)?;
+    key(ctx, "KeyM", true)?;
+    key(ctx, "KeyM", false)?;
+    key(ctx, "MetaLeft", false)?;
+    let mon = expect_window(ctx, "Monitor", true)?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let seen = drawn_over_2s(ctx)?;
+    if seen == 0 {
+        return Err("Monitor, open and seen, drew nothing in 2 s: the count is stuck".into());
+    }
+    let cover = ctx.door("stage open 1280 800 303030 Cover")?;
+    let cover = cover.iter().find_map(|l| l.strip_prefix("window ")).ok_or(format!("stage open said {cover:?}"))?;
+    let cover = cover.to_string();
+    std::thread::sleep(Duration::from_millis(800));
+    let hidden = drawn_over_2s(ctx);
+    let placed = windows(ctx)?;
+    crate::stage::ok(ctx, &format!("stage close {cover}"))?;
+    let hidden = hidden?;
+    if hidden != 0 {
+        return Err(format!(
+            "Monitor, covered, still put {hidden} frames on the screen in 2 s ({mon} under {:?})",
+            placed.iter().find(|l| l.ends_with("title=Cover"))
+        ));
+    }
+    // Monitor goes, as it came: the next specs sample the ground.
+    move_to(ctx, 300, 300)?;
+    key(ctx, "AltLeft", true)?;
+    key(ctx, "F4", true)?;
+    key(ctx, "F4", false)?;
+    key(ctx, "AltLeft", false)?;
+    expect_window(ctx, "Monitor", false).map(|_| ())
+}
