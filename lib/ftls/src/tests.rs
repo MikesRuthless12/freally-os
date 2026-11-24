@@ -3,7 +3,10 @@
 //! over X25519): its secrets, its records and both Finished messages
 //! reproduced byte for byte; its server's flight through the client up to the
 //! certificate (which names no host: the RFC's is CN "rsa", 1,024 bits).
-//! Then a fuzz target: that flight changed, re-sealed, fed in; nothing panics.
+//! Then two fuzz targets: that flight changed, re-sealed, fed in; and three
+//! sessions OpenSSL's server had with this client (tests/seeds.txt), a
+//! record's content changed and sealed again under the keys it had, so the
+//! change gets past the certificate. Nothing panics; no change connects.
 
 use alloc::vec::Vec;
 
@@ -313,4 +316,170 @@ fn hello_retry_requests_are_checked() {
     let mut c = fresh();
     c.feed(&retry_request(0x1301, 0x0017)).unwrap();
     assert_eq!(c.feed(&rfc("server_hello_record")), Err(Error::Sent(Alert::ILLEGAL_PARAMETER)), "another group");
+}
+
+/// A session OpenSSL's server had with this client (`tests/seeds.txt`,
+/// recorded by `tests/openssl.rs`'s `record_seeds`): the client's entropy and
+/// clock, the root, every byte the server sent, and the line it sent back.
+struct Session {
+    name: &'static str,
+    now: u64,
+    entropy: [u8; 96],
+    root: Vec<u8>,
+    server: Vec<u8>,
+    data: Vec<u8>,
+}
+
+fn sessions() -> Vec<Session> {
+    let unhex =
+        |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let mut out: Vec<Session> = Vec::new();
+    for line in include_str!("../tests/seeds.txt").lines().filter(|l| !l.starts_with('#')) {
+        let f: Vec<&'static str> = line.split(' ').collect();
+        if out.last().is_none_or(|s| s.name != f[0]) {
+            let entropy = [0; 96];
+            out.push(Session { name: f[0], now: 0, entropy, root: Vec::new(), server: Vec::new(), data: Vec::new() });
+        }
+        let s = out.last_mut().unwrap();
+        match f[1] {
+            "now" => s.now = f[2].parse().unwrap(),
+            "entropy" => s.entropy = unhex(f[2]).try_into().unwrap(),
+            "root" => s.root = unhex(f[2]),
+            "server" => s.server = unhex(f[2]),
+            "data" => s.data = unhex(f[2]),
+            other => panic!("seeds.txt: what is {other}?"),
+        }
+    }
+    out
+}
+
+/// One record of a session, opened: its content type, what it carries, the
+/// suite and secret it was sealed under (none in the clear), and whether the
+/// client was connected before it.
+#[derive(Clone)]
+struct Piece {
+    ty: u8,
+    body: Vec<u8>,
+    key: Option<(Suite, Secret)>,
+    after_handshake: bool,
+}
+
+/// The session's records as the client read them, each opened with the key
+/// it read it under. The session must still connect and bring its line.
+fn pieces(s: &Session) -> Vec<Piece> {
+    let roots = [s.root.as_slice()];
+    let mut c = Client::new("test.freally.local", &roots, s.now, &s.entropy).unwrap();
+    let (mut rest, mut out) = (&s.server[..], Vec::new());
+    let mut read: Option<(Secret, Protection)> = None;
+    while !rest.is_empty() {
+        let (record, after) = rest.split_at(5 + usize::from(u16::from_be_bytes([rest[3], rest[4]])));
+        rest = after;
+        let after_handshake = c.is_connected();
+        let piece = if record[0] == content::APPLICATION_DATA {
+            let (suite, secret) = c.reading().expect("a protected record before any key");
+            if read.as_ref().is_none_or(|(s, _)| s.as_slice() != secret.as_slice()) {
+                read = Some((secret.clone(), Protection::new(suite, &secret)));
+            }
+            let (ty, body) = open(&mut read.as_mut().unwrap().1, record).unwrap();
+            Piece { ty, body, key: Some((suite, secret)), after_handshake }
+        } else {
+            Piece { ty: record[0], body: record[5..].to_vec(), key: None, after_handshake }
+        };
+        c.feed(record).unwrap_or_else(|e| panic!("{}: {e:?}", s.name));
+        out.push(piece);
+    }
+    assert!(c.is_connected(), "{}", s.name);
+    assert_eq!(c.take_data(), s.data, "{}", s.name);
+    out
+}
+
+/// The pieces as records again, each sealed as it was (each key's records
+/// numbered from 0, in order).
+fn sealed(pieces: &[Piece]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut write: Option<(&Secret, Protection)> = None;
+    for p in pieces {
+        match &p.key {
+            None => crate::record::plain(p.ty, 0x0303, &p.body, &mut out),
+            Some((suite, secret)) => {
+                if write.as_ref().is_none_or(|(s, _)| s.as_slice() != secret.as_slice()) {
+                    write = Some((secret, Protection::new(*suite, secret)));
+                }
+                write.as_mut().unwrap().1.seal(p.ty, &p.body, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// The recorded sessions still connect (else `record_seeds` makes them
+/// again), and sealed again they're what OpenSSL sent, byte for byte.
+#[test]
+fn recorded_sessions_replay() {
+    let all = sessions();
+    assert_eq!(all.iter().map(|s| s.name).collect::<Vec<_>>(), ["p256", "rsa-request", "p384-retry"]);
+    for s in &all {
+        let p = pieces(s);
+        assert!(p.iter().any(|p| p.after_handshake), "{}: records after the handshake", s.name);
+        assert_eq!(sealed(&p), s.server, "{}", s.name);
+    }
+}
+
+/// The fuzz target past the record layer (TASK-185): a recorded session
+/// (P-256 and AES-128-GCM; RSA, a CertificateRequest and ChaCha20; P-384
+/// after a HelloRetryRequest, AES-256-GCM) with one record's content
+/// changed and the session sealed again under the keys it had, so the
+/// change reaches the parser and the check behind each message: the
+/// certificate chain, its signature, Finished, and what comes after the
+/// handshake. Fed in random pieces. No input may panic, and a changed
+/// handshake never connects. `ci --slow` runs 2,000 (`FREALLY_FUZZ_ITERS`).
+#[test]
+fn changed_sessions_never_panic() {
+    // Each state's unexpected message: every handshake type the client knows.
+    const TYPES: [u8; 11] = [1, 2, 4, 5, 8, 11, 13, 15, 20, 24, 254];
+    let iters: u64 = std::env::var("FREALLY_FUZZ_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+    let all = sessions();
+    let recorded: Vec<Vec<Piece>> = all.iter().map(pieces).collect();
+    for i in 0..iters {
+        let n = i as usize % all.len();
+        let (s, mut p) = (&all[n], recorded[n].clone());
+        let k = rng.next() as usize % p.len();
+        let piece = &mut p[k];
+        match rng.next() % 5 {
+            0 if !piece.body.is_empty() => (0..1 + rng.next() % 4).for_each(|_| {
+                let at = rng.next() as usize % piece.body.len();
+                piece.body[at] ^= 1 + (rng.next() % 255) as u8;
+            }),
+            1 if !piece.body.is_empty() => piece.body.truncate(rng.next() as usize % piece.body.len()),
+            2 => {
+                let at = rng.next() as usize % (piece.body.len() + 1);
+                piece.body.insert(at, rng.next() as u8);
+            }
+            3 if piece.ty == content::HANDSHAKE && !piece.body.is_empty() => {
+                piece.body[0] = TYPES[rng.next() as usize % TYPES.len()];
+            }
+            _ => piece.ty = [20, 21, 22, 23][rng.next() as usize % 4],
+        }
+        let changed = (piece.ty, &piece.body) != (recorded[n][k].ty, &recorded[n][k].body);
+        let bytes = sealed(&p);
+        // Where the changed record ends: the client is judged there, before
+        // the records after it (sealed under the keys the session had) end
+        // what a wrongly made connection would have shown.
+        let judged = sealed(&p[..=k]).len();
+        let roots = [s.root.as_slice()];
+        let mut c = Client::new("test.freally.local", &roots, s.now, &s.entropy).unwrap();
+        let mut at = 0;
+        while at < bytes.len() {
+            let end = (at + 1 + rng.next() as usize % 2048).min(bytes.len());
+            let end = if at < judged { end.min(judged) } else { end };
+            let _ = c.feed(&bytes[at..end]);
+            let _ = c.take_output();
+            let _ = c.take_data();
+            at = end;
+            if at == judged && changed && !p[k].after_handshake {
+                assert!(!c.is_connected(), "{} iteration {i}: record {k} changed, and it connected", s.name);
+            }
+        }
+    }
 }

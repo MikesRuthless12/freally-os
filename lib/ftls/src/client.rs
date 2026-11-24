@@ -141,6 +141,13 @@ impl<'r> Client<'r> {
         }
     }
 
+    /// The suite and secret the server's next record is opened with: the
+    /// fuzz target re-seals what it changes under them (tests only).
+    #[cfg(test)]
+    pub(crate) fn reading(&self) -> Option<(Suite, Secret)> {
+        self.keys.as_ref().map(|k| (k.suite, k.read_secret.clone()))
+    }
+
     /// Bytes to send to the server (taken: each call returns what's new).
     pub fn take_output(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.out)

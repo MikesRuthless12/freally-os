@@ -255,3 +255,55 @@ fn a_wrong_name_and_an_unknown_root_are_refused() {
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(other_dir);
 }
+
+/// Records the fuzz target's sessions (`tests/seeds.txt`, read by
+/// `src/tests.rs`'s `changed_sessions_never_panic`): for each, a session
+/// with OpenSSL's server, kept as the client's entropy, the clock, the root,
+/// every byte the server sent and the line it sent back. The ClientHello's
+/// bytes are in each session's transcript, so a change to them makes the
+/// sessions stale (`recorded_sessions_replay` says so): then run
+/// `cargo test -p ftls --test openssl -- --ignored record_seeds`.
+#[test]
+#[ignore = "writes tests/seeds.txt"]
+fn record_seeds() {
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let mut out =
+        String::from("# Sessions with OpenSSL's server for ftls's fuzz target: tests/openssl.rs's record_seeds.\n");
+    for (name, kind, extra) in [
+        ("p256", "p256", &["-ciphersuites", "TLS_AES_128_GCM_SHA256"][..]),
+        ("rsa-request", "rsa", &["-verify", "1", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"][..]),
+        ("p384-retry", "p384", &["-groups", "P-256", "-ciphersuites", "TLS_AES_256_GCM_SHA384"][..]),
+    ] {
+        let (dir, root) = pki(kind);
+        let roots = [root.as_slice()];
+        let (_server, mut s) = serve(&dir, extra);
+        let (at, e) = (now(), entropy(name));
+        let mut c = Client::new(HOST, &roots, at, &e).unwrap();
+        let (mut sent, mut data, mut asked) = (Vec::new(), Vec::new(), false);
+        let mut buf = [0u8; 8192];
+        while !data.ends_with(b"\n") {
+            if c.is_connected() && !asked {
+                c.write(b"hello freally\n").unwrap();
+                asked = true;
+            }
+            s.write_all(&c.take_output()).unwrap();
+            let n = s.read(&mut buf).expect("the server answers");
+            assert!(n > 0, "{name}: the server closed the connection: {:?}", c.error());
+            sent.extend_from_slice(&buf[..n]);
+            c.feed(&buf[..n]).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            data.extend(c.take_data());
+        }
+        assert_eq!(data, b"yllaerf olleh\n", "{name}");
+        for (field, value) in [
+            ("now", at.to_string()),
+            ("entropy", hex(&e)),
+            ("root", hex(&root)),
+            ("server", hex(&sent)),
+            ("data", hex(&data)),
+        ] {
+            out.push_str(&format!("{name} {field} {value}\n"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/seeds.txt"), out).unwrap();
+}
