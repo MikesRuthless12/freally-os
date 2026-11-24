@@ -492,6 +492,7 @@ name = "svc-netstack"
 version = "0.8.0"
 dependencies = [
  "fcore-abi",
+ "fcrypto",
  "fnet",
  "frandom",
  "fstd",

@@ -10,6 +10,7 @@ extern crate alloc;
 
 pub mod dhcp;
 pub mod ipv6;
+pub mod tcp;
 
 use alloc::vec::Vec;
 
@@ -54,7 +55,7 @@ pub fn checksum(data: &[u8], mut sum: u32) -> u16 {
 }
 
 /// The UDP pseudo-header's sum (RFC 768): the addresses, the protocol, the length.
-fn pseudo(src: Ipv4, dst: Ipv4, proto: u8, len: u16) -> u32 {
+pub(crate) fn pseudo(src: Ipv4, dst: Ipv4, proto: u8, len: u16) -> u32 {
     u16::from_be_bytes([src[0], src[1]]) as u32
         + u16::from_be_bytes([src[2], src[3]]) as u32
         + u16::from_be_bytes([dst[0], dst[1]]) as u32

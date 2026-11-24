@@ -71,7 +71,7 @@ pub fn ip6(src: Ipv6, dst: Ipv6, next: u8, hops: u8, payload: &[u8]) -> Vec<u8> 
 }
 
 /// The IPv6 pseudo-header's sum (RFC 8200 § 8.1).
-fn pseudo6(src: &Ipv6, dst: &Ipv6, next: u8, len: u32) -> u32 {
+pub(crate) fn pseudo6(src: &Ipv6, dst: &Ipv6, next: u8, len: u32) -> u32 {
     let words = |a: &Ipv6| a.as_chunks::<2>().0.iter().map(|w| u16::from_be_bytes(*w) as u32).sum::<u32>();
     words(src) + words(dst) + (len >> 16) + (len & 0xFFFF) + next as u32
 }

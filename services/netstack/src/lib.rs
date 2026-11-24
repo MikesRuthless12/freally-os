@@ -6,6 +6,10 @@
 
 extern crate alloc;
 
+pub mod tcp;
+#[cfg(test)]
+mod tcp_tests;
+
 use alloc::vec::Vec;
 use fnet::dhcp::{self, Lease, Reply};
 use fnet::ipv6::Ipv6;

@@ -288,3 +288,72 @@ mod v6_text {
         }
     }
 }
+
+/// TCP segments against bytes an independent checksum made (Python's
+/// struct, RFC 1071 written out there): a SYN with MSS and window scale, data
+/// with PSH. Each wrong length, option or checksum refused with its reason.
+#[test]
+fn tcp_segments_both_ways() {
+    use crate::tcp::{Tcp, flag, pseudo4};
+    let unhex =
+        |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let (src, dst) = ([10, 0, 2, 15], [10, 0, 2, 100]);
+    let syn = Tcp {
+        src_port: 49152,
+        dst_port: 7,
+        seq: 0x0102_0304,
+        ack: 0,
+        flags: flag::SYN,
+        window: 65535,
+        mss: Some(1460),
+        wscale: Some(7),
+        data: &[],
+    };
+    let want = unhex("c000000701020304000000007002ffffa7980000020405b401030307");
+    assert_eq!(syn.bytes(pseudo4(src, dst, syn.wire_len())), want);
+    assert_eq!(Tcp::parse(&want, pseudo4(src, dst, want.len())), Ok(syn));
+    assert_eq!(syn.seq_len(), 1);
+    let psh = Tcp {
+        src_port: 49152,
+        dst_port: 7,
+        seq: 0x0102_0305,
+        ack: 0x0a0b_0c0d,
+        flags: flag::PSH | flag::ACK,
+        window: 4096,
+        mss: None,
+        wscale: None,
+        data: b"hello, tcp!",
+    };
+    let want = unhex("c0000007010203050a0b0c0d50181000c445000068656c6c6f2c2074637021");
+    assert_eq!(psh.bytes(pseudo4(src, dst, psh.wire_len())), want);
+    assert_eq!(Tcp::parse(&want, pseudo4(src, dst, want.len())), Ok(psh));
+    assert_eq!(psh.seq_len(), 11);
+
+    let parse = |b: &[u8]| Tcp::parse(b, pseudo4(src, dst, b.len())).map(|t| (t.mss, t.wscale));
+    let mut changed = want.clone();
+    changed[30] ^= 1;
+    assert_eq!(parse(&changed), Err(Bad::Checksum));
+    assert_eq!(Tcp::parse(&want, pseudo4(src, [10, 0, 2, 101], want.len())), Err(Bad::Checksum), "another address");
+    assert_eq!(parse(&want[..19]), Err(Bad::Short));
+    // Options written here, the checksum made by the parser's own sum.
+    let with = |opts: &[u8], offset: u8| {
+        let mut p = want[..20].to_vec();
+        p[12] = offset << 4;
+        p.extend_from_slice(opts);
+        p[16..18].fill(0);
+        let sum = crate::checksum(&p, pseudo4(src, dst, p.len()));
+        p[16..18].copy_from_slice(&sum.to_be_bytes());
+        p
+    };
+    assert_eq!(parse(&with(&[], 4)), Err(Bad::HeaderLength), "a header under 20 bytes");
+    assert_eq!(parse(&with(&[], 6)), Err(Bad::HeaderLength), "a header past the segment");
+    assert_eq!(
+        parse(&with(&[8, 10, 0, 0, 0, 1, 0, 0, 0, 2, 3, 3, 15, 0, 0, 0], 9)),
+        Ok((None, Some(14))),
+        "timestamps skipped; a shift of 15 taken as 14"
+    );
+    assert_eq!(parse(&with(&[2, 3, 5, 0], 6)), Err(Bad::HeaderLength), "an MSS of the wrong length");
+    assert_eq!(parse(&with(&[8, 12, 0, 0], 6)), Err(Bad::HeaderLength), "an option past the header");
+    assert_eq!(parse(&with(&[8, 1, 0, 0], 6)), Err(Bad::HeaderLength), "an option length under 2");
+    assert_eq!(parse(&with(&[0, 2, 4, 5], 6)), Ok((None, None)), "nothing after the end of options");
+}
