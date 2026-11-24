@@ -11,6 +11,10 @@ pub fn interrupt(_f: &mut Frame) {
     let c = crate::smp::this();
     c.last_fire.store(cpu::rdtsc(), Ordering::SeqCst);
     c.fires.fetch_add(1, Ordering::SeqCst);
+    // The timer is spent: nothing is armed now. (A one-shot timer can fire a
+    // little before its deadline; the scheduler then arms it again, where it
+    // would otherwise think the deadline still pending and arm nothing.)
+    c.armed.store(0, Ordering::Relaxed);
     apic::eoi();
     crate::sched_tick();
 }

@@ -21,7 +21,8 @@
     "e2e-gpt-update": { "flavour": "e2e", "gpt": true, "updates": true },
     "e2e-8cpu": { "flavour": "e2e", "cpus": 8 },
     "dev-log-screen": { "flavour": "dev", "cmdline": "log=screen", "without": ["stage", "desktop", "monitor", "terminal"] },
-    "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" }
+    "dev-log-screen-desktop": { "flavour": "dev", "cmdline": "log=screen" },
+    "e2e-no-tsc-deadline": { "flavour": "e2e", "cpu": "host,-tsc-deadline" }
   },
   "features": [
     {
@@ -72,6 +73,13 @@
       "setup": "e2e-crash-ud2",
       "spec": "e2e/os/specs/kernel.rs",
       "what": "A kernel panic survives a warm reboot: the next boot finds the last-panic page, files it as a fault report from freally-core, and logs it once."
+    },
+    {
+      "id": "kernel.timer_oneshot",
+      "task": "TASK-113",
+      "setup": "e2e-no-tsc-deadline",
+      "spec": "e2e/os/specs/kernel.rs",
+      "what": "On a CPU without TSC-deadline (as VirtualBox shows a guest), the APIC timer counts one-shot, its clock measured against the TSC, and the boot reaches the desktop."
     },
     {
       "id": "boot.conductor",

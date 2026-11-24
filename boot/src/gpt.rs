@@ -19,21 +19,23 @@ pub struct Disk {
     pub slots: [Option<(u64, u64)>; 2],
 }
 
-/// Pages for the bootloader's own use, freed by [`Pages::drop`].
+/// Pages for the bootloader's own use, freed by [`Pages::drop`]. The
+/// firmware sees `LoaderData`; `tag` is what the ledger notes if they're kept.
 struct Pages<'a> {
     bs: &'a BootServices,
     addr: u64,
     n: usize,
+    tag: u32,
 }
 
 impl<'a> Pages<'a> {
-    fn new(bs: &'a BootServices, bytes: usize, mem: u32) -> Option<Pages<'a>> {
+    fn new(bs: &'a BootServices, bytes: usize, tag: u32) -> Option<Pages<'a>> {
         let n = bytes.div_ceil(4096);
         let mut addr = 0u64;
-        if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, mem, n, &mut addr)) {
+        if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, crate::uefi::LOADER_DATA, n, &mut addr)) {
             return None;
         }
-        Some(Pages { bs, addr, n })
+        Some(Pages { bs, addr, n, tag })
     }
 
     fn bytes(&self) -> &'static mut [u8] {
@@ -41,11 +43,16 @@ impl<'a> Pages<'a> {
         unsafe { core::slice::from_raw_parts_mut(self.addr as *mut u8, self.n * 4096) }
     }
 
-    /// Kept after the handoff (the image): never freed.
-    fn keep(self) -> u64 {
+    /// Kept after the handoff (the image): never freed, and noted in the
+    /// ledger (`None` when it's full).
+    fn keep(self) -> Option<u64> {
         let a = self.addr;
+        let noted = crate::ledger::note(a, self.n as u64, self.tag);
+        if !noted {
+            return None;
+        }
         core::mem::forget(self);
-        a
+        Some(a)
     }
 }
 
@@ -199,7 +206,7 @@ pub unsafe fn read_slot(bs: &BootServices, d: &Disk, s: usize) -> Result<&'stati
     if !unsafe { read(d, first, &mut image.bytes()[..whole]) } {
         return Err("The drive stopped part-way through the system image.");
     }
-    let addr = image.keep();
+    let addr = image.keep().ok_or("Freally OS made more allocations than it keeps track of.")?;
     // SAFETY: `len` bytes at `addr` were just read into pages kept until the handoff and after.
     Ok(unsafe { core::slice::from_raw_parts(addr as *const u8, len as usize) })
 }

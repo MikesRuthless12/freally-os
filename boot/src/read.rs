@@ -81,7 +81,10 @@ pub unsafe fn read_image(bs: &BootServices, image: Handle, path: &[u16]) -> Resu
         let pages = size.div_ceil(4096) as usize;
         let mut addr = 0u64;
         // Kept after the handoff: conductor loads every service from it.
-        if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, fcore_abi::memtype::IMAGE, pages, &mut addr)) {
+        // The firmware's own type; the ledger says it's the image (see `ledger`).
+        if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, crate::uefi::LOADER_DATA, pages, &mut addr))
+            || !crate::ledger::note(addr, pages as u64, fcore_abi::memtype::IMAGE)
+        {
             return Err("There isn’t enough memory to read the system image.");
         }
         let mut done = 0u64;

@@ -429,6 +429,10 @@ pub mod tsc_from {
     pub const CPUID: u8 = 2;
     /// CPUID, and the HPET agrees within 1 %.
     pub const CPUID_HPET_AGREES: u8 = 3;
+    /// The hypervisor's timing leaf, 0x40000010 (VirtualBox's *Minimal*
+    /// paravirtualization, VMware): its emulated HPET and PIT can't be
+    /// measured against (TASK-113).
+    pub const HYPERVISOR: u8 = 4;
 }
 
 /// CPUID leaf 0x1A's core types (TASK-070, FR-009).

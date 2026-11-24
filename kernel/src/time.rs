@@ -52,16 +52,23 @@ pub fn utc_ns() -> u64 {
     RTC_UNIX.load(Ordering::Relaxed) * 1_000_000_000 + now_ns()
 }
 
-// The HPET: capabilities at 0x0 (period in femtoseconds in the top half),
-// configuration at 0x10 (bit 0 enables the counter), the main counter at 0xF0.
-fn hpet_read(off: u64) -> u64 {
+// The HPET: capabilities at 0x0 (period in femtoseconds in the top half, at
+// 0x4), configuration at 0x10 (bit 0 enables the counter), the main counter
+// at 0xF0. Read 32 bits at a time: every HPET answers those, and VirtualBox's
+// (under Hyper-V) answered 64-bit reads of the counter wrongly now and then,
+// so the TSC came out at 4 or 5 MHz (TASK-113). The low half wraps only
+// every few minutes, far longer than a measurement.
+fn hpet_read32(off: u64) -> u32 {
     // SAFETY: the HPET's registers, through the direct map.
-    unsafe { core::ptr::read_volatile((HPET.load(Ordering::Relaxed) + DIRECT_MAP + off) as *const u64) }
+    unsafe { core::ptr::read_volatile((HPET.load(Ordering::Relaxed) + DIRECT_MAP + off) as *const u32) }
 }
+
+/// No x86-64 CPU's TSC runs slower than this: a measurement below it is wrong.
+const PLAUSIBLE_HZ: u64 = 100_000_000;
 
 fn hpet_enable(addr: u64) -> Option<u64> {
     HPET.store(addr, Ordering::Relaxed);
-    let period_fs = hpet_read(0) >> 32;
+    let period_fs = hpet_read32(4) as u64;
     if period_fs == 0 || period_fs > 100_000_000 {
         return None;
     }
@@ -75,15 +82,25 @@ fn hpet_enable(addr: u64) -> Option<u64> {
 
 /// Counts TSC ticks over 10 ms of the HPET.
 fn measure_with_hpet(period_fs: u64) -> u64 {
-    let ticks_10ms = 10_000_000_000_000 / period_fs; // 10 ms in femtoseconds / period
-    let h0 = hpet_read(0xF0);
+    let ticks_10ms = (10_000_000_000_000 / period_fs) as u32; // 10 ms in femtoseconds / period
+    let h0 = hpet_read32(0xF0);
     let t0 = cpu::rdtsc();
-    while hpet_read(0xF0).wrapping_sub(h0) < ticks_10ms {}
+    while hpet_read32(0xF0).wrapping_sub(h0) < ticks_10ms {}
     let t1 = cpu::rdtsc();
-    let h1 = hpet_read(0xF0);
-    // Scale to the exact HPET interval that passed.
-    let elapsed_fs = (h1.wrapping_sub(h0)) as u128 * period_fs as u128;
-    ((t1 - t0) as u128 * 1_000_000_000_000_000 / elapsed_fs) as u64
+    let h1 = hpet_read32(0xF0);
+    tsc_hz_from(t1 - t0, h1.wrapping_sub(h0), period_fs)
+}
+
+/// The TSC's frequency from `tsc_ticks` counted over `hpet_ticks` of an HPET
+/// whose period is `period_fs` (scaled to the exact interval that passed).
+fn tsc_hz_from(tsc_ticks: u64, hpet_ticks: u32, period_fs: u64) -> u64 {
+    let elapsed_fs = (hpet_ticks as u128 * period_fs as u128).max(1);
+    (tsc_ticks as u128 * 1_000_000_000_000_000 / elapsed_fs) as u64
+}
+
+/// The HPET's measurement, tried up to three times for a plausible one.
+fn hpet_tsc_hz(period_fs: u64) -> Option<u64> {
+    (0..3).map(|_| measure_with_hpet(period_fs)).find(|&h| h >= PLAUSIBLE_HZ)
 }
 
 /// Counts TSC ticks over 10 ms of PIT channel 2 (1.193182 MHz).
@@ -104,7 +121,23 @@ pub struct Source {
     pub check: Option<u64>,
 }
 
+/// A hypervisor's timing leaf, 0x40000010 (VirtualBox's *Minimal*
+/// paravirtualization, VMware): the TSC's and the APIC bus's frequencies in
+/// kHz. Its own word beats any measurement: its emulated HPET and PIT run on
+/// a clock that lags and catches up, so 10 ms of them can pass in a few
+/// microseconds of TSC (TASK-113).
+pub fn hypervisor_timing() -> Option<(u64, u64)> {
+    if cpu::cpuid(1, 0).ecx & (1 << 31) == 0 || cpu::cpuid(0x4000_0000, 0).eax < 0x4000_0010 {
+        return None;
+    }
+    let t = cpu::cpuid(0x4000_0010, 0);
+    (t.eax as u64 * 1000 >= PLAUSIBLE_HZ).then_some((t.eax as u64 * 1000, t.ebx as u64 * 1000))
+}
+
 pub fn init(hpet: Option<u64>, b0: u64) -> Source {
+    if let Some((hz, _)) = hypervisor_timing() {
+        return set(hz, "the hypervisor (CPUID 0x40000010)", fcore_abi::tsc_from::HYPERVISOR, None, b0);
+    }
     let cpuid_hz = {
         let l15 = cpu::cpuid(0x15, 0);
         let max = cpu::cpuid(0, 0).eax;
@@ -116,7 +149,7 @@ pub fn init(hpet: Option<u64>, b0: u64) -> Source {
             None
         }
     };
-    let hpet_hz = hpet.and_then(hpet_enable).map(measure_with_hpet);
+    let hpet_hz = hpet.and_then(hpet_enable).and_then(hpet_tsc_hz);
     let (hz, how, check) = match (cpuid_hz, hpet_hz) {
         // Trust CPUID when the HPET agrees within 1 %; otherwise the measurement wins.
         (Some(c), Some(h)) if c.abs_diff(h) * 100 <= h => (c, "CPUID", Some(h)),
@@ -125,16 +158,19 @@ pub fn init(hpet: Option<u64>, b0: u64) -> Source {
         (None, Some(h)) => (h, "HPET", None),
         (None, None) => (measure_with_pit(), "PIT", None),
     };
+    let from = match (how, check) {
+        ("CPUID", Some(_)) => fcore_abi::tsc_from::CPUID_HPET_AGREES,
+        ("CPUID", None) => fcore_abi::tsc_from::CPUID,
+        ("PIT", _) => fcore_abi::tsc_from::PIT,
+        _ => fcore_abi::tsc_from::HPET,
+    };
+    set(hz, how, from, check, b0)
+}
+
+/// The clock started: the TSC's frequency, where it came from, the zero, B0, the RTC.
+fn set(hz: u64, how: &'static str, from: u8, check: Option<u64>, b0: u64) -> Source {
     TSC_HZ.store(hz, Ordering::Relaxed);
-    TSC_FROM.store(
-        match (how, check) {
-            ("CPUID", Some(_)) => fcore_abi::tsc_from::CPUID_HPET_AGREES,
-            ("CPUID", None) => fcore_abi::tsc_from::CPUID,
-            ("PIT", _) => fcore_abi::tsc_from::PIT,
-            _ => fcore_abi::tsc_from::HPET,
-        },
-        Ordering::Relaxed,
-    );
+    TSC_FROM.store(from, Ordering::Relaxed);
     TSC_ZERO.store(cpu::rdtsc(), Ordering::Relaxed);
     B0.store(b0, Ordering::Relaxed);
     RTC_UNIX.store(crate::arch::rtc::read_unix().unwrap_or(0), Ordering::Relaxed);
@@ -162,6 +198,24 @@ ktest!(time_the_rtc_reads_a_plausible_date, {
     // 2026-01-01 .. 2100-01-01
     let s = rtc_unix();
     if (1_767_225_600..4_102_444_800).contains(&s) { Ok(()) } else { Err("the RTC's date isn't plausible") }
+});
+
+ktest!(time_a_tsc_measured_against_the_hpet, {
+    // 14.31818 MHz (69,841,279 fs): 143,182 ticks is 10 ms; 24,000,000 TSC
+    // ticks over it is 2.4 GHz, whatever the counter's low half wrapped through.
+    let hz = tsc_hz_from(24_000_000, 143_182, 69_841_279);
+    if hz.abs_diff(2_400_000_000) > 2_400_000 {
+        return Err("10 ms of a 14.3 MHz HPET against 24 M TSC ticks isn't 2.4 GHz");
+    }
+    let h0 = u32::MAX - 100;
+    if tsc_hz_from(24_000_000, h0.wrapping_add(143_182).wrapping_sub(h0), 69_841_279) != hz {
+        return Err("the counter's wrap changed the answer");
+    }
+    // No HPET time passed: an implausible answer, never a division by zero.
+    if tsc_hz_from(1, 0, 69_841_279) >= PLAUSIBLE_HZ {
+        return Err("no HPET time passed, yet the answer looks plausible");
+    }
+    Ok(())
 });
 
 ktest!(time_tsc_frequency_is_known, {

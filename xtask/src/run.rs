@@ -57,6 +57,9 @@ pub struct VmOptions {
     pub carry: Option<(PathBuf, String)>,
     /// The update packages `@update.*` use, put in /system/updates (TASK-110).
     pub updates: bool,
+    /// QEMU's CPU model instead of `host` (KVM): `host,-tsc-deadline` is a
+    /// CPU without TSC-deadline, as VirtualBox shows a guest (TASK-113).
+    pub cpu: Option<String>,
 }
 
 impl VmOptions {
@@ -80,6 +83,7 @@ impl VmOptions {
             keep_disk: false,
             carry: None,
             updates: false,
+            cpu: None,
         }
     }
 
@@ -214,7 +218,7 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     if o.tcg {
         c.args(["-accel", "tcg", "-cpu", "max"]);
     } else {
-        c.args(["-accel", "kvm", "-cpu", "host"]);
+        c.args(["-accel", "kvm", "-cpu", o.cpu.as_deref().unwrap_or("host")]);
     }
     c.args(["-m", &o.memory_mb.to_string(), "-smp", &o.cpus.to_string()]);
     // The RTC on local time, as Windows keeps it on the OMEN: the Rack's clock

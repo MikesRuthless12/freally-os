@@ -63,8 +63,12 @@ fn u64_at(b: &[u8], o: usize) -> Option<u64> {
 
 fn alloc(bs: &BootServices, mem: u32, pages: u64) -> Result<u64, Why> {
     let mut addr = 0u64;
-    if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, mem, pages as usize, &mut addr)) {
+    // The firmware's own type, the use noted in the ledger (see `ledger`).
+    if is_error((bs.allocate_pages)(ALLOCATE_ANY_PAGES, LOADER_DATA, pages as usize, &mut addr)) {
         return Err("There isn’t enough memory to start Freally Core.");
+    }
+    if !crate::ledger::note(addr, pages, mem) {
+        return Err("Freally OS made more allocations than it keeps track of.");
     }
     // SAFETY: `pages` pages at `addr` were just allocated to us.
     unsafe { core::ptr::write_bytes(addr as *mut u8, 0, (pages * PAGE) as usize) };
@@ -365,7 +369,8 @@ unsafe fn prepare_and_go(
     // SAFETY: boot services are running.
     let mat = unsafe { memory_attributes(st, bs) }?;
     // 2. Everything the kernel will be handed, allocated before the final map.
-    let regions_cap = size / desc + 64 + mat.map_or(0, |m| m.1);
+    // Each noted allocation can split a region in two more pieces.
+    let regions_cap = size / desc + 64 + 2 * crate::ledger::MAX + mat.map_or(0, |m| m.1);
     let info_bytes = core::mem::size_of::<BootInfo>() as u64
         + (regions_cap * core::mem::size_of::<MemRegion>()) as u64
         + 512
@@ -437,18 +442,28 @@ unsafe fn prepare_and_go(
         if t == 5 && mat.is_some() {
             continue;
         }
-        // SAFETY: `regions` has room for every descriptor plus slack.
-        unsafe {
-            if n > 0 {
-                let last = &mut *regions.add(n - 1);
-                if last.kind == kd && last.base + last.len == start {
-                    last.len += len;
-                    continue;
+        let mut push = |base: u64, len: u64, kd: MemKind| {
+            // SAFETY: `regions` has room for every descriptor, each split by
+            // the ledger, plus slack.
+            unsafe {
+                if n > 0 {
+                    let last = &mut *regions.add(n - 1);
+                    if last.kind == kd && last.base + last.len == base {
+                        last.len += len;
+                        return;
+                    }
                 }
+                *regions.add(n) = MemRegion { base, len, kind: kd, _pad: 0 };
             }
-            *regions.add(n) = MemRegion { base: start, len, kind: kd, _pad: 0 };
+            n += 1;
+        };
+        // The bootloader's own allocations are LoaderData to the firmware:
+        // the ledger says which pages are the kernel's, the image's, the boot data's.
+        if t == LOADER_DATA {
+            crate::ledger::split(start, pages, |s, p, tag| push(s, p * PAGE, kind(tag.unwrap_or(LOADER_DATA))));
+        } else {
+            push(start, len, kd);
         }
-        n += 1;
     }
     // The runtime images, as the table splits them: read-only code (the kernel
     // maps it executable) and no-execute data.

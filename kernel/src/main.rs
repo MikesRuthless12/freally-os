@@ -156,6 +156,11 @@ pub unsafe extern "sysv64" fn _start(info: *const BootInfo) -> ! {
         time::rtc_unix(),
         time::ticks_to_ns(K2.load(Ordering::Relaxed) - K1.load(Ordering::Relaxed)) / 1000
     );
+    // No TSC-deadline (VirtualBox shows a guest none, TASK-113): the one-shot
+    // timer's clock measured now, before anything arms a deadline.
+    if let Some(hz) = arch::apic::calibrate() {
+        klog!("freally-core: no TSC-deadline: the APIC timer counts one-shot at {} kHz", hz / 1000);
+    }
     ACPI.store(alloc::boxed::Box::leak(alloc::boxed::Box::new(tables)), Ordering::Release);
     for (id, t) in [
         (timeline::B0, bi.tsc.b0),
