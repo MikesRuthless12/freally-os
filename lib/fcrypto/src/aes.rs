@@ -56,8 +56,8 @@ impl Aes {
         };
         let rounds = nk + 6;
         let mut w = [[0u8; 4]; 60];
-        for (i, word) in key.chunks_exact(4).enumerate() {
-            w[i].copy_from_slice(word);
+        for (i, word) in key.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = *word;
         }
         let mut rcon = 1u8;
         for i in nk..4 * (rounds + 1) {
