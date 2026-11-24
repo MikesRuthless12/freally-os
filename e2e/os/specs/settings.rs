@@ -248,7 +248,8 @@ pub fn look_spec(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// `@settings.keyboard`: the tab list is one stop and its arrows cycle
-/// (Home, End); each row is one stop, worked by its keys; Tab reaches OK
+/// (Home, End); each row is one stop, worked by its keys (the scale's and
+/// the idle time's steppers one step each way); Tab reaches OK
 /// and Cancel and comes round; Shift+Tab goes back; Escape cancels.
 pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     signed_in(ctx)?;
@@ -276,15 +277,30 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
     expect_look(ctx, "light")?;
     press(ctx, "ArrowRight")?;
     expect_look(ctx, "dark")?;
-    for id in ["settings-wallpaper", "settings-scale", "settings-motion"] {
+    for id in ["settings-wallpaper", "settings-scale"] {
         press(ctx, "Tab")?;
         expect_focus(ctx, id)?;
     }
+    // A stepper's keys: one step each way.
+    press(ctx, "ArrowRight")?;
+    until_attr(ctx, &sel("settings-scale"), "aria-valuenow", "100 %")?;
+    press(ctx, "ArrowLeft")?;
+    until_attr(ctx, &sel("settings-scale"), "aria-valuenow", "Automatic")?;
+    press(ctx, "Tab")?;
+    expect_focus(ctx, "settings-motion")?;
     press(ctx, "Space")?;
     until_attr(ctx, &sel("settings-motion"), "aria-checked", "true")?;
     press(ctx, "Space")?;
     until_attr(ctx, &sel("settings-motion"), "aria-checked", "false")?;
-    for id in ["settings-clock", "settings-saver", "settings-idle", "settings-ok", "settings-cancel"] {
+    for id in ["settings-clock", "settings-saver", "settings-idle"] {
+        press(ctx, "Tab")?;
+        expect_focus(ctx, id)?;
+    }
+    press(ctx, "ArrowRight")?;
+    until_attr(ctx, &sel("settings-idle"), "aria-valuenow", "15 minutes")?;
+    press(ctx, "ArrowLeft")?;
+    until_attr(ctx, &sel("settings-idle"), "aria-valuenow", "10 minutes")?;
+    for id in ["settings-ok", "settings-cancel"] {
         press(ctx, "Tab")?;
         expect_focus(ctx, id)?;
     }

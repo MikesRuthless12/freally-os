@@ -129,7 +129,7 @@ pub(crate) fn wheel(ctx: &mut Ctx, up: bool) -> Result<(), String> {
 
 pub(crate) fn key(ctx: &mut Ctx, code: &str, down: bool) -> Result<(), String> {
     if down {
-        ctx.note_key();
+        ctx.note_key(code);
     }
     let kind = if down { "keyDown" } else { "keyUp" };
     ctx.cdp.call("Input.dispatchKeyEvent", Value::obj([("type", kind.into()), ("code", code.into())]))?;
