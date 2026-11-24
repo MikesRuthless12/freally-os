@@ -25,6 +25,27 @@ use fwire::proto::block as blk;
 use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
 
+/// The completion in slot `k` of the queue at `va`, read so one half written
+/// is never taken: its last dword (the command id and the phase bit
+/// together) in one read first, then the other three (x86 keeps loads in
+/// order). A plain 16-byte copy could see the new phase with the slot's old
+/// command id: the ring then stepped past the completion it was waiting for
+/// and waited for it in vain (TASK-185: seen in the soak, the CDP leg and
+/// the update specs, the waited-for id found in the slot behind the head).
+fn completion_at(va: u64, k: u16) -> Completion {
+    let base = va + k as u64 * 16;
+    // SAFETY: slot k is inside the completion queue's page, its dwords
+    // aligned; the controller writes them.
+    let read = |o: u64| unsafe { core::ptr::read_volatile((base + o) as *const u32) };
+    let dw3 = read(12);
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
+    let mut raw = [0u8; 16];
+    for (i, d) in [read(0), read(4), read(8), dw3].into_iter().enumerate() {
+        raw[4 * i..4 * i + 4].copy_from_slice(&d.to_le_bytes());
+    }
+    Completion::parse(&raw)
+}
+
 /// How long an I/O command may take (Linux's `io_timeout`): a VM's disk can
 /// stall for seconds behind its host's writes (the soak and the CDP leg saw
 /// 5 s pass, TASK-185), and a read given up loses the copy in hand.
@@ -200,16 +221,7 @@ impl Nvme {
         let irq = if io { self.irq.as_ref().map(Handle::raw) } else { None };
         let mut spins = 0u32;
         loop {
-            let mut raw = [0u8; 16];
-            // SAFETY: the head is inside the completion queue's page; the controller writes it.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    (q.cq.va + q.ring.cq_head as u64 * 16) as *const u8,
-                    raw.as_mut_ptr(),
-                    16,
-                )
-            };
-            let c = Completion::parse(&raw);
+            let c = completion_at(q.cq.va, q.ring.cq_head);
             if let Some(head) = q.ring.consume(&c) {
                 // SAFETY: as above.
                 unsafe { fstd::mmio::write32(regs + cq_doorbell(cap, q.qid) as u64, head as u32) };
@@ -226,6 +238,23 @@ impl Nvme {
                 // SAFETY: inside the mapped registers and configuration page.
                 let (csts, pci) =
                     unsafe { (fstd::mmio::read32(regs + reg::CSTS as u64), fstd::mmio::read16(config + 4)) };
+                // What the queues hold, for the next time it happens (seen after an
+                // install given up, TASK-185): each completion slot's command id and
+                // phase, and where the ring expects the next one.
+                let slots: alloc::vec::Vec<String> = (0..q.ring.entries as u64)
+                    .map(|k| {
+                        let c = completion_at(q.cq.va, k as u16);
+                        alloc::format!("{}{}", c.cid, if c.phase { "+" } else { "-" })
+                    })
+                    .collect();
+                fstd::warn!(
+                    "drv-nvme: queue {} at the timeout: cid {cid}, sq_tail {}, cq_head {}, phase {}; completions {}",
+                    q.qid,
+                    q.ring.sq_tail,
+                    q.ring.cq_head,
+                    q.ring.phase,
+                    slots.join(" ")
+                );
                 return Err(alloc::format!(
                     "command {:#x} never completed (CSTS {csts:#x}, PCI command {pci:#x})",
                     cmd.opcode

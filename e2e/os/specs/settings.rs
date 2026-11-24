@@ -489,6 +489,8 @@ pub fn time(ctx: &mut Ctx) -> Result<(), String> {
     press(ctx, "Tab")?;
     expect_focus(ctx, "login-restart")?;
     let (boots, shown) = (ctx.log_count("freally-boot "), ctx.log_count("login: shown"));
+    // What the services were asked before the restart counts for the inventory.
+    ctx.note_served();
     ctx.rebooted_by_guest();
     press(ctx, "Enter")?;
     waits_for_log(ctx, "freally-boot ", boots)?;
