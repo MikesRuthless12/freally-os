@@ -821,6 +821,26 @@ impl Stack {
         t
     }
 
+    /// Each network's counts, as its driver keeps them (TASK-186).
+    fn traffic(&mut self) -> Result<nt::Traffic, (FErr, &'static str)> {
+        let wait = Instant::after(Duration::from_secs(2));
+        let (c, _) = self
+            .dev
+            .call::<_, fwire::proto::netdev::Stats>(fwire::proto::netdev::STATS, &(), Vec::new(), wait)
+            .map_err(|_| (FErr::BadState, "the network driver didn't answer"))?;
+        Ok(nt::Traffic {
+            list: alloc::vec![nt::Counts {
+                name: String::from("eth0"),
+                rx_frames: c.rx_frames,
+                rx_bytes: c.rx_bytes,
+                rx_dropped: c.rx_dropped,
+                tx_frames: c.tx_frames,
+                tx_bytes: c.tx_bytes,
+                tx_dropped: c.tx_dropped,
+            }],
+        })
+    }
+
     /// Every connection this computer can make, and the TCP ones open now.
     fn connections(&self) -> nt::Connections {
         let grants = svc_netstack::grants::list(cfg!(feature = "flavour-e2e"))
@@ -1017,6 +1037,7 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
         let asked = match h.ordinal {
             nt::INTERFACES => Ok(Some(fwire::reply(h.txid, h.ordinal, &s.interfaces()))),
             nt::CONNECTIONS => Ok(Some(fwire::reply(h.txid, h.ordinal, &s.connections()))),
+            nt::STATS => s.traffic().map(|t| Some(fwire::reply(h.txid, h.ordinal, &t))),
             nt::PING => match (fwire::from_payload::<nt::Ping>(p), s.ours()) {
                 (Err(_), _) => Err((FErr::InvalidArgs, "unreadable")),
                 (Ok(_), None) => Err((FErr::BadState, "no address yet")),

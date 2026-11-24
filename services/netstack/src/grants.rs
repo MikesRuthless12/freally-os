@@ -13,7 +13,7 @@ pub struct Grant {
     pub when: &'static str,
 }
 
-const ALWAYS: [Grant; 6] = [
+const ALWAYS: [Grant; 7] = [
     Grant {
         who: "netstack",
         what: "DHCP on each network (UDP 68 to 67): an address, a router and DNS servers",
@@ -31,6 +31,11 @@ const ALWAYS: [Grant; 6] = [
     },
     Grant { who: "terminal", what: "what you type: ip, ping, nslookup and fetch", when: "only when you run them" },
     Grant { who: "settings", what: "this page: it reads the networks and this list", when: "while it's open" },
+    Grant {
+        who: "monitor",
+        what: "its Network tab: each network's packets and bytes",
+        when: "while that tab is shown",
+    },
     Grant {
         who: "updater",
         what: "the update host (HTTPS), for its list of updates and then the one you choose",
@@ -65,7 +70,7 @@ mod tests {
 
     #[test]
     fn netstack_serves_the_programs_the_list_names_and_no_one_else() {
-        for who in ["terminal", "settings", "updater"] {
+        for who in ["terminal", "settings", "updater", "monitor"] {
             assert!(allowed(who, false) && allowed(who, true), "{who}");
         }
         for who in ["conductor", "cdpd"] {
@@ -80,7 +85,7 @@ mod tests {
     #[test]
     fn every_grant_says_what_and_when() {
         assert!(list(true).all(|g| !g.who.is_empty() && !g.what.is_empty() && !g.when.is_empty()));
-        assert_eq!(list(false).count(), 6);
-        assert_eq!(list(true).count(), 8);
+        assert_eq!(list(false).count(), 7);
+        assert_eq!(list(true).count(), 9);
     }
 }

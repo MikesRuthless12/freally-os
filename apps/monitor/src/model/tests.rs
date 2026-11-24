@@ -148,3 +148,27 @@ fn the_state_keeps_the_newest_lines_that_fit_a_message() {
     assert_eq!(kept.last(), lines.last(), "the newest kept");
     assert_eq!(newest_that_fit(&lines[..3], STATE_LINES_BYTES), &lines[..3], "a short log, whole");
 }
+
+#[test]
+fn the_network_tab_counts_and_rates_its_traffic() {
+    let row = |rx: u64, tx: u64| NetRow {
+        name: "eth0".into(),
+        rx_frames: rx / 1000,
+        rx_bytes: rx,
+        tx_frames: tx / 1000,
+        tx_bytes: tx,
+        ..Default::default()
+    };
+    let mut n = Net::default();
+    n.sample(alloc::vec![row(1_000_000, 50_000)], 1_000_000_000);
+    assert!(n.history.is_empty(), "one reading: no rate yet");
+    n.sample(alloc::vec![row(3_000_000, 150_000)], 3_000_000_000);
+    assert_eq!(n.history, [(1_000_000.0, 50_000.0)], "2 MB and 100 kB over two seconds");
+    assert_eq!(n.rows[0].words(), "eth0: in 3000 packets, 2.9 MiB · out 150 packets, 147 KiB · dropped 0 in, 0 out");
+    for k in 0..100u64 {
+        n.sample(alloc::vec![row(3_000_000 + k, 150_000)], 4_000_000_000 + k * 1_000_000_000);
+    }
+    assert_eq!(n.history.len(), NET_HISTORY);
+    n.forget();
+    assert!(n.history.is_empty() && n.rows.is_empty());
+}

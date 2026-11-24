@@ -172,6 +172,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("net.dns", net::dns),
     ("net.https", net::https),
     ("net.grants", net::grants),
+    ("monitor.network", monitor::network),
     ("net.limits", net::limits),
     ("settings.network", settings::network),
     ("update.online.no", update::online_no),

@@ -13,6 +13,10 @@
 //!   what devmgr found (the screen, the PS/2 controller, the serial ports,
 //!   every PCI function) and the driver that took each; the wheel, the arrow
 //!   keys and Page Up/Down scroll it.
+//! - **Network** (TASK-186): each network's packets and bytes in and out
+//!   (and those dropped), as its driver counts them through netstack, and a
+//!   minute of bytes a second in and out in the fleet's pen; sampled only
+//!   while the tab is shown.
 //! - Super+M opens it (the desktop starts it). If conductor doesn't answer
 //!   within 500 ms: "Monitor couldn't reach the system service. It'll keep
 //!   trying."
@@ -22,7 +26,7 @@ extern crate alloc;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use app_monitor::model::{self, Boot, Column, DeviceRow, FaultRow, Line, Log, Proc, Processes};
+use app_monitor::model::{self, Boot, Column, DeviceRow, FaultRow, Line, Log, Net, NetRow, Proc, Processes};
 use fcore_abi::{FErr, perm, signal, well_known};
 use fimage::blit::Surface;
 use fstd::handle::Handle;
@@ -37,13 +41,16 @@ use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
 use fwire::proto::logger as lg;
 use fwire::proto::monitor as mon;
+use fwire::proto::net as nt;
 use fwire::proto::stage as st;
 
 fstd::program!(run);
 
 const W: u32 = 960;
 const H: u32 = 640;
-const TABS: [&str; 5] = ["Processes", "Boot", "Faults", "Log", "Devices"];
+const TABS: [&str; 6] = ["Processes", "Boot", "Faults", "Log", "Devices", "Network"];
+/// The Network tab's place.
+const NETWORK: usize = 5;
 const TAB_H: u32 = 44;
 const ROW_H: u32 = 32;
 const PAD: u32 = 16;
@@ -116,6 +123,9 @@ struct Monitor {
     devices_top: usize,
     /// Processes: the whole machine's CPU %, a sample a second (TASK-075A).
     cpu_history: Vec<f64>,
+    /// Network: the counts and the last minute's rates, and netstack.
+    net: Net,
+    netstack: Option<Client>,
     /// Conductor didn't answer three refreshes running: the banner (one
     /// missed refresh keeps what was shown).
     unreachable: bool,
@@ -210,6 +220,8 @@ impl Monitor {
             devices: Vec::new(),
             devices_top: 0,
             cpu_history: Vec::new(),
+            net: Net::default(),
+            netstack: None,
             unreachable: false,
             missed: 0,
             last_sample: 0,
@@ -288,7 +300,44 @@ impl Monitor {
             self.faults = rows;
         }
         self.read_log();
+        self.read_network(now);
         self.last_sample = now;
+    }
+
+    /// The Network tab's counts, only while it's shown (TASK-186).
+    fn read_network(&mut self, now: u64) {
+        if self.tab != NETWORK {
+            if !self.net.rows.is_empty() {
+                self.net.forget();
+            }
+            return;
+        }
+        if self.netstack.is_none() {
+            self.netstack = fstd::service::connect("netstack").ok().map(Client::new);
+        }
+        let Some(n) = self.netstack.as_mut() else { return };
+        match n.call::<_, nt::Traffic>(nt::STATS, &(), Vec::new(), deadline()) {
+            Ok((t, _)) => {
+                let rows = t
+                    .list
+                    .into_iter()
+                    .map(|c| NetRow {
+                        name: c.name,
+                        rx_frames: c.rx_frames,
+                        rx_bytes: c.rx_bytes,
+                        rx_dropped: c.rx_dropped,
+                        tx_frames: c.tx_frames,
+                        tx_bytes: c.tx_bytes,
+                        tx_dropped: c.tx_dropped,
+                    })
+                    .collect();
+                self.net.sample(rows, now);
+            }
+            Err(e) => {
+                fstd::warn!("monitor: netstack didn't give its counts ({e:?})");
+                self.netstack = None;
+            }
+        }
     }
 
     /// Devices from the kernel (every CPU) and devmgr (what it found, and
@@ -408,6 +457,7 @@ impl Monitor {
         let (svc, lvl) = (self.log.service.clone(), self.log.min_level);
         let cpus_line = self.cpus_line.clone();
         let history = self.cpu_history.clone();
+        let net = self.net.clone();
         let clock = self.clock.clone();
         let devices: Vec<DeviceRow> =
             self.devices.iter().skip(self.devices_top).take(self.device_rows_shown()).cloned().collect();
@@ -688,6 +738,69 @@ impl Monitor {
                             words(&mut s, fonts, t, TextStyle::Small, (px(700), y + px(1)), &r.driver, tok);
                         }
                     }
+                    NETWORK => {
+                        if net.rows.is_empty() {
+                            let said = "No network: netstack isn't running, or there's no card.";
+                            words(&mut s, fonts, t, TextStyle::Body, (px(PAD), top), said, Tok::Text2);
+                        }
+                        for (i, r) in net.rows.iter().enumerate() {
+                            let y = top + i as i32 * px(ROW_H);
+                            words(&mut s, fonts, t, TextStyle::Body, (px(PAD), y), &r.words(), Tok::Text);
+                        }
+                        // THE FLEET DISPLAY (TASK-075A): bytes a second in (the
+                        // accent, lit below) and out (a line) over the last minute.
+                        let graph_top = h as i32 - px(GRAPH_H) - px(PAD) - px(24);
+                        let gx = px(PAD) + px(72);
+                        let gy = graph_top + px(24);
+                        let (gw, gh) = (w.saturating_sub(t.px(2 * PAD) + t.px(72)), t.px(GRAPH_H));
+                        words(
+                            &mut s,
+                            fonts,
+                            t,
+                            TextStyle::Small,
+                            (px(PAD), graph_top),
+                            "Bytes a second, the last minute: in (lit), out (line)",
+                            Tok::Text2,
+                        );
+                        if net.history.len() < 2 {
+                            words(&mut s, fonts, t, TextStyle::Small, (gx, gy + px(40)), "Measuring…", Tok::Text3);
+                        } else {
+                            let top_rate = net.history.iter().map(|(a, b)| a.max(*b)).fold(1.0, f64::max);
+                            let mut faint = t.colour(Tok::Border);
+                            faint.a = 160;
+                            fui::plot::grid(&mut s, Rect::new(gx, gy, gw, gh), 4, 6, faint);
+                            let figure = model::bytes(top_rate as u64) + "/s";
+                            words(&mut s, fonts, t, TextStyle::Mono, (px(PAD), gy - px(8)), &figure, Tok::Text3);
+                            words(
+                                &mut s,
+                                fonts,
+                                t,
+                                TextStyle::Mono,
+                                (px(PAD), gy + gh as i32 - px(8)),
+                                "0",
+                                Tok::Text3,
+                            );
+                            let step = gw as f64 / (model::NET_HISTORY - 1) as f64;
+                            let first = model::NET_HISTORY - net.history.len();
+                            let line = |pick: fn(&(f64, f64)) -> f64| -> Vec<fui::plot::Pt> {
+                                net.history
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(k, v)| fui::plot::Pt {
+                                        x: gx as f64 + (first + k) as f64 * step,
+                                        y: gy as f64 + gh as f64 * (1.0 - pick(v) / top_rate),
+                                    })
+                                    .collect()
+                            };
+                            let (rx, tx) = (line(|v| v.0), line(|v| v.1));
+                            let (top_y, foot_y) = (gy as f64, (gy + gh as i32) as f64);
+                            let accent = t.colour(Tok::PrimaryInk);
+                            fui::plot::fill_under(&mut s, &rx, top_y, foot_y, accent, fui::plot::Ink::Body);
+                            fui::plot::stroke(&mut s, &rx, 1.5 * t.scale as f64, accent, t.mode == Mode::Dark);
+                            let out = t.colour(Tok::Signal);
+                            fui::plot::stroke(&mut s, &tx, 1.5 * t.scale as f64, out, t.mode == Mode::Dark);
+                        }
+                    }
                     _ => {
                         let chip = |name: &str| alloc::format!("[ {name} ]");
                         let svc_text = chip(&alloc::format!("Service: {}", svc.as_deref().unwrap_or("all")));
@@ -853,6 +966,33 @@ impl Monitor {
                     row.value = r.driver.clone();
                     nodes.push(row);
                 }
+            }
+            NETWORK => {
+                for (i, r) in self.net.rows.iter().enumerate() {
+                    let at = (px(PAD), top + i as i32 * px(ROW_H), self.w - t.px(2 * PAD), t.px(ROW_H));
+                    let mut row = node(ax::ROOT, ax::TEXT, &r.words(), 0, at);
+                    row.testid = alloc::format!("net-{}", r.name);
+                    nodes.push(row);
+                }
+                let gy = self.h as i32 - px(GRAPH_H) - px(PAD);
+                let mut graph = node(
+                    ax::ROOT,
+                    ax::IMG,
+                    "Network, the last minute",
+                    0,
+                    (px(PAD), gy, self.w - t.px(2 * PAD), t.px(GRAPH_H)),
+                );
+                graph.testid = String::from("net-graph");
+                graph.value = match self.net.history.last() {
+                    Some((rx, tx)) => alloc::format!(
+                        "{} samples, now {}/s in, {}/s out",
+                        self.net.history.len(),
+                        model::bytes(*rx as u64),
+                        model::bytes(*tx as u64)
+                    ),
+                    None => String::from("measuring"),
+                };
+                nodes.push(graph);
             }
             _ => {}
         }
@@ -1140,6 +1280,7 @@ impl Monitor {
                     self.log.shown().iter().map(|l| alloc::format!("{} {}", l.service, l.msg)).collect();
                 model::newest_that_fit(&all, model::STATE_LINES_BYTES).to_vec()
             }
+            NETWORK => self.net.rows.iter().map(NetRow::words).collect(),
             _ => {
                 let mut v = alloc::vec![self.cpus_line.clone()];
                 v.extend(self.devices.iter().map(|r| alloc::format!("{} | {} | {}", r.at, r.what, r.driver)));

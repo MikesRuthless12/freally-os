@@ -752,11 +752,18 @@
       "what": "netstack serves the programs its list names and no one else: a client called terminal is served; one called intruder is refused, and the refusal is said in the log."
     },
     {
+      "id": "monitor.network",
+      "task": "TASK-186",
+      "setup": "e2e-net",
+      "spec": "e2e/os/specs/monitor.rs",
+      "what": "Monitor's Network tab: eth0's packets and bytes in and out as netstack has them from its driver; a megabyte through TCP shows in them (never more than the driver counts after), and the graph fills; away from the tab nothing is sampled (back on it, the graph starts again)."
+    },
+    {
       "id": "settings.network",
       "task": "TASK-183",
       "setup": "e2e-net",
       "spec": "e2e/os/specs/settings.rs",
-      "what": "Settings ▸ Network: the interface as its driver and netstack's DHCP have it (driver, MAC, link; address, router, DNS), every connection the computer can make (netstack's list, a test image's eight, each with what and when), and none open."
+      "what": "Settings ▸ Network: the interface as its driver and netstack's DHCP have it (driver, MAC, link; address, router, DNS), every connection the computer can make (netstack's list, a test image's nine, each with what and when), and none open."
     }
   ]
 }

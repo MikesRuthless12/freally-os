@@ -67,6 +67,71 @@ fn click(ctx: &mut Ctx, (fx, fy): (i32, i32), x: i32, y: i32) -> Result<(), Stri
     button(ctx, false)
 }
 
+/// The Network tab's `in <n> packets` for eth0, as Monitor says it.
+fn packets_in(s: &State) -> Option<u64> {
+    let l = s.lines.iter().find(|l| l.starts_with("eth0: in "))?;
+    l.strip_prefix("eth0: in ")?.split(' ').next()?.parse().ok()
+}
+
+/// The graph's value: how many samples it holds.
+fn net_graph(ctx: &mut Ctx) -> Result<String, String> {
+    let n = crate::sweep::until_q(ctx, &crate::session::sel("net-graph"))?;
+    Ok(crate::sweep::attr(ctx, n, "aria-valuenow")?.unwrap_or_default())
+}
+
+/// `@monitor.network` (TASK-186): the Network tab shows eth0's packets and
+/// bytes in and out as netstack has them from its driver; a megabyte through
+/// TCP shows in them, and the graph fills; away from the tab Monitor samples
+/// nothing (back on it, its graph starts again).
+pub fn network(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
+    ctx.expect_log("desktop: the Rack is up")?;
+    key(ctx, "MetaLeft", true)?;
+    key(ctx, "KeyM", true)?;
+    key(ctx, "KeyM", false)?;
+    key(ctx, "MetaLeft", false)?;
+    ctx.expect_log("monitor: open")?;
+    let f = frame(ctx)?;
+    click(ctx, f, 16 + 5 * 140 + 30, 20)?;
+    let s = until(ctx, "the Network tab", |s| s.tab == "Network" && packets_in(s).is_some())?;
+    let before = packets_in(&s).unwrap_or(0);
+    let echoed = ctx.door("tcp echo 10.0.2.100 7 1000000")?;
+    if !echoed.first().is_some_and(|l| l.starts_with("echoed 1000000 bytes")) {
+        return Err(format!("tcp echo: {echoed:?}"));
+    }
+    // A megabyte back: at least 680 frames of 1,460 bytes in.
+    let s = until(ctx, "the echo in the counts", |s| packets_in(s).is_some_and(|n| n >= before + 680))?;
+    let shown = packets_in(&s).unwrap_or(0);
+    let stats = ctx.door("netdev stats")?;
+    let driver: u64 = stats
+        .first()
+        .and_then(|l| l.split("rx=").nth(1))
+        .and_then(|r| r.split('/').next())
+        .and_then(|n| n.parse().ok())
+        .ok_or(format!("netdev stats: {stats:?}"))?;
+    if driver < shown {
+        return Err(format!("Monitor says {shown} frames in, the driver {driver} after it"));
+    }
+    let start = Instant::now();
+    while !net_graph(ctx)?.split(' ').next().and_then(|n| n.parse::<u32>().ok()).is_some_and(|n| n >= 2) {
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(format!("the graph holds {:?}", net_graph(ctx)?));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    // Away: nothing sampled; back: the graph starts again.
+    click(ctx, f, 16 + 30, 20)?;
+    until(ctx, "Processes", |s| s.tab == "Processes")?;
+    std::thread::sleep(Duration::from_secs(3));
+    click(ctx, f, 16 + 5 * 140 + 30, 20)?;
+    until(ctx, "the Network tab again", |s| s.tab == "Network")?;
+    let again = net_graph(ctx)?;
+    if !(again == "measuring" || again.starts_with("1 samples")) {
+        return Err(format!("back on the tab, the graph holds {again:?}: it went on sampling while hidden"));
+    }
+    Ok(())
+}
+
 /// `@monitor.tabs`: Super+M opens Monitor; Processes lists every service
 /// with its state, memory, CPU % and restarts, sorted by a header click
 /// (again: the other way); Boot shows each stage and the summary; Faults
@@ -129,8 +194,8 @@ pub fn tabs(ctx: &mut Ctx) -> Result<(), String> {
     if svc != "all" && s.lines.iter().any(|l| !l.starts_with(&format!("{svc} "))) {
         return Err(format!("the filter let others through: {:?}", s.lines));
     }
-    // Ctrl+Tab: on to Devices, then back round to Processes.
-    for want in ["Devices", "Processes"] {
+    // Ctrl+Tab: on to Devices and Network, then back round to Processes.
+    for want in ["Devices", "Network", "Processes"] {
         key(ctx, "ControlLeft", true)?;
         key(ctx, "Tab", true)?;
         key(ctx, "Tab", false)?;
@@ -174,8 +239,8 @@ pub fn sweep(ctx: &mut Ctx) -> Result<(), String> {
         until_attr(ctx, &c.sel, "aria-selected", "true")?;
         until(ctx, "the tab", |s| s.tab == c.label).map(|_| ())
     })?;
-    if tabs != 5 {
-        return Err(format!("{tabs} tabs, not 5"));
+    if tabs != 6 {
+        return Err(format!("{tabs} tabs, not 6"));
     }
     // Each tab's own controls.
     let tab = |ctx: &mut Ctx, id: &str| -> Result<(), String> {

@@ -524,7 +524,7 @@ fn network_line(ctx: &mut Ctx, id: &str) -> Result<String, String> {
 /// `@settings.network` (TASK-183): Settings ▸ Network (a guest's, on the
 /// VM's own network): the interface as its driver and netstack's DHCP lease
 /// have it (driver, MAC, link; address, router, DNS), every connection the
-/// computer can make (netstack's list, a test image's eight), and none open.
+/// computer can make (netstack's list, a test image's nine), and none open.
 pub fn network(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
     // The lease as netstack said it: QEMU's restricted network gives no router or DNS.
@@ -555,13 +555,17 @@ pub fn network(ctx: &mut Ctx) -> Result<(), String> {
             String::from("terminal: what you type: ip, ping, nslookup and fetch; only when you run them."),
         ),
         (
-            "settings-network-grant-5",
+            "settings-network-grant-6",
             String::from(
                 "updater: the update host (HTTPS), for its list of updates and then the one you choose; only when you press Check online, then Download.",
             ),
         ),
         (
-            "settings-network-grant-7",
+            "settings-network-grant-5",
+            String::from("monitor: its Network tab: each network's packets and bytes; while that tab is shown."),
+        ),
+        (
+            "settings-network-grant-8",
             String::from("cdpd: the test harness's view of the network; in test images only."),
         ),
         ("settings-network-open-0", String::from("No connection is open.")),
@@ -572,8 +576,8 @@ pub fn network(ctx: &mut Ctx) -> Result<(), String> {
             return Err(format!("{id} says {said:?}, not {words:?}"));
         }
     }
-    if q(ctx, &sel("settings-network-grant-8"))? != 0 {
-        return Err("more than the eight connections a test image can make".into());
+    if q(ctx, &sel("settings-network-grant-9"))? != 0 {
+        return Err("more than the nine connections a test image can make".into());
     }
     press(ctx, "Escape")?;
     closed(ctx)

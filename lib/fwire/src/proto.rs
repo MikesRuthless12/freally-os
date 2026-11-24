@@ -1412,6 +1412,9 @@ pub mod net {
     /// make (netstack's own, and each program it serves: the one list it
     /// checks clients against), then the TCP connections open now.
     pub const CONNECTIONS: u32 = 9;
+    /// `()` → `Traffic` (TASK-186): each network's packets and bytes in and
+    /// out, and those dropped, as its driver counts them.
+    pub const STATS: u32 = 10;
 
     wire_struct! {
         pub struct Interface {
@@ -1438,6 +1441,21 @@ pub mod net {
     }
     wire_struct! {
         pub struct Connections { pub grants: Vec<Grant>, pub open: Vec<Open> }
+    }
+    wire_struct! {
+        /// One network's counts since its driver started.
+        pub struct Counts {
+            pub name: String,
+            pub rx_frames: u64,
+            pub rx_bytes: u64,
+            pub rx_dropped: u64,
+            pub tx_frames: u64,
+            pub tx_bytes: u64,
+            pub tx_dropped: u64,
+        }
+    }
+    wire_struct! {
+        pub struct Traffic { pub list: Vec<Counts> }
     }
     wire_struct! {
         pub struct Interfaces { pub list: Vec<Interface> }
@@ -1659,6 +1677,7 @@ pub mod inventory {
                 (nt::TCP_CLOSE, "tcp_close"),
                 (nt::RESOLVE, "resolve"),
                 (nt::CONNECTIONS, "connections"),
+                (nt::STATS, "stats"),
             ],
         ),
         ("drv-e1000", &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")]),

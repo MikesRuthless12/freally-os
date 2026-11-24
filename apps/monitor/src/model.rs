@@ -111,6 +111,73 @@ pub fn bytes(b: u64) -> String {
     }
 }
 
+/// One network's counts as Monitor shows them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NetRow {
+    pub name: String,
+    pub rx_frames: u64,
+    pub rx_bytes: u64,
+    pub rx_dropped: u64,
+    pub tx_frames: u64,
+    pub tx_bytes: u64,
+    pub tx_dropped: u64,
+}
+
+impl NetRow {
+    /// "eth0: in 1,234 packets, 1.2 MiB · out 567 packets, 89 KiB · dropped 0 in, 0 out".
+    pub fn words(&self) -> String {
+        alloc::format!(
+            "{}: in {} packets, {} · out {} packets, {} · dropped {} in, {} out",
+            self.name,
+            self.rx_frames,
+            bytes(self.rx_bytes),
+            self.tx_frames,
+            bytes(self.tx_bytes),
+            self.rx_dropped,
+            self.tx_dropped
+        )
+    }
+}
+
+/// The Network tab (TASK-186): each network's counts, and the bytes a
+/// second in and out over the last minute (every network together), sampled
+/// only while the tab is shown.
+#[derive(Clone, Debug, Default)]
+pub struct Net {
+    pub rows: Vec<NetRow>,
+    /// (in, out) bytes a second, oldest first, at most `NET_HISTORY`.
+    pub history: Vec<(f64, f64)>,
+    last: Option<(u64, u64, u64)>,
+}
+
+/// How many samples the Network graph holds (a second each).
+pub const NET_HISTORY: usize = 60;
+
+impl Net {
+    /// A new reading at `now_ns`: the rows, and the rate since the last.
+    pub fn sample(&mut self, rows: Vec<NetRow>, now_ns: u64) {
+        let rx: u64 = rows.iter().map(|r| r.rx_bytes).sum();
+        let tx: u64 = rows.iter().map(|r| r.tx_bytes).sum();
+        if let Some((t, r0, t0)) = self.last
+            && now_ns > t
+        {
+            let secs = (now_ns - t) as f64 / 1e9;
+            if self.history.len() == NET_HISTORY {
+                self.history.remove(0);
+            }
+            self.history.push((rx.saturating_sub(r0) as f64 / secs, tx.saturating_sub(t0) as f64 / secs));
+        }
+        self.last = Some((now_ns, rx, tx));
+        self.rows = rows;
+    }
+
+    /// Hidden: the next showing starts its graph again (nothing is sampled
+    /// while it isn't seen).
+    pub fn forget(&mut self) {
+        *self = Net::default();
+    }
+}
+
 /// "3.2 %", or "—" before the second sample.
 pub fn cpu(p: Option<f32>) -> String {
     p.map_or(String::from("—"), |v| alloc::format!("{v:.1} %"))
