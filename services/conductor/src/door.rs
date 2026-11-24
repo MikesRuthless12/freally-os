@@ -358,30 +358,15 @@ impl Door {
                 (_, None) => self.send("error: no A/B record"),
                 _ => self.send("error: bootctl, or bootctl trial b"),
             },
-            // The zone (TASK-180A): `zone` says it, `zone <minutes> local|utc`
-            // sets it as Settings' SET_ZONE does (a spec on a VM with no
-            // session: @net.tls).
+            // The update host (TASK-182): `update host <name> <root DER in hex>`
+            // gives an e2e image's updater a test host and its root.
+            "update" => {
+                let line = update_host(c, arg);
+                self.send(&line);
+            }
             "zone" => {
-                let mut w = arg.split(' ');
-                let z = match (w.next(), w.next(), w.next()) {
-                    (Some(""), None, None) => None,
-                    (Some(m), Some(k @ ("local" | "utc")), None) => match m.parse::<i16>() {
-                        Ok(offset_min) => Some(fbootctl::clock::Zone { offset_min, rtc_local: k == "local" }),
-                        Err(_) => return self.send("error: zone, or zone <minutes> local|utc"),
-                    },
-                    _ => return self.send("error: zone, or zone <minutes> local|utc"),
-                };
-                match z {
-                    None => {
-                        let (m, l) = fstd::machine::zone().unwrap_or((0, false));
-                        self.send(&alloc::format!("zone {m} {}", if l { "local" } else { "utc" }));
-                    }
-                    Some(z) if !z.valid() => self.send("error: not a zone"),
-                    Some(z) => match fstd::sys::uefi_set_var(fbootctl::clock::NAME, &z.encode()) {
-                        Ok(()) => self.send("ok"),
-                        Err(e) => self.send(&alloc::format!("error: {}", e.describe())),
-                    },
-                }
+                let line = zone(arg);
+                self.send(&line);
             }
             "stage" => {
                 for line in self.stage.run(c, arg) {
@@ -441,6 +426,58 @@ impl Door {
 }
 
 /// `echo`'s arguments: a byte count, and a stall in milliseconds (0 if none).
+/// `update host <name> <root DER in hex>` (TASK-182): an e2e image's
+/// updater given a test host and its root (once Settings has started it).
+fn update_host(c: &mut Conductor, arg: &str) -> String {
+    let hex = |s: &str| -> Option<Vec<u8>> {
+        if s.len() % 2 != 0 {
+            return None;
+        }
+        s.as_bytes().chunks(2).map(|p| u8::from_str_radix(core::str::from_utf8(p).ok()?, 16).ok()).collect()
+    };
+    let w: Vec<&str> = arg.split_whitespace().collect();
+    let (["host", host, root], Some(der)) = (w.as_slice(), w.get(2).and_then(|r| hex(r))) else {
+        return String::from("error: update host <name> <root DER in hex>");
+    };
+    let _ = root;
+    let Some(ch) = c.open_connection("updater", "conductor") else {
+        return String::from("error: the updater isn't running (Settings ▸ Update starts it)");
+    };
+    let mut cl = fstd::ipc::Client::new(ch);
+    let t = fwire::proto::updater::TestHost { host: String::from(*host), root: der };
+    let wait = Instant::after(fstd::time::Duration::from_secs(10));
+    match cl.call::<_, ()>(fwire::proto::updater::TEST_HOST, &t, Vec::new(), wait) {
+        Ok(_) => String::from("ok"),
+        Err(e) => alloc::format!("error: {e:?}"),
+    }
+}
+
+/// The zone (TASK-180A): `zone` says it; `zone <minutes> local|utc` sets it
+/// as Settings' SET_ZONE does (a spec on a VM with no session: @net.tls).
+fn zone(arg: &str) -> String {
+    const USAGE: &str = "error: zone, or zone <minutes> local|utc";
+    let mut w = arg.split(' ');
+    let z = match (w.next(), w.next(), w.next()) {
+        (Some(""), None, None) => None,
+        (Some(m), Some(k @ ("local" | "utc")), None) => match m.parse::<i16>() {
+            Ok(offset_min) => Some(fbootctl::clock::Zone { offset_min, rtc_local: k == "local" }),
+            Err(_) => return String::from(USAGE),
+        },
+        _ => return String::from(USAGE),
+    };
+    match z {
+        None => {
+            let (m, l) = fstd::machine::zone().unwrap_or((0, false));
+            alloc::format!("zone {m} {}", if l { "local" } else { "utc" })
+        }
+        Some(z) if !z.valid() => String::from("error: not a zone"),
+        Some(z) => match fstd::sys::uefi_set_var(fbootctl::clock::NAME, &z.encode()) {
+            Ok(()) => String::from("ok"),
+            Err(e) => alloc::format!("error: {}", e.describe()),
+        },
+    }
+}
+
 fn echo_args(arg: &str) -> Option<(usize, u64)> {
     let mut words = arg.split_whitespace();
     let n = words.next()?.parse().ok()?;

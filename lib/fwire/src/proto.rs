@@ -1490,6 +1490,20 @@ pub mod updater {
     pub const SWITCH_BACK: u32 = 7;
     /// `()` → `()`: restart now (to finish an update or a switch back).
     pub const RESTART: u32 = 8;
+    /// `()` → `Offer` (TASK-182): the host's update index fetched and checked,
+    /// and what it offers this system; why not (no host, up to date, the
+    /// index refused) as the error's words.
+    pub const ONLINE_CHECK: u32 = 9;
+    /// `()` → `()`: the offer's package opened, its header and notes checked
+    /// as BEGIN checks them, the slot's first block cleared.
+    pub const ONLINE_BEGIN: u32 = 10;
+    /// `()` → `Progress`: the next part of the package written; at its end,
+    /// its size and SHA-256 held to the index's, then FINISH's checks and the
+    /// trial (`version` says which).
+    pub const ONLINE_STEP: u32 = 11;
+    /// e2e images only, from the test door: the test host and its root
+    /// (`TestHost` → `()`).
+    pub const TEST_HOST: u32 = 12;
 
     wire_struct! {
         pub struct Bytes { pub data: Vec<u8> }
@@ -1507,6 +1521,21 @@ pub mod updater {
 
     wire_struct! {
         pub struct Version { pub version: String }
+    }
+
+    wire_struct! {
+        /// What the host offers: the version, the oldest it updates, its
+        /// notes, the package's size, and the host.
+        pub struct Offer { pub version: String, pub oldest: String, pub notes: String, pub size: u64, pub host: String }
+    }
+
+    wire_struct! {
+        /// How far a download is; `version` once it's installed.
+        pub struct Progress { pub got: u64, pub total: u64, pub version: String }
+    }
+
+    wire_struct! {
+        pub struct TestHost { pub host: String, pub root: Vec<u8> }
     }
 
     wire_struct! {
@@ -1632,6 +1661,10 @@ pub mod inventory {
                 (up::STATE, "state"),
                 (up::SWITCH_BACK, "switch_back"),
                 (up::RESTART, "restart"),
+                (up::ONLINE_CHECK, "online_check"),
+                (up::ONLINE_BEGIN, "online_begin"),
+                (up::ONLINE_STEP, "online_step"),
+                (up::TEST_HOST, "test_host"),
             ],
         ),
         (

@@ -6,7 +6,9 @@
 //! `fetch` and the e2e door's `tls get` both use it.
 //!
 //! Bounded: the connection 10 s, each read 5 s of silence, the whole fetch
-//! 60 s, the body the caller's limit.
+//! 60 s, the body the caller's limit. A `Stream` hands a large body on a
+//! piece at a time instead (a package on its way to the disk), within the
+//! time its caller gives it.
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
@@ -172,7 +174,7 @@ impl Conn<'_> {
     /// The next bytes from the server; empty at its end.
     fn recv(&mut self, what: &str) -> Result<Vec<u8>, String> {
         if Instant::now().as_ns() >= self.end {
-            return Err(alloc::format!("the fetch took over {} s", WHOLE.as_secs()));
+            return Err(String::from("the fetch took longer than it was given"));
         }
         let r = self.call::<_, nt::Received>(
             nt::TCP_RECV,
@@ -221,6 +223,126 @@ impl Conn<'_> {
             None => http.close().map_err(|e| alloc::format!("http {e:?}"))?.clone(),
         };
         Ok((suite, r))
+    }
+}
+
+/// A GET whose body comes a piece at a time (TASK-182: a package on its
+/// way to the disk, never held whole). `open` connects, checks the chain,
+/// sends the request and reads up to the response's head; `next` hands on
+/// the body's next bytes, `None` once it's whole; `close` ends it. The
+/// caller keeps netstack's client and passes it to each.
+pub struct Stream<'r> {
+    id: u32,
+    tls: ftls::Client<'r>,
+    http: fhttp::Reader,
+    end: u64,
+    pub suite: String,
+    pub status: u16,
+    pub reason: String,
+    closed: bool,
+}
+
+impl<'r> Stream<'r> {
+    /// `url` (no redirect followed), its body at most `limit` bytes, all of
+    /// it within `whole`.
+    pub fn open(
+        net: &mut Client,
+        url: &Url,
+        roots: &'r [&'r [u8]],
+        limit: usize,
+        whole: Duration,
+    ) -> Result<Stream<'r>, String> {
+        let end = Instant::after(whole);
+        let to = resolve(net, &url.host, end)?;
+        let mut entropy = [0u8; 96];
+        frandom::fill(&mut entropy).map_err(|_| String::from("no randomness"))?;
+        let now = fstd::time::utc_ns() / 1_000_000_000;
+        let tls = ftls::Client::new(&url.host, roots, now, &entropy).map_err(why)?;
+        entropy.fill(0);
+        let wait = Instant::after(Duration::from_secs(12)).min(end);
+        let connect = nt::Connect { to, port: url.port, timeout_ms: 10_000 };
+        let (sock, _) = net.call::<_, nt::Socket>(nt::TCP_CONNECT, &connect, Vec::new(), wait).map_err(remote)?;
+        let mut s = Stream {
+            id: sock.id,
+            tls,
+            http: fhttp::Reader::new(limit),
+            end,
+            suite: String::from("?"),
+            status: 0,
+            reason: String::new(),
+            closed: false,
+        };
+        match s.start(net, url) {
+            Ok(()) => Ok(s),
+            Err(e) => {
+                s.close(net);
+                Err(e)
+            }
+        }
+    }
+
+    fn start(&mut self, net: &mut Client, url: &Url) -> Result<(), String> {
+        let mut c = Conn { net, id: self.id, end: self.end };
+        c.flush(&mut self.tls)?;
+        while !self.tls.is_connected() {
+            let data = c.recv("in the handshake")?;
+            if data.is_empty() {
+                return Err(String::from("the server closed mid-handshake"));
+            }
+            let fed = self.tls.feed(&data);
+            c.flush(&mut self.tls)?;
+            fed.map_err(why)?;
+        }
+        self.suite = self.tls.suite().map_or(String::from("?"), |s| alloc::format!("{s:?}"));
+        self.tls.write(&fhttp::get(&url.host, &url.path)).map_err(why)?;
+        c.flush(&mut self.tls)?;
+        while self.http.head().is_none() {
+            let data = c.recv("before the response")?;
+            if data.is_empty() {
+                return Err(String::from("the server closed before it answered"));
+            }
+            self.tls.feed(&data).map_err(why)?;
+            c.flush(&mut self.tls)?;
+            self.http.feed(&self.tls.take_data()).map_err(|e| alloc::format!("http {e:?}"))?;
+        }
+        let h = self.http.head().ok_or("no response")?;
+        (self.status, self.reason) = (h.status, h.reason.clone());
+        Ok(())
+    }
+
+    /// The body's next bytes (an empty piece: nothing yet, ask again);
+    /// `None` once it's whole.
+    pub fn next(&mut self, net: &mut Client) -> Result<Option<Vec<u8>>, String> {
+        let held = self.http.take_body();
+        if !held.is_empty() {
+            return Ok(Some(held));
+        }
+        if self.http.done().is_some() {
+            return Ok(None);
+        }
+        let mut c = Conn { net, id: self.id, end: self.end };
+        let data = if self.tls.peer_closed() { Vec::new() } else { c.recv("in the body")? };
+        if data.is_empty() {
+            // The connection's end: whole only if the body ran to it.
+            self.http.close().map_err(|e| alloc::format!("http {e:?}"))?;
+            let rest = self.http.take_body();
+            return Ok((!rest.is_empty()).then_some(rest));
+        }
+        self.tls.feed(&data).map_err(why)?;
+        c.flush(&mut self.tls)?;
+        self.http.feed(&self.tls.take_data()).map_err(|e| alloc::format!("http {e:?}"))?;
+        Ok(Some(self.http.take_body()))
+    }
+
+    /// Ends it (close_notify, then the TCP connection).
+    pub fn close(&mut self, net: &mut Client) {
+        if core::mem::replace(&mut self.closed, true) {
+            return;
+        }
+        self.tls.close();
+        let mut c = Conn { net, id: self.id, end: Instant::after(Duration::from_secs(2)) };
+        let _ = c.flush(&mut self.tls);
+        let _ = c.call::<_, ()>(nt::TCP_CLOSE, &nt::Socket { id: self.id }, 2);
     }
 }
 

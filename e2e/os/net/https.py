@@ -5,6 +5,9 @@
 #   /chunked  the same page, chunked
 #   /moved    301 to https://test.freally.local/
 #   /loop     302 to itself
+#   anything else: a file under DIR/www (TASK-182: an update index and its
+#             packages), or 404
+# Every path asked for is written to DIR/requests.log as it comes.
 # A host tool, run as root beside testnet.py; it ends with the spec.
 # usage: https.py DIR ADDRESS
 
@@ -14,7 +17,10 @@ import ssl
 import sys
 
 d, address = sys.argv[1], sys.argv[2]
-page = open(os.path.join(d, "page.bin"), "rb").read()
+page_path = os.path.join(d, "page.bin")
+page = open(page_path, "rb").read() if os.path.exists(page_path) else b""
+asked = open(os.path.join(d, "requests.log"), "a", buffering=1)
+www = os.path.join(d, "www")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -30,6 +36,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        asked.write(self.path + "\n")
+        f = os.path.normpath(os.path.join(www, self.path.lstrip("/")))
         if self.path == "/":
             self.send_response(200)
             self.send_header("Content-Length", str(len(page)))
@@ -47,6 +55,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.moved(301, "https://test.freally.local/")
         elif self.path == "/loop":
             self.moved(302, "https://test.freally.local/loop")
+        elif f.startswith(www + os.sep) and os.path.isfile(f):
+            self.send_response(200)
+            self.send_header("Content-Length", str(os.path.getsize(f)))
+            self.end_headers()
+            with open(f, "rb") as src:
+                while True:
+                    piece = src.read(64 * 1024)
+                    if not piece:
+                        break
+                    self.wfile.write(piece)
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
@@ -55,6 +73,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+# The client's order, not the server's: ftls offers ChaCha20-Poly1305 first
+# while its AES runs in constant-time software (TASK-178: AES-NI later).
+ctx.options &= ~ssl.OP_CIPHER_SERVER_PREFERENCE
 ctx.load_cert_chain(os.path.join(d, "leaf.pem"), os.path.join(d, "leaf.key"))
 server = http.server.ThreadingHTTPServer((address, 443), Handler)
 server.socket = ctx.wrap_socket(server.socket, server_side=True)

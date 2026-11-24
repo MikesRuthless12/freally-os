@@ -30,6 +30,8 @@ pub struct VmOptions {
     /// The NIC on a test network of its own (TASK-176): a TAP device, and a
     /// DHCP and DNS server on it (`e2e/os/net/testnet.py`), not QEMU's.
     pub testnet: bool,
+    /// What the test update host serves (`fup::online_www`), for the CDP runner.
+    pub www: Option<PathBuf>,
     pub memory_mb: u32,
     pub cpus: u32,
     /// Test only: flip one bit of this byte in the VM's copy of the image, to
@@ -93,6 +95,7 @@ impl VmOptions {
             updates: false,
             nic: None,
             testnet: false,
+            www: None,
             cpu: None,
         }
     }

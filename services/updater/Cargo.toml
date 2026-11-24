@@ -19,7 +19,8 @@ flavour-e2e = []
 [dependencies]
 fcore-abi.workspace = true
 fcrypto.workspace = true
-fsi.workspace = true
+fhttps.workspace = true
+fsi = { workspace = true, features = ["alloc"] }
 fstd.workspace = true
 fwire.workspace = true
 

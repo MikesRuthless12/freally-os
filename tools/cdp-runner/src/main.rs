@@ -171,6 +171,9 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("net.tls", net::tls),
     ("net.dns", net::dns),
     ("net.https", net::https),
+    ("update.online.no", update::online_no),
+    ("update.online.bad-signature", update::online_bad_signature),
+    ("update.online", update::online),
 ];
 
 /// The docs-site leg's specs (`cdp-runner --site DIR`).
@@ -228,6 +231,8 @@ pub struct Ctx {
     pub com3: Option<String>,
     /// Where QEMU's 10.0.2.100:443 goes on this machine (`--tls-port`).
     pub tls_port: Option<u16>,
+    /// What the test update host serves (`--www`, TASK-182).
+    pub www: Option<PathBuf>,
     /// What the guard lets this spec do: restart services, file faults; and
     /// whether it rebooted the VM (the guard's counts begin again).
     allow_restarts: bool,
@@ -724,6 +729,7 @@ fn main() {
         allowed_errors: Vec::new(),
         com3: arg("--com3"),
         tls_port: arg("--tls-port").and_then(|p| p.parse().ok()),
+        www: arg("--www").map(PathBuf::from),
         allow_restarts: false,
         allow_faults: false,
         rebooted: false,

@@ -3,7 +3,8 @@
 //! waiting for a restart, *Switch back*, and *Install from a file*: the
 //! packages found (`/system/updates`, Home ▸ Downloads), one chosen and
 //! inspected (its version, who signed it, its notes), installed with a
-//! meter, then *Restart now*. The updater does the work; this decides what's
+//! meter, then *Restart now*. And *Check online* (TASK-182): what the update
+//! host offers, its size and notes, downloaded and installed only on yes. The updater does the work; this decides what's
 //! said and which keys there are.
 
 use alloc::string::String;
@@ -32,6 +33,10 @@ pub struct View {
     pub installing: Option<(u64, u64)>,
     /// What the last key did.
     pub note: Option<String>,
+    /// The last *Check online*: what the host offers, or why nothing.
+    pub online: Option<Result<up::Offer, String>>,
+    /// The install going on is a download (stepped by the updater).
+    pub downloading: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +45,9 @@ pub enum Act {
     SwitchBack,
     File(usize),
     Install,
+    CheckOnline,
+    Download,
+    NotNow,
 }
 
 fn slot_name(s: u8) -> &'static str {
@@ -73,8 +81,19 @@ impl View {
                 }
             }
         }
+        match &self.online {
+            Some(Ok(o)) => v.push(alloc::format!(
+                "Freally OS {} is ready to download from {}: {:.1} MB.",
+                o.version,
+                o.host,
+                o.size as f64 / 1e6
+            )),
+            Some(Err(why)) => v.push(why.clone()),
+            None => {}
+        }
         if let Some((sent, total)) = self.installing {
-            v.push(alloc::format!("Installing: {} %", sent * 100 / total.max(1)));
+            let doing = if self.downloading { "Downloading and installing" } else { "Installing" };
+            v.push(alloc::format!("{doing}: {} %", sent * 100 / total.max(1)));
         }
         v
     }
@@ -100,6 +119,19 @@ impl View {
         }
         if let Some(Ok(info)) = &self.info {
             v.push((alloc::format!("Install {}", info.version), String::from("settings-update-install"), Act::Install));
+        }
+        // Online (TASK-182): nothing fetched until asked; nothing downloaded
+        // until yes.
+        match &self.online {
+            Some(Ok(o)) => {
+                v.push((
+                    alloc::format!("Download and install {}", o.version),
+                    String::from("settings-update-download"),
+                    Act::Download,
+                ));
+                v.push((String::from("Not now"), String::from("settings-update-not-now"), Act::NotNow));
+            }
+            _ => v.push((String::from("Check online"), String::from("settings-update-check"), Act::CheckOnline)),
         }
         v
     }
@@ -154,10 +186,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(v.lines(), ["This computer runs Freally OS 0.4.0, from slot A."]);
-        assert_eq!(ids(&v), ["settings-update-file-e2e-0.4.1.fup"]);
+        assert_eq!(ids(&v), ["settings-update-file-e2e-0.4.1.fup", "settings-update-check"]);
         v.chosen = Some(0);
         v.info = Some(Ok(info()));
-        assert_eq!(ids(&v), ["settings-update-file-e2e-0.4.1.fup", "settings-update-install"]);
+        assert_eq!(ids(&v), ["settings-update-file-e2e-0.4.1.fup", "settings-update-install", "settings-update-check"]);
         assert_eq!(v.chosen_words().unwrap(), "Freally OS 0.4.1 · signed with the dev key · 202.0 MB");
         v.installing = Some((50, 200));
         assert!(v.keys().is_empty(), "no keys while it installs");
@@ -168,12 +200,39 @@ mod tests {
     fn an_update_waiting_offers_restart_and_a_good_other_slot_switch_back() {
         let v = View { state: Some(Ok(state(TRIAL, "0.4.1", true))), ..Default::default() };
         assert_eq!(v.lines()[1], "0.4.1 is installed: it starts when you restart.");
-        assert_eq!(ids(&v), ["settings-update-restart"]);
+        assert_eq!(ids(&v), ["settings-update-restart", "settings-update-check"]);
         let v = View { state: Some(Ok(state(GOOD, "0.4.0", false))), ..Default::default() };
-        assert_eq!(ids(&v), ["settings-update-switch-back"]);
+        assert_eq!(ids(&v), ["settings-update-switch-back", "settings-update-check"]);
         assert_eq!(v.keys()[0].0, "Switch back to 0.4.0");
         let v = View { state: Some(Ok(state(GOOD, "0.4.0", true))), ..Default::default() };
-        assert_eq!(ids(&v), ["settings-update-restart"], "switched back: restart to finish");
+        assert_eq!(ids(&v), ["settings-update-restart", "settings-update-check"], "switched back: restart to finish");
+    }
+
+    fn offer() -> up::Offer {
+        up::Offer {
+            version: String::from("0.4.1"),
+            oldest: String::new(),
+            notes: String::from("# 0.4.1"),
+            size: 203_800_000,
+            host: String::from("updates.example"),
+        }
+    }
+
+    #[test]
+    fn check_online_offers_a_download_only_after_asking() {
+        let mut v = View { state: Some(Ok(state(EMPTY, "", false))), ..Default::default() };
+        assert_eq!(ids(&v), ["settings-update-check"], "nothing fetched until asked");
+        v.online = Some(Ok(offer()));
+        assert_eq!(v.lines()[1], "Freally OS 0.4.1 is ready to download from updates.example: 203.8 MB.");
+        assert_eq!(ids(&v), ["settings-update-download", "settings-update-not-now"]);
+        v.online = Some(Err(String::from("Freally OS 0.4.0 is up to date.")));
+        assert_eq!(v.lines()[1], "Freally OS 0.4.0 is up to date.");
+        assert_eq!(ids(&v), ["settings-update-check"], "asked again");
+        v.online = Some(Ok(offer()));
+        v.installing = Some((1, 4));
+        v.downloading = true;
+        assert!(v.keys().is_empty());
+        assert_eq!(v.lines()[2], "Downloading and installing: 25 %");
     }
 
     #[test]
@@ -188,7 +247,11 @@ mod tests {
             info: Some(Err(String::from("This update was changed after it was signed."))),
             ..Default::default()
         };
-        assert_eq!(ids(&v), ["settings-update-file-bad.fup"], "no Install for a refused package");
+        assert_eq!(
+            ids(&v),
+            ["settings-update-file-bad.fup", "settings-update-check"],
+            "no Install for a refused package"
+        );
         assert_eq!(v.chosen_words().unwrap(), "This update was changed after it was signed.");
     }
 }

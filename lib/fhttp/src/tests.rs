@@ -89,3 +89,46 @@ fn redirects_go_to_https_only() {
     assert_eq!(to(302, "https://cdn.freally.local:8443/x"), None);
     assert_eq!(to(200, "https://cdn.freally.local/x"), None);
 }
+
+#[test]
+fn a_body_streams_through_by_each_framing_and_the_limit_counts_all_of_it() {
+    let body: Vec<u8> = (0..5000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let mut chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+    for piece in body.chunks(700) {
+        chunked.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+        chunked.extend_from_slice(piece);
+        chunked.extend_from_slice(b"\r\n");
+    }
+    chunked.extend_from_slice(b"0\r\n\r\n");
+    let mut length = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    length.extend_from_slice(&body);
+    let mut close = b"HTTP/1.0 200 OK\r\n\r\n".to_vec();
+    close.extend_from_slice(&body);
+    for (name, wire) in [("chunked", &chunked), ("length", &length), ("close", &close)] {
+        let mut r = Reader::new(body.len());
+        let mut out = Vec::new();
+        for piece in wire.chunks(333) {
+            r.feed(piece).unwrap();
+            out.extend(r.take_body());
+            // Never more held than one piece's worth.
+            assert!(r.head().is_some_and(|h| h.body.is_empty()) || r.head().is_none(), "{name}");
+        }
+        if name == "close" {
+            r.close().unwrap();
+        }
+        out.extend(r.take_body());
+        assert!(r.done().is_some(), "{name}: done");
+        assert_eq!(out, body, "{name}: whole, in order");
+        // One byte under the limit: refused, though no more than a piece was ever held.
+        let mut r = Reader::new(body.len() - 1);
+        let mut said = Ok(());
+        for piece in wire.chunks(333) {
+            said = said.and(r.feed(piece));
+            let _ = r.take_body();
+        }
+        if name == "close" && said.is_ok() {
+            said = r.close().map(|_| ());
+        }
+        assert_eq!(said, Err(Bad::TooBig), "{name}: the limit");
+    }
+}

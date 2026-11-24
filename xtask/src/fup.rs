@@ -65,6 +65,11 @@ pub fn index(dir: &Path, flavour: fcore_abi::Flavour) -> Result<PathBuf, String>
     if flavour == fcore_abi::Flavour::Release {
         return Err("a release index is signed in the release pipeline, with the release key".into());
     }
+    index_signed(dir, flavour, &keys::load_seed(pack::signing_key(flavour))?)
+}
+
+/// As `index`, signed with `seed`.
+fn index_signed(dir: &Path, flavour: fcore_abi::Flavour, seed: &[u8; 32]) -> Result<PathBuf, String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .flatten()
@@ -90,12 +95,40 @@ pub fn index(dir: &Path, flavour: fcore_abi::Flavour) -> Result<PathBuf, String>
             notes: notes.to_string(),
         });
     }
-    let seed = keys::load_seed(pack::signing_key(flavour))?;
     let issued = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let ix = fsi::index::make(flavour as u8, issued, &entries, &seed)?;
+    let ix = fsi::index::make(flavour as u8, issued, &entries, seed)?;
     let out = dir.join("index.fui");
     std::fs::write(&out, ix).map_err(|e| format!("{}: {e}", out.display()))?;
     Ok(out)
+}
+
+/// What the test update host serves (TASK-182, `@update.online*`):
+/// `www/<flavour>/` holds the next version's package and its index signed
+/// with the flavour's key; `www-foreign/<flavour>/` the same package under an
+/// index signed by a key no system trusts. Returns the folder holding both.
+pub fn online_www(flavour: fcore_abi::Flavour) -> Result<PathBuf, String> {
+    let dir = util::target_dir().join("freally").join("updates");
+    let next = bump(fcore_abi::VERSION, 1);
+    let name = format!("{}-{next}.fup", flavour.name());
+    if !dir.join(&name).exists() {
+        let notes = format!("# Freally OS {next}\n\nA test update ({}).\n", flavour.name());
+        make(flavour, &next, "", &notes, false, &dir.join(&name))?;
+    }
+    // A key nothing trusts: its seed is no secret.
+    let foreign = fcrypto::sha2::sha256(b"freally: a test key no system trusts");
+    for (sub, seed) in [("www", None), ("www-foreign", Some(foreign))] {
+        let d = dir.join(sub).join(flavour.name());
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        // A copy, not a link: the offline packages are made again before
+        // the VM boots, and the index must name these bytes.
+        std::fs::copy(dir.join(&name), d.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+        match seed {
+            None => index(&d, flavour)?,
+            Some(s) => index_signed(&d, flavour, &s)?,
+        };
+    }
+    Ok(dir)
 }
 
 /// `version` with its patch number raised by `by` (0.4.0 → 0.4.1).

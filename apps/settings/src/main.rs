@@ -880,6 +880,31 @@ impl App {
                     );
                 }
             }
+            UpAct::CheckOnline => {
+                fstd::info!("settings: checking online for updates");
+                self.updates.online = Some(call::<_, up::Offer>(u, up::ONLINE_CHECK, &()));
+                if let Some(Ok(o)) = &self.updates.online {
+                    fstd::info!("settings: Freally OS {} is offered ({} bytes)", o.version, o.size);
+                }
+            }
+            UpAct::NotNow => {
+                fstd::info!("settings: not now");
+                self.updates.online = None;
+            }
+            UpAct::Download => {
+                let Some(Ok(o)) = self.updates.online.clone() else { return };
+                match call::<_, ()>(u, up::ONLINE_BEGIN, &()) {
+                    Ok(()) => {
+                        fstd::info!("settings: downloading Freally OS {}", o.version);
+                        self.updates.installing = Some((0, o.size));
+                        self.updates.downloading = true;
+                    }
+                    Err(e) => {
+                        fstd::warn!("settings: the download didn't start: {e}");
+                        self.updates.note = Some(e);
+                    }
+                }
+            }
             UpAct::Install => {
                 let (Some(j), Some(Ok(info))) = (self.updates.chosen, self.updates.info.clone()) else { return };
                 let path = self.updates.files[j].clone();
@@ -897,6 +922,30 @@ impl App {
                     }
                     Err(e) => self.updates.note = Some(e),
                 }
+            }
+        }
+        self.draw();
+    }
+
+    /// A download going on: the updater's next step (a quarter second of it,
+    /// so the window stays drawn), and the end.
+    fn download_step(&mut self) {
+        let Some(u) = self.updater.as_mut() else { return };
+        match call::<_, up::Progress>(u, up::ONLINE_STEP, &()) {
+            Ok(p) if p.version.is_empty() => self.updates.installing = Some((p.got, p.total)),
+            Ok(p) => {
+                fstd::info!("settings: Freally OS {} downloaded and installed", p.version);
+                self.updates.note =
+                    Some(alloc::format!("Freally OS {} is installed: it starts when you restart.", p.version));
+                self.updates.installing = None;
+                self.updates.downloading = false;
+                self.updates.online = None;
+                self.updates.state = None;
+            }
+            Err(e) => {
+                self.updates.note = Some(e);
+                self.updates.installing = None;
+                self.updates.downloading = false;
             }
         }
         self.draw();
@@ -1659,9 +1708,13 @@ fn run(_bootstrap: u32) -> i64 {
     );
     loop {
         // An install going on: its next pieces between the events.
-        let wait = if app.install.is_some() { Instant::now().as_ns() } else { Instant::after(Duration::from_secs(5)) };
+        let busy = app.install.is_some() || app.updates.downloading;
+        let wait = if busy { Instant::now().as_ns() } else { Instant::after(Duration::from_secs(5)) };
         let _ = app.win.events.0.wait(signal::READABLE | signal::PEER_CLOSED, wait);
         app.install_step();
+        if app.updates.downloading {
+            app.download_step();
+        }
         let Ok(events) = app.win.events() else { return 0 };
         for (ordinal, p) in events {
             if app.event(ordinal, &p) {

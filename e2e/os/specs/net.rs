@@ -195,7 +195,7 @@ fn openssl(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
 /// A root and a test.freally.local leaf (P-256) made by OpenSSL in `dir`: the
 /// root's DER in hex. Valid from the minute before (TASK-180A: the guest must
 /// know the true time, its zone set, to take them) for ten years.
-fn pki(dir: &std::path::Path) -> Result<String, String> {
+pub(crate) fn pki(dir: &std::path::Path) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let stamp = |secs: u64| {
         let (y, mo, d, h, mi, s) = crate::settings::civil(secs);
@@ -376,10 +376,10 @@ pub fn dns(ctx: &mut Ctx) -> Result<(), String> {
 
 /// The test network's HTTPS server (`e2e/os/net/https.py`) on the TAP's host
 /// address, stopped when dropped.
-struct Https(std::process::Child);
+pub(crate) struct Https(std::process::Child);
 
 impl Https {
-    fn start(dir: &std::path::Path, address: &str) -> Result<Https, String> {
+    pub(crate) fn start(dir: &std::path::Path, address: &str) -> Result<Https, String> {
         let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../e2e/os/net/https.py");
         let mut child = std::process::Command::new("python3")
             .arg(&script)

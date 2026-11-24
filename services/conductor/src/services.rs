@@ -510,10 +510,12 @@ impl Conductor {
             || (caller == "settings" && want.name == "accounts")
             // Settings ▸ Updates (TASK-110); the updater serves Settings alone.
             || (caller == "settings" && want.name == "updater")
-            // The shell's ip and ping, and Settings ▸ Network (TASK-174,
-            // TASK-183); netstack checks each caller itself. Not `after`:
-            // an image with no network card has no netstack running.
-            || (matches!(caller, "terminal" | "settings") && want.name == "netstack")
+            // The shell's ip and ping, Settings ▸ Network (TASK-174,
+            // TASK-183), and the updater's online check and download, only
+            // when a person asks (TASK-182); netstack checks each caller
+            // itself. Not `after`: an image with no network card has no
+            // netstack running.
+            || (matches!(caller, "terminal" | "settings" | "updater") && want.name == "netstack")
             || caller_m.is_some_and(|m| m.after.contains(&want.name))
             || (cfg!(feature = "flavour-e2e") && caller == "cdpd");
         if !allowed {

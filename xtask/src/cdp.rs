@@ -175,6 +175,10 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         }
         // The update packages (TASK-110), in /system/updates before it boots.
         o.updates = s.get("updates").and_then(Value::as_bool).unwrap_or(false);
+        // What the test update host serves (TASK-182): its folder, to the runner.
+        if s.get("online").and_then(Value::as_bool).unwrap_or(false) {
+            o.www = Some(crate::fup::online_www(flavour)?);
+        }
         if let Some(from) = s.get("image_from").and_then(Value::as_str) {
             o.image_override = Some(build::build(crate::pack::parse_flavour(from)?)?.image);
         }
@@ -334,6 +338,7 @@ fn run_setup(
             &failures.display().to_string(),
         ])
         .args(&com3)
+        .args(o.www.as_ref().map(|w| vec![String::from("--www"), w.display().to_string()]).unwrap_or_default())
         .args(inventory_out.map(|p| vec![String::from("--inventory-out"), p.display().to_string()]).unwrap_or_default())
         .stdout(Stdio::piped())
         .spawn();

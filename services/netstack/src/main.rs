@@ -39,9 +39,11 @@ const SOCKETS_PER_CLIENT: usize = 16;
 /// The ephemeral ports (RFC 6335 § 6).
 const EPHEMERAL: core::ops::RangeInclusive<u16> = 49152..=65535;
 
-/// Who may use the network today (TASK-183 makes this the Network page's list).
+/// Who may use the network today (TASK-183 makes this the Network page's
+/// list): the Terminal, Settings, and the updater (the update host, only when
+/// a person asks: TASK-182).
 fn allowed(client: &str) -> bool {
-    matches!(client, "terminal" | "settings")
+    matches!(client, "terminal" | "settings" | "updater")
         || (cfg!(feature = "flavour-e2e") && matches!(client, "conductor" | "cdpd"))
 }
 

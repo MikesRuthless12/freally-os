@@ -4,7 +4,8 @@
 //! (through drv-nvme, which lets it reach only the two system partitions),
 //! checks it, and asks conductor to put it on trial from the next boot. It
 //! trusts the keys this system's bootloader trusts, and serves Settings
-//! alone.
+//! alone (and, in an e2e image, the test door's test host). Online updates
+//! (`online`, TASK-182) feed the same install from the update host.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 extern crate alloc;
@@ -23,6 +24,8 @@ use svc_updater::{Install, Refusal, Slot};
 #[path = "../../../boot/src/keys.rs"]
 #[allow(dead_code)]
 mod keys;
+
+mod online;
 
 fstd::program!(run);
 
@@ -80,6 +83,7 @@ struct Updater {
     slot: u8,
     flavour: u8,
     install: Option<Install>,
+    online: online::Online,
 }
 
 type Reply = Result<Vec<u8>, (FErr, String)>;
@@ -145,19 +149,12 @@ impl Updater {
                 Ok(fwire::to_payload(&()))
             }
             up::FINISH => {
-                let (Some(i), Some(disk)) = (self.install.take(), self.disk.as_mut()) else {
-                    return Err((FErr::BadState, String::from("No update is being installed.")));
-                };
-                let version = i.finish(disk).map_err(refused)?;
-                let other = 1 - self.slot;
-                ask::<_, ()>(c::BOOT_TRIAL, &c::BootTrial { slot: other, version: version.clone() })?;
-                fstd::info!(
-                    "updater: {version} written to slot {} and checked: it starts at the next restart",
-                    fbootctl_name(other)
-                );
+                let version = self.finish_install()?;
                 Ok(fwire::to_payload(&up::Version { version }))
             }
+            up::ONLINE_CHECK | up::ONLINE_BEGIN | up::ONLINE_STEP | up::TEST_HOST => self.online(ordinal, p),
             up::CANCEL => {
+                self.online.drop_get();
                 if self.install.take().is_some() {
                     fstd::info!("updater: the install was given up");
                 }
@@ -205,6 +202,23 @@ impl Updater {
     }
 }
 
+impl Updater {
+    /// The install checked whole, read back, and the trial asked for.
+    fn finish_install(&mut self) -> Result<String, (FErr, String)> {
+        let (Some(i), Some(disk)) = (self.install.take(), self.disk.as_mut()) else {
+            return Err((FErr::BadState, String::from("No update is being installed.")));
+        };
+        let version = i.finish(disk).map_err(refused)?;
+        let other = 1 - self.slot;
+        ask::<_, ()>(c::BOOT_TRIAL, &c::BootTrial { slot: other, version: version.clone() })?;
+        fstd::info!(
+            "updater: {version} written to slot {} and checked: it starts at the next restart",
+            fbootctl_name(other)
+        );
+        Ok(version)
+    }
+}
+
 fn fbootctl_name(slot: u8) -> &'static str {
     if slot == 0 { "A" } else { "B" }
 }
@@ -232,7 +246,12 @@ fn serve(u: &mut Updater, who: &str, ch: &Channel) -> bool {
             continue;
         }
         let Ok((h, p)) = fwire::parse(&m.bytes) else { continue };
-        let reply = if who == "settings" {
+        // The test door's test host: an e2e image's, from conductor.
+        #[cfg(feature = "flavour-e2e")]
+        let door = who == "conductor" && h.ordinal == up::TEST_HOST;
+        #[cfg(not(feature = "flavour-e2e"))]
+        let door = false;
+        let reply = if who == "settings" || door {
             u.handle(h.ordinal, p)
         } else {
             Err((FErr::AccessDenied, String::from("only Settings installs updates")))
@@ -263,7 +282,14 @@ fn run(_bootstrap: u32) -> i64 {
             None
         }
     };
-    let mut u = Updater { disk, running: image.version, slot: image.slot, flavour: image.flavour, install: None };
+    let mut u = Updater {
+        disk,
+        running: image.version,
+        slot: image.slot,
+        flavour: image.flavour,
+        install: None,
+        online: online::Online::new(online::built_in()),
+    };
     let Ok((listen, give)) = Channel::pair() else { return 1 };
     if fstd::service::register(give).is_err() {
         return 1;
@@ -287,9 +313,12 @@ fn run(_bootstrap: u32) -> i64 {
             Ok(k) => {
                 let (who, ch) = &clients[k - 1];
                 if !serve(&mut u, who, ch) {
-                    clients.remove(k - 1);
+                    let (who, _) = clients.remove(k - 1);
                     // Settings closed part-way: the install is given up.
-                    u.install = None;
+                    if who == "settings" {
+                        u.online.drop_get();
+                        u.install = None;
+                    }
                 }
             }
             Err(FErr::TimedOut) => {}

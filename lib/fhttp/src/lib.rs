@@ -78,6 +78,8 @@ pub struct Reader {
     head: Option<Response>,
     body: Body,
     done: bool,
+    /// The body's bytes so far, taken or not (`take_body`).
+    got: usize,
 }
 
 /// One CRLF-ended line taken from the front of `buf`, without its CRLF.
@@ -97,7 +99,19 @@ fn line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, Bad> {
 impl Reader {
     /// A reader that takes a body of at most `limit` bytes.
     pub fn new(limit: usize) -> Reader {
-        Reader { limit, buf: Vec::new(), head: None, body: Body::ToClose, done: false }
+        Reader { limit, buf: Vec::new(), head: None, body: Body::ToClose, done: false, got: 0 }
+    }
+
+    /// The body's bytes read since the last take, so a large body passes
+    /// through without being held whole (TASK-182: a package on its way to
+    /// the disk). The limit still counts every byte of it.
+    pub fn take_body(&mut self) -> Vec<u8> {
+        self.head.as_mut().map(|r| core::mem::take(&mut r.body)).unwrap_or_default()
+    }
+
+    /// The response's head (status and headers), once it's read.
+    pub fn head(&self) -> Option<&Response> {
+        self.head.as_ref()
     }
 
     /// The response, once it's whole.
@@ -197,17 +211,19 @@ impl Reader {
         loop {
             match self.body {
                 Body::Length(n) => {
-                    let take = (n - r.body.len()).min(self.buf.len());
+                    let take = (n - self.got).min(self.buf.len());
                     r.body.extend(self.buf.drain(..take));
-                    if r.body.len() == n {
+                    self.got += take;
+                    if self.got == n {
                         self.done = true;
                     }
                     return Ok(());
                 }
                 Body::ToClose => {
-                    if r.body.len() + self.buf.len() > limit {
+                    if self.got + self.buf.len() > limit {
                         return Err(Bad::TooBig);
                     }
+                    self.got += self.buf.len();
                     r.body.append(&mut self.buf);
                     return Ok(());
                 }
@@ -235,7 +251,7 @@ impl Reader {
                             }
                         }
                     }
-                    if r.body.len() + n > limit {
+                    if self.got + n > limit {
                         return Err(Bad::TooBig);
                     }
                     self.body = Body::Chunked(Some(n + 2)); // its data, then CRLF
@@ -262,6 +278,7 @@ impl Reader {
                         return Err(Bad::Chunk);
                     }
                     r.body.extend_from_slice(&data[..left - 2]);
+                    self.got += left - 2;
                     self.body = Body::Chunked(None);
                 }
             }
