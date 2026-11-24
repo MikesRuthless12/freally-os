@@ -145,6 +145,11 @@ pub fn check(f: Flavour, b: &Built) -> Result<Vec<String>, String> {
 /// Storage drivers by the binary's name: each must carry the partition
 /// interlock's test (TASK-092) before an image may hold it.
 const STORAGE_DRIVERS: [&str; 6] = ["nvme", "ahci", "ata", "virtio-blk", "usb-storage", "sdhci"];
+/// The network drivers (Phase 8): devmgr hands each its own card's registers
+/// and configuration page, never a storage controller's, so its DMA moves
+/// frames and can't reach a disk through any command. (Without an IOMMU a
+/// card's DMA could still reach any RAM: VT-d, a later phase, closes that.)
+const NETWORK_DRIVERS: [&str; 2] = ["drv-virtio-net", "drv-e1000"];
 
 /// The storage drivers whose partition interlock test is in the tree: the
 /// file `drivers/<name>/src/interlock.rs` with a test refusing a write
@@ -169,8 +174,9 @@ pub fn interlock_tested() -> Vec<String> {
 ///   only for conductor (PID 1, which hands devmgr its share) and devmgr,
 ///   so no other service can reach a disk;
 /// - the DMA grant (a disk is written by DMA) only for an allowed storage
-///   driver (and conductor, PID 1, whose manifest lists every grant because
-///   it holds them all to hand out; it drives no device).
+///   driver, a network driver (`NETWORK_DRIVERS`, Phase 8: devmgr gives it
+///   its card alone), and conductor (PID 1, whose manifest lists every grant
+///   because it holds them all to hand out; it drives no device).
 pub fn no_writes(manifests: &[fsvc::Manifest], paths: &[String], allowed: &[String]) -> Result<String, String> {
     let storage = |s: &str| STORAGE_DRIVERS.iter().find(|d| s.contains(*d)).map(|d| d.to_string());
     for p in paths.iter().filter(|p| p.starts_with("/system/drivers/")) {
@@ -186,6 +192,7 @@ pub fn no_writes(manifests: &[fsvc::Manifest], paths: &[String], allowed: &[Stri
         }
         if m.grants.iter().any(|g| g == "dma")
             && m.name != "conductor"
+            && !NETWORK_DRIVERS.contains(&m.name.as_str())
             && !storage(&m.binary).is_some_and(|d| allowed.contains(&d))
         {
             return Err(format!("{} holds the DMA grant without a tested partition interlock (TASK-077)", m.name));
@@ -248,5 +255,21 @@ mod tests {
         assert!(no_writes(&ms, &[], &[]).unwrap_err().contains("desktop holds the root resource"));
         let ms = [m("drv-x", "/system/drivers/x", "dma")];
         assert!(no_writes(&ms, &[], &[]).unwrap_err().contains("drv-x holds the DMA grant"));
+        // A network driver moves frames by DMA; it's named, not guessed.
+        let ms =
+            [m("drv-e1000", "/system/drivers/e1000", "dma"), m("drv-virtio-net", "/system/drivers/virtio-net", "dma")];
+        assert!(no_writes(&ms, &[], &[]).is_ok());
+        let ms = [m("drv-e1000x", "/system/drivers/e1000x", "dma")];
+        assert!(no_writes(&ms, &[], &[]).unwrap_err().contains("drv-e1000x holds the DMA grant"));
+    }
+
+    #[test]
+    fn every_network_driver_named_has_a_manifest_and_binds_through_devmgr() {
+        let root = crate::util::repo_root();
+        let devmgr = std::fs::read_to_string(root.join("services/devmgr/src/hw.rs")).unwrap();
+        for d in super::NETWORK_DRIVERS {
+            assert!(root.join(format!("manifests/{d}.svc")).exists(), "{d} has no manifest");
+            assert!(devmgr.contains(&format!("\"{d}\" =>")), "devmgr hands {d} nothing by name");
+        }
     }
 }
