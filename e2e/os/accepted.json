@@ -1,5 +1,5 @@
 {
-  "about": "Controls and service ordinals the inventory lets through (FR-040): each one no spec can work yet, and why. A control is `owner ROLE test-id` (or its name where it has no test id); an ordinal is `service ordinal N name`.",
+  "about": "Controls and service ordinals the inventory lets through (FR-040): each one no spec can work yet, and why. A control is `owner ROLE test-id` (or its name where it has no test id); an ordinal is `service ordinal N name`. Instances: a repeated control (a list's rows, a copy job's keys) whose id starts with the prefix counts as worked when any one of its kind was.",
   "accepted": [
     {
       "control": "devmgr ordinal 2 tables",
@@ -28,6 +28,52 @@
     {
       "control": "vfs ordinal 6 stat",
       "why": "Its caller is Files (TASK-105): fstd::fs::metadata has no other yet."
+    },
+    {
+      "control": "conductor ordinal 18 boot_trial",
+      "why": "Worked by @update.install and @update.switch-back, which end in Restart now: the count belongs to the boot before, gone when the inventory reads it (as power's)."
+    },
+    {
+      "control": "conductor ordinal 19 boot_switch",
+      "why": "Worked by @update.install and @update.switch-back, which end in Restart now: the count belongs to the boot before, gone when the inventory reads it (as power's)."
+    },
+    {
+      "control": "updater ordinal 7 switch_back",
+      "why": "Worked by @update.install and @update.switch-back, which end in Restart now: the count belongs to the boot before, gone when the inventory reads it (as power's)."
+    },
+    {
+      "control": "updater ordinal 8 restart",
+      "why": "Worked by @update.install and @update.switch-back, which end in Restart now: the count belongs to the boot before, gone when the inventory reads it (as power's)."
+    }
+  ],
+  "instances": [
+    {
+      "prefix": "calculator OPTION calc-history-",
+      "why": "One row a sum in the history: @apps.calculator works one; the rest are the same code."
+    },
+    {
+      "prefix": "files BUTTON copy-cancel-",
+      "why": "One per copy job, numbered by the job: @files.copy.* work their own job's."
+    },
+    {
+      "prefix": "files BUTTON copy-details-",
+      "why": "One per copy job, numbered by the job: @files.copy.* work their own job's."
+    },
+    {
+      "prefix": "files BUTTON copy-pause-",
+      "why": "One per copy job, numbered by the job: @files.copy.pause works its own job's."
+    },
+    {
+      "prefix": "files SWITCH copy-keep-new-",
+      "why": "One per name in a conflict: @files.copy.conflict works one."
+    },
+    {
+      "prefix": "files OPTION files-row-",
+      "why": "One row a file or folder, named by it: the Files specs work rows of each kind."
+    },
+    {
+      "prefix": "settings BUTTON settings-remove-",
+      "why": "One per account but the Owner's: @settings.accounts removes one."
     }
   ]
 }

@@ -330,8 +330,8 @@ fn listed(ctx: &Ctx, user: &str) -> Result<bool, String> {
     Ok(ctx.door("accounts list")?.iter().any(|l| l.split(' ').next() == Some(user)))
 }
 
-/// `@settings.accounts`: Accounts lists who's here; *Add an account* (a
-/// mismatch said under its field, then made); *Change your password* (a
+/// `@settings.accounts`: Accounts lists who's here; *Add an account*
+/// (cancelled with nothing made; a mismatch said under its field, then made); *Change your password* (a
 /// wrong one said, then changed and back); *Export*; *Import* from the list
 /// (opened with its password, previewed, renamed); *Remove* (the username
 /// typed exactly), and the Owner has no Remove.
@@ -343,7 +343,15 @@ pub fn accounts(ctx: &mut Ctx) -> Result<(), String> {
     if q(ctx, &sel("settings-remove-mike"))? != 0 {
         return Err("the Owner's own account offers Remove".into());
     }
-    // Add an account.
+    // Add an account: cancelled first (nothing made), then made.
+    press_id(ctx, "settings-account-add")?;
+    until_q(ctx, &sel("settings-add-dialog"))?;
+    typed(ctx, "kept")?;
+    press_id(ctx, "settings-dialog-cancel")?;
+    until_gone(ctx, &sel("settings-add-dialog"))?;
+    if listed(ctx, "kept")? {
+        return Err("a cancelled Add made the account".into());
+    }
     press_id(ctx, "settings-account-add")?;
     until_q(ctx, &sel("settings-add-dialog"))?;
     expect_focus(ctx, "settings-add-username")?;

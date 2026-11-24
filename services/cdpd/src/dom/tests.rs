@@ -206,3 +206,24 @@ fn the_control_under_a_point_and_the_one_with_the_keyboard() {
         (Some("monitor"), Some("TAB"))
     );
 }
+
+/// A stepper: its row (a slider whose box holds its arrows) after its arrow
+/// keys in the tree. A press on an arrow works the arrow, not the row: the
+/// smallest control under the point is the one pressed.
+#[test]
+fn the_smallest_control_under_a_point_is_the_one_pressed() {
+    let windows = [win(9, "Settings", "settings", 1, (0, 0, 800, 600), 0)];
+    let d = Doc::build(&windows, |_| {
+        Some(ax::Tree {
+            nodes: vec![
+                n(ax::ROOT, ax::BUTTON, "Shorter", 0, "settings-idle-down", (316, 104, 32, 32)),
+                n(ax::ROOT, ax::BUTTON, "Longer", 0, "settings-idle-up", (360, 104, 32, 32)),
+                n(ax::ROOT, ax::SLIDER, "Idle time", 0, "settings-idle", (16, 100, 400, 40)),
+            ],
+        })
+    });
+    let id = |i: Option<usize>| i.and_then(|i| d.nodes[i].attr("data-testid")).map(String::from);
+    assert_eq!(id(d.control_at(370, 110)), Some("settings-idle-up".into()));
+    assert_eq!(id(d.control_at(320, 110)), Some("settings-idle-down".into()));
+    assert_eq!(id(d.control_at(100, 110)), Some("settings-idle".into()), "the row itself, away from its arrows");
+}

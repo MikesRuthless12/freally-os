@@ -319,20 +319,26 @@ pub fn move_out(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// `@accounts.move` (VM B, TASK-106): on a new disk holding only the carried
-/// bundle in /system/imports, Welcome's *Import an account…*: the file
-/// chosen, its password, the preview, Import; the account is the Owner,
+/// bundle in /system/imports, Welcome's *Import an account…* (Back, and in
+/// again): the file chosen, its password, Check file, the preview, Import; the account is the Owner,
 /// logged in, and every file it had is there, word for word.
 pub fn move_in(ctx: &mut Ctx) -> Result<(), String> {
     use crate::session::{press, sel, typed, waits_for_log};
     use crate::sweep::{attr, click, until_q};
     ctx.expect_log("welcome: shown")?;
+    // Into the import page, Back out of it, and in again.
+    let n = until_q(ctx, &sel("welcome-import"))?;
+    click(ctx, n)?;
+    let n = until_q(ctx, &sel("welcome-back"))?;
+    click(ctx, n)?;
     let n = until_q(ctx, &sel("welcome-import"))?;
     click(ctx, n)?;
     let file = format!("welcome-file-{CARRIED}.facct");
     let n = until_q(ctx, &sel(&file))?;
     click(ctx, n)?;
     typed(ctx, CARRIED_PASSWORD)?;
-    press(ctx, "Enter")?;
+    let n = until_q(ctx, &sel("welcome-import-go"))?;
+    click(ctx, n)?;
     let p = until_q(ctx, &sel("welcome-preview"))?;
     let preview = attr(ctx, p, "aria-valuenow")?.or(attr(ctx, p, "aria-label")?).unwrap_or_default();
     if !preview.contains(&format!("'{CARRIED}'")) {

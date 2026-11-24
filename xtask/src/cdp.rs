@@ -250,8 +250,18 @@ fn inventory(dir: &std::path::Path) -> Result<(usize, Vec<String>), String> {
         }
         accepted.push(c.to_string());
     }
-    let mut missing: Vec<String> =
-        shown.iter().filter(|c| !worked.contains(*c) && !accepted.contains(c)).cloned().collect();
+    let mut instances = Vec::new();
+    for a in v.get("instances").and_then(Value::as_array).unwrap_or_default() {
+        let (Some(p), Some(why)) = (a.get("prefix").and_then(Value::as_str), a.get("why").and_then(Value::as_str))
+        else {
+            return Err("an instance needs `prefix` and `why`".into());
+        };
+        if why.trim().is_empty() {
+            return Err(format!("instance {p:?} gives no reason"));
+        }
+        instances.push(p.to_string());
+    }
+    let mut missing = left(&shown, &worked, &accepted, &instances);
     // The ordinals: each one every service serves, sent at least once.
     let mut total = shown.len();
     for (svc, ords) in fwire::proto::inventory::SERVICES {
@@ -264,6 +274,23 @@ fn inventory(dir: &std::path::Path) -> Result<(usize, Vec<String>), String> {
         }
     }
     Ok((total, missing))
+}
+
+/// The controls shown but neither worked nor accepted. A repeated control
+/// (a list's rows, a copy job's keys), one whose id starts with one of
+/// `instances`, counts as worked when any control with that prefix was:
+/// each instance is the same code, and a kind none of whose instances was
+/// worked is still left.
+fn left(
+    shown: &std::collections::BTreeSet<String>,
+    worked: &std::collections::BTreeSet<String>,
+    accepted: &[String],
+    instances: &[String],
+) -> Vec<String> {
+    let kind_worked = |c: &str| {
+        instances.iter().any(|p| c.starts_with(p.as_str()) && worked.iter().any(|w| w.starts_with(p.as_str())))
+    };
+    shown.iter().filter(|c| !worked.contains(*c) && !accepted.contains(c) && !kind_worked(c)).cloned().collect()
 }
 
 fn run_setup(
@@ -396,4 +423,24 @@ fn site_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
 /// Every feature's id and setup, as coverage.json lists them (the soak's list).
 pub fn features() -> Result<Vec<(String, String)>, String> {
     Ok(coverage()?.1.into_iter().map(|f| (f.id, f.setup)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::left;
+    use std::collections::BTreeSet;
+
+    fn set(v: &[&str]) -> BTreeSet<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_repeated_control_is_worked_by_any_one_of_its_kind() {
+        let shown =
+            set(&["files BUTTON copy-pause-3", "files BUTTON copy-pause-5", "files OPTION files-row-a", "x", "y"]);
+        let worked = set(&["files BUTTON copy-pause-5"]);
+        let instances = ["files BUTTON copy-pause-".to_string(), "files OPTION files-row-".to_string()];
+        assert_eq!(left(&shown, &worked, &["y".to_string()], &instances), ["files OPTION files-row-a", "x"]);
+        assert_eq!(left(&shown, &worked, &[], &[]).len(), 4, "no instances: each one alone");
+    }
 }
