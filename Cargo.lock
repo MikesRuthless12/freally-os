@@ -81,6 +81,7 @@ dependencies = [
  "fcore-abi",
  "fedid",
  "fimage",
+ "fnet",
  "fstd",
  "fui",
  "fwire",

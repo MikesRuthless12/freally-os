@@ -1408,6 +1408,10 @@ pub mod net {
     /// `Resolve` → `Resolved`: a name's addresses by DNS (`kind` 1: A,
     /// 28: AAAA); `NotFound` "no such name" or "no address", `TimedOut` "no answer".
     pub const RESOLVE: u32 = 8;
+    /// `()` → `Connections` (TASK-183): every connection this computer can
+    /// make (netstack's own, and each program it serves: the one list it
+    /// checks clients against), then the TCP connections open now.
+    pub const CONNECTIONS: u32 = 9;
 
     wire_struct! {
         pub struct Interface {
@@ -1423,6 +1427,17 @@ pub mod net {
             pub router6: Option<[u8; 16]>,
             pub dns6: Vec<[u8; 16]>,
         }
+    }
+    wire_struct! {
+        /// A kind of connection: whose, what it is, and when it's made.
+        pub struct Grant { pub who: String, pub what: String, pub when: String }
+    }
+    wire_struct! {
+        /// A TCP connection open now: whose, to where, in what state.
+        pub struct Open { pub who: String, pub to: [u8; 4], pub port: u16, pub state: String }
+    }
+    wire_struct! {
+        pub struct Connections { pub grants: Vec<Grant>, pub open: Vec<Open> }
     }
     wire_struct! {
         pub struct Interfaces { pub list: Vec<Interface> }
@@ -1643,6 +1658,7 @@ pub mod inventory {
                 (nt::TCP_RECV, "tcp_recv"),
                 (nt::TCP_CLOSE, "tcp_close"),
                 (nt::RESOLVE, "resolve"),
+                (nt::CONNECTIONS, "connections"),
             ],
         ),
         ("drv-e1000", &[(nd::INFO, "info"), (nd::SUBSCRIBE, "subscribe"), (nd::SEND, "send"), (nd::STATS, "stats")]),

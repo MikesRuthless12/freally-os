@@ -263,11 +263,14 @@ pub fn keyboard(ctx: &mut Ctx) -> Result<(), String> {
         ("ArrowDown", "settings-tab-update"),
         ("ArrowDown", "settings-tab-hardware"),
         ("ArrowDown", "settings-tab-about"),
+        ("ArrowDown", "settings-tab-network"),
         ("ArrowDown", "settings-tab-personalisation"),
+        ("ArrowUp", "settings-tab-network"),
         ("ArrowUp", "settings-tab-about"),
-        ("Home", "settings-tab-personalisation"),
+        ("Home", "settings-tab-network"),
         ("End", "settings-tab-about"),
-        ("Home", "settings-tab-personalisation"),
+        ("Home", "settings-tab-network"),
+        ("ArrowDown", "settings-tab-personalisation"),
     ] {
         press(ctx, code)?;
         chosen(ctx, id)?;
@@ -509,6 +512,70 @@ pub fn time(ctx: &mut Ctx) -> Result<(), String> {
     chosen(ctx, "settings-rtc-1")?;
     press_id(ctx, "settings-ok")?;
     waits_for_log(ctx, line, saved)?;
+    closed(ctx)
+}
+
+/// A line of Settings ▸ Network, as the tree holds it.
+fn network_line(ctx: &mut Ctx, id: &str) -> Result<String, String> {
+    let n = until_q(ctx, &sel(id))?;
+    Ok(attr(ctx, n, "aria-label")?.unwrap_or_default())
+}
+
+/// `@settings.network` (TASK-183): Settings ▸ Network (a guest's, on the
+/// VM's own network): the interface as its driver and netstack's DHCP lease
+/// have it (driver, MAC, link; address, router, DNS), every connection the
+/// computer can make (netstack's list, a test image's eight), and none open.
+pub fn network(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
+    // The lease as netstack said it: QEMU's restricted network gives no router or DNS.
+    let log = ctx.log();
+    let lease = log.lines().find(|l| l.contains("by DHCP, router ")).ok_or("no lease line")?;
+    let part = |after: &str, until: &str| {
+        lease.split(after).nth(1).and_then(|r| r.split(until).next()).map(String::from).ok_or(format!("{lease:?}"))
+    };
+    let (router, dns) = (part("router ", ",")?, part("DNS ", ", lease")?);
+    let info = ctx.door("netdev info")?;
+    let first = info.first().cloned().unwrap_or_default();
+    let mac = first.split("mac=").nth(1).and_then(|r| r.split(' ').next()).ok_or(format!("netdev info: {info:?}"))?;
+    let driver = first.split_whitespace().nth(1).ok_or(format!("netdev info: {info:?}"))?;
+    open(ctx)?;
+    press_id(ctx, "settings-tab-network")?;
+    chosen(ctx, "settings-tab-network")?;
+    let want = [
+        ("settings-network-iface-0", format!("eth0 · {driver} · {mac} · connected")),
+        ("settings-network-ipv4-0", format!("IPv4 10.0.2.15/24 · router {router} · DNS {dns}")),
+        (
+            "settings-network-grant-0",
+            String::from(
+                "netstack: DHCP on each network (UDP 68 to 67): an address, a router and DNS servers; when the network comes up, and to renew its lease.",
+            ),
+        ),
+        (
+            "settings-network-grant-3",
+            String::from("terminal: what you type: ip, ping, nslookup and fetch; only when you run them."),
+        ),
+        (
+            "settings-network-grant-5",
+            String::from(
+                "updater: the update host (HTTPS), for its list of updates and then the one you choose; only when you press Check online, then Download.",
+            ),
+        ),
+        (
+            "settings-network-grant-7",
+            String::from("cdpd: the test harness's view of the network; in test images only."),
+        ),
+        ("settings-network-open-0", String::from("No connection is open.")),
+    ];
+    for (id, words) in want {
+        let said = network_line(ctx, id)?;
+        if said != words {
+            return Err(format!("{id} says {said:?}, not {words:?}"));
+        }
+    }
+    if q(ctx, &sel("settings-network-grant-8"))? != 0 {
+        return Err("more than the eight connections a test image can make".into());
+    }
+    press(ctx, "Escape")?;
     closed(ctx)
 }
 

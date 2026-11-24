@@ -10,6 +10,7 @@ extern crate alloc;
 pub mod about;
 pub mod accounts;
 pub mod hardware;
+pub mod network;
 pub mod personalisation;
 pub mod shell;
 pub mod time;

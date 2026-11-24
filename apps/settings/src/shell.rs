@@ -18,9 +18,11 @@ use fwire::proto::stage::Look;
 /// The categories, in their fixed order (FR-080: the list grows to
 /// Windows', each name and place fixed now). Update and the hardware report
 /// joined between Accounts and About in Phase 7 (TASK-110, TASK-111); Time
-/// and language between Accounts and Update in Phase 8 (TASK-180A).
+/// and language between Accounts and Update, and Network first, in Phase 8
+/// (TASK-180A, TASK-183).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Panel {
+    Network,
     Personalisation,
     Accounts,
     Time,
@@ -29,12 +31,20 @@ pub enum Panel {
     About,
 }
 
-pub const PANELS: [Panel; 6] =
-    [Panel::Personalisation, Panel::Accounts, Panel::Time, Panel::Update, Panel::Hardware, Panel::About];
+pub const PANELS: [Panel; 7] = [
+    Panel::Network,
+    Panel::Personalisation,
+    Panel::Accounts,
+    Panel::Time,
+    Panel::Update,
+    Panel::Hardware,
+    Panel::About,
+];
 
 impl Panel {
     pub fn name(self) -> &'static str {
         match self {
+            Panel::Network => "Network",
             Panel::Personalisation => "Personalisation",
             Panel::Accounts => "Accounts",
             Panel::Time => "Time and language",
@@ -46,6 +56,7 @@ impl Panel {
 
     pub fn id(self) -> &'static str {
         match self {
+            Panel::Network => "settings-tab-network",
             Panel::Personalisation => "settings-tab-personalisation",
             Panel::Accounts => "settings-tab-accounts",
             Panel::Time => "settings-tab-time",
@@ -190,7 +201,7 @@ impl Shell {
             Panel::Time => (0..time::ROWS.len()).collect(),
             Panel::Update => (0..self.updates).collect(),
             Panel::Hardware => (0..crate::hardware::KEYS.len()).collect(),
-            Panel::About => alloc::vec::Vec::new(),
+            Panel::Network | Panel::About => alloc::vec::Vec::new(),
         }
     }
 
@@ -389,11 +400,11 @@ mod tests {
         for _ in 0..5 {
             s.key(key::DOWN, false);
         }
-        assert_eq!(s.panel, Panel::Personalisation, "↓ from the last wraps");
+        assert_eq!(s.panel, Panel::Network, "↓ from the last wraps");
         s.key(key::UP, false);
         assert_eq!(s.panel, Panel::About, "↑ from the first wraps");
         s.key(key::HOME, false);
-        assert_eq!(s.panel, Panel::Personalisation);
+        assert_eq!(s.panel, Panel::Network);
         s.key(key::END, false);
         assert_eq!(s.panel, Panel::About);
         // About: the tab list, then the bar (OK, Cancel), then round again.

@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+pub mod grants;
 pub mod resolver;
 #[cfg(test)]
 mod resolver_tests;

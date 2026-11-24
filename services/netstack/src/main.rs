@@ -39,12 +39,9 @@ const SOCKETS_PER_CLIENT: usize = 16;
 /// The ephemeral ports (RFC 6335 § 6).
 const EPHEMERAL: core::ops::RangeInclusive<u16> = 49152..=65535;
 
-/// Who may use the network today (TASK-183 makes this the Network page's
-/// list): the Terminal, Settings, and the updater (the update host, only when
-/// a person asks: TASK-182).
+/// Who may use the network: the programs the Network page lists (TASK-183).
 fn allowed(client: &str) -> bool {
-    matches!(client, "terminal" | "settings" | "updater")
-        || (cfg!(feature = "flavour-e2e") && matches!(client, "conductor" | "cdpd"))
+    svc_netstack::grants::allowed(client, cfg!(feature = "flavour-e2e"))
 }
 
 /// Where a ping goes: the address, and the neighbour it goes through.
@@ -135,6 +132,8 @@ struct Stack {
     resolver: Resolver,
     /// Lookups clients are waiting on: (the resolver's id, the client, its reply).
     resolving: Vec<(u32, usize, Owed)>,
+    /// Each client's name, as `clients` holds them (whose a connection is).
+    names: Vec<String>,
 }
 
 fn random4() -> [u8; 4] {
@@ -597,6 +596,9 @@ impl Stack {
 
     /// Client `c` is gone: its connections reset, its pings dropped, the later clients' indices moved down.
     fn drop_client(&mut self, c: usize) {
+        if c < self.names.len() {
+            self.names.remove(c);
+        }
         let src = self.ours().map(|o| o.0);
         let mut i = 0;
         while i < self.sockets.len() {
@@ -816,6 +818,25 @@ impl Stack {
         t
     }
 
+    /// Every connection this computer can make, and the TCP ones open now.
+    fn connections(&self) -> nt::Connections {
+        let grants = svc_netstack::grants::list(cfg!(feature = "flavour-e2e"))
+            .map(|g| nt::Grant { who: String::from(g.who), what: String::from(g.what), when: String::from(g.when) })
+            .collect();
+        let open = self
+            .sockets
+            .iter()
+            .filter(|k| k.tcb.state != svc_netstack::tcp::State::Closed)
+            .map(|k| nt::Open {
+                who: self.names.get(k.client).cloned().unwrap_or_else(|| String::from("?")),
+                to: k.to,
+                port: k.port,
+                state: alloc::format!("{:?}", k.tcb.state),
+            })
+            .collect();
+        nt::Connections { grants, open }
+    }
+
     fn interfaces(&self) -> nt::Interfaces {
         let l = self.dhcp.lease();
         nt::Interfaces {
@@ -893,6 +914,7 @@ fn open() -> Result<(Stack, Channel), String> {
         isn_key,
         resolver: Resolver::new(),
         resolving: Vec::new(),
+        names: Vec::new(),
     };
     Ok((stack, events))
 }
@@ -937,6 +959,7 @@ fn run(_bootstrap: u32) -> i64 {
                     {
                         if allowed(&inc.client) {
                             clients.push(Channel(ch));
+                            s.names.push(inc.client);
                         } else {
                             fstd::warn!("netstack: {} may not use the network (not on the Network page)", inc.client);
                         }
@@ -990,6 +1013,7 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
         let owed = Owed { txid: h.txid, ordinal: h.ordinal };
         let asked = match h.ordinal {
             nt::INTERFACES => Ok(Some(fwire::reply(h.txid, h.ordinal, &s.interfaces()))),
+            nt::CONNECTIONS => Ok(Some(fwire::reply(h.txid, h.ordinal, &s.connections()))),
             nt::PING => match (fwire::from_payload::<nt::Ping>(p), s.ours()) {
                 (Err(_), _) => Err((FErr::InvalidArgs, "unreadable")),
                 (Ok(_), None) => Err((FErr::BadState, "no address yet")),

@@ -408,6 +408,24 @@ impl Drop for Https {
     }
 }
 
+/// `@net.grants` (TASK-183): netstack serves the programs its list names
+/// and no one else: a client called `terminal` is served; one called
+/// `intruder` is refused, and the refusal is said in the log.
+pub fn grants(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
+    let said = ctx.door("netdev as terminal")?;
+    if said != ["served"] {
+        return Err(format!("terminal: {said:?}"));
+    }
+    let n = ctx.log_count("netstack: intruder may not use the network");
+    let said = ctx.door("netdev as intruder")?;
+    if said != ["refused"] {
+        return Err(format!("intruder: {said:?}"));
+    }
+    crate::session::waits_for_log(ctx, "netstack: intruder may not use the network (not on the Network page)", n)
+        .map(|_| ())
+}
+
 /// `@net.https` (TASK-181): the shell's `fetch` from the Terminal, on the
 /// test network: test.freally.local resolved by its DNS, TLS 1.3 to the
 /// host's HTTPS server, the chain checked against the root `--root` names (a

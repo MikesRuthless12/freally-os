@@ -23,6 +23,7 @@ flavour-e2e = ["fimage/guard"]
 app-session = { path = "../session" }
 fapp.workspace = true
 fbootctl.workspace = true
+fnet.workspace = true
 fcore-abi.workspace = true
 fedid.workspace = true
 fimage.workspace = true

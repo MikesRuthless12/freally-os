@@ -14,7 +14,7 @@ use app_settings::accounts::{Dialog, Kind as DKind, Outcome as DOut};
 use app_settings::personalisation::{Kind, ROWS, Row, WALLPAPER_NAMES};
 use app_settings::shell::{BAR, Bar, Focus, Outcome, PANELS, Panel, Shell};
 use app_settings::updates::{self, Act as UpAct, View as UpView};
-use app_settings::{about, hardware, key, time};
+use app_settings::{about, hardware, key, network, time};
 use fapp::{Look as KeyLook, Window, inside};
 use fcore_abi::signal;
 use fimage::bundle::Bundle;
@@ -27,6 +27,7 @@ use fwire::proto::accounts as a;
 use fwire::proto::ax;
 use fwire::proto::conductor as c;
 use fwire::proto::devmgr as d;
+use fwire::proto::net as nt;
 use fwire::proto::stage as st;
 use fwire::proto::updater as up;
 
@@ -112,6 +113,8 @@ struct App {
     install: Option<(fstd::fs::File, u64, u64)>,
     /// Shown while accounts works (checking a password takes a moment).
     busy: Option<&'static str>,
+    /// Settings ▸ Network, as last read.
+    network: network::View,
 }
 
 fn call<Req: fwire::Wire, Rep: fwire::Wire>(c: &mut Client, ordinal: u32, req: &Req) -> Result<Rep, String> {
@@ -357,6 +360,45 @@ impl App {
             .collect();
         self.thumbs = Some((t.mode, tw, v.clone()));
         v
+    }
+
+    /// The Network page: read from netstack once each time it opens.
+    fn draw_network(&mut self, x: i32, y: i32, w: u32) {
+        if self.network.ifaces.is_none() {
+            let mut net = fstd::service::connect("netstack").ok().map(Client::new);
+            let no = || String::from("There's no network on this computer.");
+            self.network.ifaces = Some(match net.as_mut() {
+                None => Err(no()),
+                Some(n) => call::<_, nt::Interfaces>(n, nt::INTERFACES, &()).map(|i| i.list),
+            });
+            self.network.conns = Some(match net.as_mut() {
+                None => Err(String::new()),
+                Some(n) => call::<_, nt::Connections>(n, nt::CONNECTIONS, &()),
+            });
+            if net.is_none() {
+                self.network.conns = None;
+            }
+        }
+        let t = self.win.theme;
+        let mut y = y;
+        for (id, words) in self.network.lines() {
+            let heading = id.is_none();
+            if heading {
+                y += t.px(8) as i32;
+            }
+            let top = y;
+            for l in wrap(&mut self.win, if heading { TextStyle::Body } else { TextStyle::Small }, &words, w) {
+                let ink = if heading { Tok::Text } else { Tok::Text2 };
+                self.win.say((x, y), if heading { TextStyle::Body } else { TextStyle::Small }, &l, ink);
+                y += t.px(if heading { 24 } else { 20 }) as i32;
+            }
+            if let Some(id) = id {
+                let mut n = node(ax::TEXT, &words, 0, Rect::new(x, top, w, (y - top) as u32), &id);
+                n.value = words;
+                self.win.nodes.push(n);
+            }
+            y += t.px(2) as i32;
+        }
     }
 
     /// Personalisation's rows, on the account's look as chosen.
@@ -1320,8 +1362,13 @@ impl App {
         let y = t.px(24) as i32;
         self.win.say((x, y), TextStyle::Title, self.shell.panel.name(), Tok::Text);
         let y = y + (title + t.px(20)) as i32;
+        // Network is read again each time it opens.
+        if self.shell.panel != Panel::Network {
+            self.network = network::View::default();
+        }
         match self.shell.panel {
             Panel::Personalisation => self.draw_personalisation(x, y, pw),
+            Panel::Network => self.draw_network(x, y, pw),
             Panel::Accounts => self.draw_accounts(x, y, pw),
             Panel::Time => self.draw_time(x, y, pw),
             Panel::Update => self.draw_update(x, y, pw),
@@ -1695,6 +1742,7 @@ fn run(_bootstrap: u32) -> i64 {
         updates: UpView::default(),
         updater: None,
         install: None,
+        network: network::View::default(),
         busy: None,
     };
     app.read_users();

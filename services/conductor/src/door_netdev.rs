@@ -71,6 +71,26 @@ impl NetDoor {
             self.events = None;
         }
         let r = match arg.split_once(' ').unwrap_or((arg, "")) {
+            // TASK-183: netstack asked for its interfaces as client `name`:
+            // `served`, or `refused` (a client its list doesn't name).
+            ("as", name) if !name.is_empty() => {
+                Ok(alloc::vec![String::from(match c.open_connection("netstack", name) {
+                    None => "error: netstack isn't running",
+                    Some(ch) => {
+                        let mut cl = Client::new(ch);
+                        let wait = fstd::time::Instant::after(fstd::time::Duration::from_secs(3));
+                        match cl.call::<_, fwire::proto::net::Interfaces>(
+                            fwire::proto::net::INTERFACES,
+                            &(),
+                            Vec::new(),
+                            wait,
+                        ) {
+                            Ok(_) => "served",
+                            Err(_) => "refused",
+                        }
+                    }
+                })])
+            }
             ("info", _) => self.call::<_, nd::Info>(nd::INFO, &()).map(|i| {
                 alloc::vec![alloc::format!(
                     "info {} mac={} mtu={} link={}",
