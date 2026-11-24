@@ -26,6 +26,7 @@ mod console;
 mod gpt;
 mod handoff;
 mod keys;
+mod ledger;
 mod read;
 mod slots;
 mod uefi;

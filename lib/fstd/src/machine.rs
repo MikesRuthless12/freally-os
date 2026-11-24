@@ -44,10 +44,11 @@ impl Cpus {
 /// The clock in words (Monitor → Boot, TASK-073): "TSC 2,416 MHz, from
 /// CPUID 0x15 (the HPET agrees)".
 pub fn clock_line(tsc_hz: u64, from: u8) -> alloc::string::String {
-    use fcore_abi::tsc_from::{CPUID, CPUID_HPET_AGREES, HPET};
+    use fcore_abi::tsc_from::{CPUID, CPUID_HPET_AGREES, HPET, HYPERVISOR};
     let how = match from {
         CPUID_HPET_AGREES => "from CPUID 0x15 (the HPET agrees)",
         CPUID => "from CPUID 0x15 (no HPET to check it)",
+        HYPERVISOR => "from the hypervisor (CPUID 0x40000010)",
         HPET => "measured against the HPET",
         _ => "measured against the PIT",
     };
@@ -251,6 +252,10 @@ mod tests {
         use fcore_abi::tsc_from::{CPUID_HPET_AGREES, PIT};
         assert_eq!(clock_line(2_416_000_000, CPUID_HPET_AGREES), "TSC 2,416 MHz, from CPUID 0x15 (the HPET agrees)");
         assert_eq!(clock_line(800_000_000, PIT), "TSC 800 MHz, measured against the PIT");
+        assert_eq!(
+            clock_line(2_419_201_000, fcore_abi::tsc_from::HYPERVISOR),
+            "TSC 2,419 MHz, from the hypervisor (CPUID 0x40000010)"
+        );
         let mut b = bytes(1, 0, &[(0, 0, 1)]);
         b[3] = CPUID_HPET_AGREES;
         assert_eq!(parse_cpus(&b).map(|c| c.tsc_from), Some(CPUID_HPET_AGREES));

@@ -165,3 +165,10 @@ pub fn cdp_chrome() -> String {
 fn brain_bridge_cmd(args: &[String]) -> Result<(), String> {
     brain_bridge::serve(args)
 }
+
+/// The bootloader's ledger (TASK-113), tested on the host here: `freally-boot`
+/// itself builds only for UEFI.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../boot/src/ledger.rs"]
+mod boot_ledger;

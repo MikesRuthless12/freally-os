@@ -24,6 +24,16 @@ pub fn last_panic(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// `@kernel.timer_oneshot`: on a CPU without TSC-deadline (as VirtualBox shows
+/// a guest), Freally Core's timer runs in the APIC's one-shot mode, its clock
+/// measured against the TSC, and the boot reaches the desktop: every sleep
+/// and every wait with a deadline wakes (TASK-113).
+pub fn timer_oneshot(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("freally-core: no TSC-deadline: the APIC timer counts one-shot at ")?;
+    ctx.expect_log("desktop: the Rack is up")?;
+    ctx.expect_log(" S4=")
+}
+
 pub fn panic_screen(ctx: &mut Ctx) -> Result<(), String> {
     ctx.allow_errors(&["An invalid instruction (#UD) in Freally Core"]);
     ctx.expect_log("freally-core: ERROR An invalid instruction (#UD) in Freally Core at 0xffffffff8")?;

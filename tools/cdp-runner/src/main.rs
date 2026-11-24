@@ -80,6 +80,7 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("boot.handoff", boot::handoff),
     ("kernel.panic_screen", kernel::panic_screen),
     ("kernel.last_panic", kernel::last_panic),
+    ("kernel.timer_oneshot", kernel::timer_oneshot),
     ("boot.conductor", boot::conductor),
     ("services.restart", services::restart),
     ("log.read", services::read),
