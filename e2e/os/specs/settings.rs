@@ -568,7 +568,9 @@ pub fn network(ctx: &mut Ctx) -> Result<(), String> {
         ),
         (
             "settings-network-grant-8",
-            String::from("cdpd: the test harness's view of the network; in test images only."),
+            String::from(
+                "cdpd: the test harness's view of the network, and the port the harness reaches it on; in test images only.",
+            ),
         ),
         ("settings-network-open-0", String::from("No connection is open.")),
     ];
@@ -600,12 +602,38 @@ fn done(ctx: &mut Ctx, want: &str) -> Result<(), String> {
             break;
         }
         if start.elapsed() > Duration::from_secs(60) {
-            return Err(format!("the dialog never said {want:?}"));
+            // What the system did meanwhile (the soak saw this twice, with no
+            // driver's error): COM1's last lines.
+            let log = ctx.log();
+            let tail: Vec<&str> = log.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect();
+            return Err(format!("the dialog never said {want:?} in 60 s; COM1's last lines:\n{}", tail.join("\n")));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
     press(ctx, "Enter")?;
     until_gone(ctx, &sel("settings-dialog-done"))
+}
+
+/// *Change your password*: a wrong one said under it, then changed and back.
+fn password_changed_and_back(ctx: &mut Ctx) -> Result<(), String> {
+    press_id(ctx, "settings-account-password")?;
+    typed(ctx, "wrong-password")?;
+    press(ctx, "Tab")?;
+    typed(ctx, "new-horse-1")?;
+    press(ctx, "Tab")?;
+    typed(ctx, "new-horse-1")?;
+    press(ctx, "Enter")?;
+    expect_error(ctx, "settings-password-current", "That password didn't match.")?;
+    typed(ctx, PASSWORD)?;
+    done(ctx, "Your password is changed.")?;
+    press_id(ctx, "settings-account-password")?;
+    for (text, last) in [("new-horse-1", false), (PASSWORD, false), (PASSWORD, true)] {
+        typed(ctx, text)?;
+        if !last {
+            press(ctx, "Tab")?;
+        }
+    }
+    done(ctx, "Your password is changed.")
 }
 
 fn backspace(ctx: &mut Ctx, n: usize) -> Result<(), String> {
@@ -657,25 +685,14 @@ pub fn accounts(ctx: &mut Ctx) -> Result<(), String> {
     if !listed(ctx, "sam")? {
         return Err("accounts doesn't list sam".into());
     }
-    // Change your password: a wrong one said under it, then changed and back.
-    press_id(ctx, "settings-account-password")?;
-    typed(ctx, "wrong-password")?;
-    press(ctx, "Tab")?;
-    typed(ctx, "new-horse-1")?;
-    press(ctx, "Tab")?;
-    typed(ctx, "new-horse-1")?;
-    press(ctx, "Enter")?;
-    expect_error(ctx, "settings-password-current", "That password didn't match.")?;
-    typed(ctx, PASSWORD)?;
-    done(ctx, "Your password is changed.")?;
-    press_id(ctx, "settings-account-password")?;
-    for (text, last) in [("new-horse-1", false), (PASSWORD, false), (PASSWORD, true)] {
-        typed(ctx, text)?;
-        if !last {
-            press(ctx, "Tab")?;
-        }
+    // Change your password. However that goes, mike's is the specs' again
+    // after it: the soak saw a change made but said too late leave it
+    // changed, and every spec after this one red at its login.
+    let changed = password_changed_and_back(ctx);
+    if changed.is_err() {
+        let _ = ctx.door(&format!("accounts passwd new-horse-1 {PASSWORD}"));
     }
-    done(ctx, "Your password is changed.")?;
+    changed?;
     // Export.
     press_id(ctx, "settings-account-export")?;
     typed(ctx, PASSWORD)?;
