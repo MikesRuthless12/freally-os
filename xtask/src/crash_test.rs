@@ -172,6 +172,35 @@ impl<'a> Machine<'a> {
         self.o.vars()
     }
 
+    /// What a stalled boot shows, before its VM goes: conductor's services
+    /// as its test door says them (no answer: conductor, or everything,
+    /// stopped), and each CPU's registers (QEMU's `info registers -a`; the
+    /// kernel is stripped, so its RIPs are named by an unstripped build of
+    /// the same commit: the builds are reproducible).
+    fn stalled(&mut self) -> String {
+        use std::io::{BufRead, Write};
+        let door = std::net::TcpStream::connect(("127.0.0.1", self.o.port(3))).and_then(|mut s| {
+            s.set_read_timeout(Some(Duration::from_secs(3)))?;
+            s.write_all(b"services\n")?;
+            let mut lines = Vec::new();
+            for line in std::io::BufReader::new(s).lines() {
+                let line = line?;
+                if line.trim() == "end" {
+                    break;
+                }
+                lines.push(line);
+            }
+            Ok(lines.join("\n"))
+        });
+        let door = door.unwrap_or_else(|e| format!("no answer: {e}"));
+        let cmd = fjson::Value::obj([("command-line", fjson::Value::Str("info registers -a".into()))]);
+        let regs = match self.q.execute("human-monitor-command", Some(cmd)) {
+            Ok(v) => v.as_str().unwrap_or("(not text)").trim_end().to_string(),
+            Err(e) => format!("(no registers: {e})"),
+        };
+        format!("the test door's services:\n{door}\nthe CPUs:\n{regs}")
+    }
+
     /// QEMU quits (the load mid-write: a crash too) and starts again on the
     /// same disk.
     fn cold(&mut self) -> Result<(), String> {
@@ -197,7 +226,10 @@ impl<'a> Machine<'a> {
     fn boot(&mut self) -> Result<Boot, String> {
         let log = self.o.com1_log();
         for _ in 0..=MISSES_IN_A_ROW {
-            let (b, end) = next_boot(&log, self.at)?;
+            let (b, end) = match next_boot(&log, self.at) {
+                Ok(x) => x,
+                Err(e) => return Err(format!("{e}\n{}", self.stalled())),
+            };
             self.at = end;
             match b {
                 Boot::Stalled => {
