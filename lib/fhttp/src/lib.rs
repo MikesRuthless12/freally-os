@@ -80,6 +80,12 @@ pub struct Reader {
     done: bool,
     /// The body's bytes so far, taken or not (`take_body`).
     got: usize,
+    /// Until the head is whole: how far `buf` has been looked through, where
+    /// its last line began, and how many lines ended. Each byte is looked at
+    /// once, so a head trickled in costs its length, not its square.
+    scanned: usize,
+    line_start: usize,
+    lines: usize,
 }
 
 /// One CRLF-ended line taken from the front of `buf`, without its CRLF.
@@ -99,7 +105,17 @@ fn line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, Bad> {
 impl Reader {
     /// A reader that takes a body of at most `limit` bytes.
     pub fn new(limit: usize) -> Reader {
-        Reader { limit, buf: Vec::new(), head: None, body: Body::ToClose, done: false, got: 0 }
+        Reader {
+            limit,
+            buf: Vec::new(),
+            head: None,
+            body: Body::ToClose,
+            done: false,
+            got: 0,
+            scanned: 0,
+            line_start: 0,
+            lines: 0,
+        }
     }
 
     /// The body's bytes read since the last take, so a large body passes
@@ -145,22 +161,37 @@ impl Reader {
     }
 
     fn read_head(&mut self) -> Result<bool, Bad> {
-        let mut lines = Vec::new();
-        let mut probe = self.buf.clone();
-        loop {
-            match line(&mut probe)? {
-                None => return Ok(false),
-                Some(l) if l.is_empty() => break,
-                Some(l) => {
-                    lines.push(l);
-                    if lines.len() > MAX_HEADERS + 1 {
-                        return Err(Bad::TooLong);
-                    }
-                }
+        // Where the head ends (after its empty line), looking only at what's new.
+        let mut end = None;
+        while self.scanned < self.buf.len() {
+            let i = self.scanned;
+            self.scanned += 1;
+            if self.buf[i] != b'\n' || i == 0 || self.buf[i - 1] != b'\r' {
+                continue;
+            }
+            let len = i - 1 - self.line_start;
+            self.line_start = i + 1;
+            if len == 0 {
+                end = Some(i + 1);
+                break;
+            }
+            self.lines += 1;
+            if len > MAX_LINE || self.lines > MAX_HEADERS + 1 {
+                return Err(Bad::TooLong);
             }
         }
-        self.buf = probe;
-        let status = core::str::from_utf8(&lines[0]).map_err(|_| Bad::Status)?;
+        let Some(end) = end else {
+            return if self.buf.len() - self.line_start > MAX_LINE + 1 { Err(Bad::TooLong) } else { Ok(false) };
+        };
+        let mut head: Vec<u8> = self.buf.drain(..end).collect();
+        let mut lines = Vec::new();
+        while let Some(l) = line(&mut head)?
+            && !l.is_empty()
+        {
+            lines.push(l);
+        }
+        // An empty line first: no status line at all.
+        let status = core::str::from_utf8(lines.first().ok_or(Bad::Status)?).map_err(|_| Bad::Status)?;
         let mut parts = status.splitn(3, ' ');
         let (version, code) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
         if !matches!(version, "HTTP/1.1" | "HTTP/1.0") || code.len() != 3 || !code.bytes().all(|b| b.is_ascii_digit()) {
@@ -287,18 +318,28 @@ impl Reader {
 }
 
 /// Where a redirect (301, 302, 303, 307, 308) sends a fetch: (host, path),
-/// HTTPS only; None for anything else.
+/// HTTPS only; None for anything else. The host is a name (letters,
+/// digits, `-` and `.`: no credentials, port or query), the path printable
+/// ASCII without a space (it goes into the next request's line as it is),
+/// its fragment dropped.
 pub fn redirect(r: &Response) -> Option<(String, String)> {
     if !matches!(r.status, 301 | 302 | 303 | 307 | 308) {
         return None;
     }
     let rest = r.header("location")?.strip_prefix("https://")?;
-    let host = rest.split('/').next().unwrap_or("");
+    let rest = rest.split('#').next().unwrap_or("");
+    let host = rest.split(['/', '?']).next().unwrap_or("");
     let path = &rest[host.len()..];
-    if host.is_empty() || host.contains(['@', ' ', ':']) {
-        return None; // credentials, a port, a space: not followed
+    let named = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'.';
+    if host.is_empty() || !host.bytes().all(named) || !path.bytes().all(|b| b.is_ascii_graphic()) {
+        return None;
     }
-    Some((String::from(host), String::from(if path.is_empty() { "/" } else { path })))
+    let path = match path {
+        "" => String::from("/"),
+        p if p.starts_with('?') => alloc::format!("/{p}"),
+        p => String::from(p),
+    };
+    Some((String::from(host), path))
 }
 
 #[cfg(test)]

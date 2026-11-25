@@ -64,6 +64,8 @@ fn every_bad_form_is_refused() {
     );
     assert_eq!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n", 9), Bad::Cut, "no last chunk");
     assert_eq!(bad(b"HTTP/1.1 200 OK\r\nContent-Le", 9), Bad::Cut);
+    assert_eq!(bad(b"\r\n\r\n", 9), Bad::Status, "an empty line where the status should be");
+    assert_eq!(bad(b"\r\nHTTP/1.1 200 OK\r\n\r\n", 9), Bad::Status);
     let mut long = b"HTTP/1.1 200 OK\r\nX: ".to_vec();
     long.extend(vec![b'a'; MAX_LINE + 10]);
     assert_eq!(bad(&long, 9), Bad::TooLong);
@@ -88,6 +90,28 @@ fn redirects_go_to_https_only() {
     assert_eq!(to(302, "https://user@cdn.freally.local/x"), None);
     assert_eq!(to(302, "https://cdn.freally.local:8443/x"), None);
     assert_eq!(to(200, "https://cdn.freally.local/x"), None);
+    // The host a name, the path printable without a space, the fragment dropped.
+    assert_eq!(to(302, "https://cdn.freally.local/a\nX-Injected: 1"), None, "a bare LF into the request line");
+    assert_eq!(to(302, "https://cdn.freally.local/a b"), None);
+    assert_eq!(to(302, "https://cdn.freally.local/a\u{e9}"), None);
+    assert_eq!(to(302, "https://cdn\tfreally.local/x"), None);
+    assert_eq!(to(302, "https://cdn.freally.local?x=1"), Some(("cdn.freally.local".into(), "/?x=1".into())));
+    assert_eq!(to(302, "https://cdn.freally.local/a#top"), Some(("cdn.freally.local".into(), "/a".into())));
+}
+
+#[test]
+fn a_head_trickled_in_costs_its_length_not_its_square() {
+    // A head of 64 KiB a byte at a time: read through once (it was cloned
+    // and read again from its start at each byte: some 2e9 bytes' work).
+    let mut head = b"HTTP/1.1 200 OK\r\n".to_vec();
+    for i in 0..8 {
+        head.extend(alloc::format!("X-{i}: {}\r\n", "v".repeat(MAX_LINE - 10)).bytes());
+    }
+    head.extend(b"Content-Length: 2\r\n\r\nok");
+    let start = std::time::Instant::now();
+    let r = read(&head, 9).unwrap();
+    assert_eq!((r.headers.len(), r.body.as_slice()), (9, &b"ok"[..]));
+    assert!(start.elapsed() < std::time::Duration::from_secs(1), "{:?}", start.elapsed());
 }
 
 #[test]
