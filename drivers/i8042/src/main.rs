@@ -23,6 +23,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use drv_i8042::OUT_FULL;
 use drv_i8042::quirks::{self, Decode, Scheme};
 use fcore_abi::{FErr, signal, syscall as nr};
 use fstd::handle::Handle;
@@ -36,9 +37,7 @@ fstd::program!(run);
 
 const DATA: u16 = 0x60;
 const STATUS: u16 = 0x64;
-const OUT_FULL: u8 = 1;
 const IN_FULL: u8 = 2;
-const AUX: u8 = 0x20;
 
 fn wait_write() -> bool {
     let t = Instant::now();
@@ -215,6 +214,23 @@ fn resources() -> Result<Resources, Fail> {
     })
 }
 
+/// The controller, and the two lines its ack unmasks.
+struct Ports<'a>(&'a Handle, &'a Handle);
+
+impl drv_i8042::Controller for Ports<'_> {
+    fn status(&mut self) -> u8 {
+        fstd::sys::inb(STATUS)
+    }
+    fn data(&mut self) -> u8 {
+        fstd::sys::inb(DATA)
+    }
+    fn ack(&mut self) {
+        for h in [self.0, self.1] {
+            let _ = fstd::sys::call1(nr::INTERRUPT_ACK, [h.raw() as u64, 0, 0, 0, 0, 0]);
+        }
+    }
+}
+
 fn bind(res: &Handle, (gsi, flags): (u64, u64)) -> Result<Handle, FErr> {
     let h = fstd::sys::call1(nr::INTERRUPT_BIND, [res.raw() as u64, gsi, flags, 0, 0, 0])?;
     Handle::from_raw(h as u32).ok_or(FErr::Internal)
@@ -267,9 +283,7 @@ fn run(_bootstrap: u32) -> i64 {
         match fstd::sys::wait_many(&items, u64::MAX) {
             Ok(0) | Ok(1) => {
                 // Everything the controller holds, whichever line rang.
-                while fstd::sys::inb(STATUS) & OUT_FULL != 0 {
-                    let aux = fstd::sys::inb(STATUS) & AUX != 0;
-                    let b = fstd::sys::inb(DATA);
+                drv_i8042::take_all(&mut Ports(&kbd, &mouse), |aux, b| {
                     let mut out: Vec<Vec<u8>> = Vec::new();
                     if aux {
                         if let Some(m) = packets.feed(b) {
@@ -323,9 +337,7 @@ fn run(_bootstrap: u32) -> i64 {
                     for e in &out {
                         subscribers.retain(|s| s.send(e, Vec::new()) != Err(FErr::PeerClosed));
                     }
-                }
-                let _ = fstd::sys::call1(nr::INTERRUPT_ACK, [kbd.raw() as u64, 0, 0, 0, 0, 0]);
-                let _ = fstd::sys::call1(nr::INTERRUPT_ACK, [mouse.raw() as u64, 0, 0, 0, 0, 0]);
+                });
             }
             Ok(2) => {
                 if let Ok(m) = listen.recv(0)
