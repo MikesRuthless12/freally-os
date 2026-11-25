@@ -174,3 +174,43 @@ fn set1_spot_checks() {
     assert_eq!(s.feed(0x55), [None, None]);
     assert_eq!(s.take_unknown(), Some((false, 0x55)));
 }
+
+/// DevTools' key codes (UI Events' `code`) as HID usages (TASK-184: cdpd
+/// injects keys as drv-i8042 would send them): letters, digits, the named
+/// keys cdp-host types, and what the US layout makes of them.
+#[test]
+fn devtools_codes_are_hid_usages() {
+    for (code, usage) in [
+        ("KeyA", 0x04),
+        ("KeyZ", 0x1D),
+        ("Digit1", 0x1E),
+        ("Digit9", 0x26),
+        ("Digit0", 0x27),
+        ("Enter", 0x28),
+        ("Escape", 0x29),
+        ("Backspace", 0x2A),
+        ("Tab", 0x2B),
+        ("Space", 0x2C),
+        ("Slash", 0x38),
+        ("CapsLock", 0x39),
+        ("F1", 0x3A),
+        ("F12", 0x45),
+        ("PrintScreen", 0x46),
+        ("Pause", 0x48),
+        ("Delete", 0x4C),
+        ("ArrowRight", 0x4F),
+        ("ArrowUp", 0x52),
+        ("ContextMenu", 0x65),
+        ("ControlLeft", usage::LEFT_CTRL),
+        ("ShiftRight", usage::RIGHT_SHIFT),
+        ("MetaLeft", usage::LEFT_META),
+    ] {
+        assert_eq!(usage_for_code(code), Some(usage), "{code}");
+    }
+    for code in ["", "Key", "Keya", "KeyAB", "Digit", "Digit10", "F0", "F13", "Fn", "Unidentified"] {
+        assert_eq!(usage_for_code(code), None, "{code:?}");
+    }
+    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    assert_eq!(us_char(usage_for_code("KeyQ").unwrap(), Modifiers::default()), Some('q'));
+    assert_eq!(us_char(usage_for_code("Digit1").unwrap(), shift), Some('!'));
+}

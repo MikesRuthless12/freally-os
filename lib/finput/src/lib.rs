@@ -411,6 +411,80 @@ impl Modifiers {
     }
 }
 
+/// A DevTools key code (UI Events' `code`: `KeyA`, `Digit1`, `Enter`,
+/// `ArrowUp`, `ShiftLeft` …) as its HID usage (TASK-184: cdpd injects keys
+/// as drv-i8042 would send them). The codes cdp-host types: letters,
+/// digits, F1–F12, the named keys and the modifiers.
+pub fn usage_for_code(code: &str) -> Option<u16> {
+    const NAMED: [(&str, u16); 43] = [
+        ("Enter", 0x28),
+        ("Escape", 0x29),
+        ("Backspace", 0x2A),
+        ("Tab", 0x2B),
+        ("Space", 0x2C),
+        ("Minus", 0x2D),
+        ("Equal", 0x2E),
+        ("BracketLeft", 0x2F),
+        ("BracketRight", 0x30),
+        ("Backslash", 0x31),
+        ("Semicolon", 0x33),
+        ("Quote", 0x34),
+        ("Backquote", 0x35),
+        ("Comma", 0x36),
+        ("Period", 0x37),
+        ("Slash", 0x38),
+        ("CapsLock", usage::CAPS_LOCK),
+        ("PrintScreen", usage::PRINT_SCREEN),
+        ("ScrollLock", 0x47),
+        ("Pause", usage::PAUSE),
+        ("Insert", 0x49),
+        ("Home", 0x4A),
+        ("PageUp", 0x4B),
+        ("Delete", 0x4C),
+        ("End", 0x4D),
+        ("PageDown", 0x4E),
+        ("ArrowRight", 0x4F),
+        ("ArrowLeft", 0x50),
+        ("ArrowDown", 0x51),
+        ("ArrowUp", 0x52),
+        ("ContextMenu", 0x65),
+        ("ControlLeft", usage::LEFT_CTRL),
+        ("ShiftLeft", usage::LEFT_SHIFT),
+        ("AltLeft", usage::LEFT_ALT),
+        ("MetaLeft", usage::LEFT_META),
+        ("ControlRight", usage::RIGHT_CTRL),
+        ("ShiftRight", usage::RIGHT_SHIFT),
+        ("AltRight", usage::RIGHT_ALT),
+        ("MetaRight", usage::RIGHT_META),
+        ("IntlBackslash", 0x64),
+        ("NumLock", 0x53),
+        ("NumpadEnter", 0x58),
+        ("Power", 0x66),
+    ];
+    if let Some((_, u)) = NAMED.iter().find(|(c, _)| *c == code) {
+        return Some(*u);
+    }
+    if let Some(l) = code.strip_prefix("Key")
+        && let [c @ b'A'..=b'Z'] = l.as_bytes()
+    {
+        return Some(0x04 + u16::from(c - b'A'));
+    }
+    if let Some(d) = code.strip_prefix("Digit")
+        && let [c @ b'0'..=b'9'] = d.as_bytes()
+    {
+        // HID puts 0 after 9.
+        return Some(if *c == b'0' { 0x27 } else { 0x1E + u16::from(c - b'1') });
+    }
+    if let Some(n) = code.strip_prefix('F')
+        && let Ok(n) = n.parse::<u16>()
+        && (1..=12).contains(&n)
+        && !code[1..].starts_with('0')
+    {
+        return Some(0x3A + n - 1);
+    }
+    None
+}
+
 /// The US layout: the character a key types, if any.
 pub fn us_char(usage: u16, m: Modifiers) -> Option<char> {
     if (0x04..=0x1D).contains(&usage) {

@@ -21,7 +21,7 @@ use fcore_abi::{FErr, signal, topic};
 use fjson::Value;
 use fstd::ipc::{Channel, Client};
 use fstd::time::{Duration, Instant};
-use fwire::proto::{ax, cdpd as cd, conductor as c, logger as l, stage as st};
+use fwire::proto::{ax, cdpd as cd, conductor as c, input as inp, logger as l, stage as st};
 use svc_cdpd::dom::{self, Doc};
 
 mod port;
@@ -42,6 +42,10 @@ struct Cdpd {
     /// inventory's "shown": a launcher opened and closed between two specs
     /// is in it), by its name.
     seen: alloc::collections::BTreeMap<String, Value>,
+    /// The modifiers and the mouse buttons the keys and clicks cdpd injected
+    /// hold down (TASK-184).
+    mods: finput::Modifiers,
+    buttons: u8,
 }
 
 impl Cdpd {
@@ -50,6 +54,92 @@ impl Cdpd {
             self.stage = fstd::service::connect("stage").ok().map(Client::new);
         }
         self.stage.as_mut().ok_or_else(|| String::from("stage isn't up"))
+    }
+
+    /// The screen as stage composes it (the cursor in it), as PNG in base64,
+    /// clipped to `params.clip` as cdp-host clips QEMU's.
+    fn screenshot(&mut self, params: &Value) -> Result<Value, String> {
+        if params.get("format").and_then(Value::as_str).is_some_and(|f| f != "png") {
+            return Err(String::from("only png"));
+        }
+        let ask = st::Screenshot { window_id: None };
+        let (shot, hs) = self
+            .stage()?
+            .call::<_, st::Shot>(st::SCREENSHOT, &ask, Vec::new(), deadline())
+            .map_err(|e| format!("stage: {e:?}"))?;
+        let vmo = hs.into_iter().next().ok_or("stage sent no picture")?;
+        let (w, h) = (shot.w, shot.h);
+        let mut px = alloc::vec![0u8; w as usize * h as usize * 4];
+        fstd::sys::vmo_read(vmo.raw(), 0, &mut px).map_err(|e| format!("the picture: {e:?}"))?;
+        let (mut x0, mut y0, mut cw, mut ch) = (0, 0, w, h);
+        if let Some(c) = params.get("clip") {
+            let num = |k: &str| c.get(k).and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as u32;
+            x0 = num("x").min(w);
+            y0 = num("y").min(h);
+            cw = num("width").min(w - x0);
+            ch = num("height").min(h - y0);
+        }
+        let mut rgb = Vec::with_capacity(cw as usize * ch as usize * 3);
+        for y in y0..y0 + ch {
+            let row = &px[(y * w + x0) as usize * 4..(y * w + x0 + cw) as usize * 4];
+            // 0x00RRGGBB, little-endian: B, G, R, 0 in memory.
+            rgb.extend(row.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0]]));
+        }
+        drop(px);
+        let png = fimage::png::encode_deflated(cw, ch, 3, &rgb);
+        Ok(Value::obj([("data", fjson::base64::encode(&png).into())]))
+    }
+
+    /// A key, as drv-i8042 would send it (its usage, the US layout's
+    /// character, the modifiers held), through stage.
+    fn key(&mut self, p: &Value) -> Result<Value, String> {
+        let kind = p.get("type").and_then(Value::as_str).unwrap_or("");
+        let down = match kind {
+            "keyDown" | "rawKeyDown" => true,
+            "keyUp" => false,
+            // The text comes with keyDown, as a keyboard sends it.
+            "char" => return Ok(Value::Obj(Vec::new())),
+            _ => return Err(format!("unknown key event type {kind:?}")),
+        };
+        let code = p.get("code").and_then(Value::as_str).or_else(|| p.get("key").and_then(Value::as_str)).unwrap_or("");
+        let usage = finput::usage_for_code(code).ok_or_else(|| format!("no key has the code {code:?}"))?;
+        self.mods.update(finput::KeyEvent { usage, down });
+        let ch = finput::us_char(usage, self.mods).map_or(0, u32::from);
+        self.inject(Some(inp::Key { usage, down, ch, modifiers: self.mods.bits() }), None)
+    }
+
+    /// Motion, a button, or the wheel, as the PS/2 mouse sends them (relative,
+    /// the buttons held), through stage.
+    fn mouse(&mut self, p: &Value) -> Result<Value, String> {
+        let kind = p.get("type").and_then(Value::as_str).unwrap_or("");
+        let num = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0);
+        let bit = match p.get("button").and_then(Value::as_str).unwrap_or("none") {
+            "left" => 1,
+            "right" => 2,
+            "middle" => 4,
+            _ => 0,
+        };
+        let (mut dx, mut dy, mut wheel) = (0, 0, 0);
+        match kind {
+            "mouseMoved" => {
+                let step = |v: f64| v.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+                (dx, dy) = (step(num("deltaX")), step(num("deltaY")));
+            }
+            "mousePressed" | "mouseReleased" if bit == 0 => return Err(String::from("which button?")),
+            "mousePressed" => self.buttons |= bit,
+            "mouseReleased" => self.buttons &= !bit,
+            // Scrolling up is positive, in HID's direction.
+            "mouseWheel" => wheel = if num("deltaY") < 0.0 { 1 } else { -1 },
+            _ => return Err(format!("unknown mouse event type {kind:?}")),
+        }
+        self.inject(None, Some(inp::Mouse { dx, dy, wheel, buttons: self.buttons }))
+    }
+
+    fn inject(&mut self, key: Option<inp::Key>, mouse: Option<inp::Mouse>) -> Result<Value, String> {
+        self.stage()?
+            .call::<_, ()>(st::INJECT_INPUT, &st::Inject { key, mouse }, Vec::new(), deadline())
+            .map_err(|e| format!("stage: {e:?}"))?;
+        Ok(Value::Obj(Vec::new()))
     }
 
     /// Stage's windows (connecting again, once, to a stage restarted since).
@@ -121,6 +211,11 @@ impl Cdpd {
     fn call(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         match method {
             "Target.getTargets" => Ok(dom::targets(&self.windows()?.windows)),
+            // TASK-184: what cdp-host does with QMP, done through stage, so
+            // the runner on cdpd's port needs QEMU only for the machine itself.
+            "Page.captureScreenshot" => self.screenshot(params),
+            "Input.dispatchKeyEvent" => self.key(params),
+            "Input.dispatchMouseEvent" => self.mouse(params),
             "DOM.getDocument" => {
                 self.rebuild()?;
                 let depth = params.get("depth").and_then(Value::as_i64).unwrap_or(1);
@@ -165,7 +260,8 @@ impl Cdpd {
                 let (at, _) = p.map_err(|e| format!("stage: {e:?}"))?;
                 self.rebuild()?;
                 let node = self.doc.control_at(at.x, at.y).map_or(Value::Null, |i| self.doc.control(i));
-                Ok(Value::obj([("node", node)]))
+                let pointer = Value::obj([("x", Value::Num(f64::from(at.x))), ("y", Value::Num(f64::from(at.y)))]);
+                Ok(Value::obj([("node", node), ("at", pointer)]))
             }
             // How often each running service has been asked each thing.
             "Freally.ordinals" => {
@@ -463,8 +559,15 @@ fn run(_bootstrap: u32) -> i64 {
         return 1;
     }
     fstd::info!("cdpd: ready");
-    let mut d =
-        Cdpd { asked: Default::default(), stage: None, logger: None, doc: Doc::default(), seen: Default::default() };
+    let mut d = Cdpd {
+        asked: Default::default(),
+        stage: None,
+        logger: None,
+        doc: Doc::default(),
+        seen: Default::default(),
+        mods: finput::Modifiers::default(),
+        buttons: 0,
+    };
     let mut clients: Vec<(Channel, String)> = Vec::new();
     // CDP over the network too (TASK-184), once netstack listens for it.
     let mut net = port::Port::new();

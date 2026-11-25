@@ -735,7 +735,7 @@
       "task": "TASK-184",
       "setup": "e2e-testnet",
       "spec": "e2e/os/specs/net.rs",
-      "what": "cdpd's port on the network: a WebSocket client on the host opens ws://<guest>:9222/ (the accept key checked), gets Target.getTargets answered by its id and an unknown method's error by its id, its ping answered and its close echoed; a request that isn't WebSocket gets a 400."
+      "what": "cdpd's port on the network: a WebSocket client on the host opens ws://<guest>:9222/ (the accept key checked), gets Target.getTargets answered by its id and an unknown method's error by its id; a screenshot the size of QEMU's screen, the mouse moved (the pointer follows) and Tab pressed (the focus moves), through stage; its ping answered and its close echoed; a request that isn't WebSocket gets a 400."
     },
     {
       "id": "net.https",

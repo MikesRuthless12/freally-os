@@ -550,15 +550,21 @@ pub fn listen(ctx: &mut Ctx) -> Result<(), String> {
 /// client on the host (the test network reaches the guest) opens
 /// `ws://<guest>:9222/` (the accept key checked), asks `Target.getTargets`
 /// and gets the desktop first by its id, asks what isn't served and gets an
-/// error by its id; its ping is answered with a pong and its close echoed; a
-/// request that isn't WebSocket is answered 400.
+/// error by its id; takes a screenshot (a PNG the size of QEMU's screen),
+/// moves the mouse (the pointer follows) and presses Tab (the focus moves),
+/// all through stage; its ping is answered with a pong and its close
+/// echoed; a request that isn't WebSocket is answered 400.
 pub fn cdp_network(ctx: &mut Ctx) -> Result<(), String> {
     let prefix = testnet_prefix(ctx)?;
     ctx.expect_log("cdpd: CDP over WebSocket on port 9222")?;
     let client = host_client(CDP_CLIENT, &format!("{prefix}.15"))?;
     let said = printed(client)?;
-    if !said.starts_with("CDP over WebSocket") {
-        return Err(format!("the host's WebSocket client said {said:?}"));
+    let size: Vec<u32> =
+        said.strip_prefix("CDP over WebSocket ").unwrap_or("").split(' ').filter_map(|n| n.parse().ok()).collect();
+    // cdpd's screenshot (stage's picture) the size of cdp-host's (QEMU's).
+    let shot = ctx.screenshot()?;
+    if size != [shot.w, shot.h] {
+        return Err(format!("the host's WebSocket client said {said:?}; QEMU's screen is {}x{}", shot.w, shot.h));
     }
     Ok(())
 }
@@ -605,6 +611,31 @@ assert op == 1 and m['id'] == 1 and m['result']['targetInfos'][0]['targetId'] ==
 send(s, 1, b'{"id":2,"method":"No.such"}')
 m = json.loads(recv(s)[1])
 assert m['id'] == 2 and m['error']['code'] == -32000, m
+def call(i, method, params=None):
+    send(s, 1, json.dumps({'id': i, 'method': method, 'params': params or {}}).encode())
+    r = json.loads(recv(s)[1])
+    assert r['id'] == i and 'result' in r, r
+    return r['result']
+png = base64.b64decode(call(3, 'Page.captureScreenshot', {'format': 'png'})['data'])
+assert png[:8] == b'\x89PNG\r\n\x1a\n' and png[12:16] == b'IHDR', png[:16]
+W, H = struct.unpack('!II', png[16:24])
+at = call(4, 'Freally.nodeAt')['at']
+dx = 40 if at['x'] < W // 2 else -40
+dy = 30 if at['y'] < H // 2 else -30
+call(5, 'Input.dispatchMouseEvent', {'type': 'mouseMoved', 'deltaX': dx, 'deltaY': dy})
+to = call(6, 'Freally.nodeAt')['at']
+assert (to['x'] - at['x']) * dx > 0 and (to['y'] - at['y']) * dy > 0, (at, to, dx, dy)
+before = call(7, 'Freally.focusedNode')
+for kind in ('keyDown', 'keyUp'):
+    call(8, 'Input.dispatchKeyEvent', {'type': kind, 'code': 'Tab', 'key': 'Tab'})
+# The key reaches the app through stage; its tree says so once it has run.
+import time
+end = time.time() + 3
+after = before
+while after == before and time.time() < end:
+    time.sleep(0.1)
+    after = call(9, 'Freally.focusedNode')
+assert after != before, ('Tab moved no focus', before)
 send(s, 9, b'are you there')
 assert recv(s) == (10, b'are you there')
 send(s, 8, struct.pack('!H', 1000))
@@ -614,7 +645,7 @@ t = socket.create_connection((G, 9222), 10)
 t.sendall(b'GET / HTTP/1.1\r\nHost: freally\r\n\r\n')
 r = t.recv(100)
 assert r.startswith(b'HTTP/1.1 400 '), r
-print('CDP over WebSocket', len(m))
+print('CDP over WebSocket', W, H)
 "#;
 
 /// `@net.grants` (TASK-183): netstack serves the programs its list names
