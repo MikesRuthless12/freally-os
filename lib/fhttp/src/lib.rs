@@ -88,6 +88,13 @@ pub struct Reader {
     lines: usize,
 }
 
+/// Whether `s` holds a control character other than a tab: RFC 9112's
+/// reason-phrase and RFC 9110's field values allow none (the reason is
+/// shown as it came: an escape in it would be the Terminal's to obey).
+fn has_control(s: &str) -> bool {
+    s.chars().any(|c| c != '\t' && c.is_control())
+}
+
 /// One CRLF-ended line taken from the front of `buf`, without its CRLF.
 fn line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, Bad> {
     match buf.windows(2).position(|w| w == b"\r\n") {
@@ -197,9 +204,13 @@ impl Reader {
         if !matches!(version, "HTTP/1.1" | "HTTP/1.0") || code.len() != 3 || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(Bad::Status);
         }
+        let reason = parts.next().unwrap_or("");
+        if has_control(reason) {
+            return Err(Bad::Status);
+        }
         let mut r = Response {
             status: code.parse().map_err(|_| Bad::Status)?,
-            reason: String::from(parts.next().unwrap_or("")),
+            reason: String::from(reason),
             headers: Vec::new(),
             body: Vec::new(),
         };
@@ -208,6 +219,9 @@ impl Reader {
             let (name, value) = l.split_once(':').ok_or(Bad::Header)?;
             if name.is_empty() || name.ends_with(' ') || name.ends_with('\t') {
                 return Err(Bad::Header); // RFC 9112 § 5.1: no space before the colon
+            }
+            if has_control(l) {
+                return Err(Bad::Header);
             }
             r.headers.push((name.to_ascii_lowercase(), String::from(value.trim())));
         }

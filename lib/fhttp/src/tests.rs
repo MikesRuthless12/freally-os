@@ -65,6 +65,14 @@ fn every_bad_form_is_refused() {
     assert_eq!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n", 9), Bad::Cut, "no last chunk");
     assert_eq!(bad(b"HTTP/1.1 200 OK\r\nContent-Le", 9), Bad::Cut);
     assert_eq!(bad(b"\r\n\r\n", 9), Bad::Status, "an empty line where the status should be");
+    // Control characters: none in the reason (it's shown as it came), none in a field.
+    assert_eq!(bad(b"HTTP/1.1 200 \x1b[2JOK\r\n\r\n", 9), Bad::Status);
+    assert_eq!(bad(b"HTTP/1.1 200 OK\r\nX: a\x1bb\r\n\r\n", 9), Bad::Header);
+    assert_eq!(bad(b"HTTP/1.1 200 OK\r\nX: a\nInjected: b\r\n\r\n", 9), Bad::Header, "a bare LF");
+    assert_eq!(
+        read(b"HTTP/1.1 200 Fine\tby me\r\nX: a\tb\r\nContent-Length: 0\r\n\r\n", 9).unwrap().reason,
+        "Fine\tby me"
+    );
     assert_eq!(bad(b"\r\nHTTP/1.1 200 OK\r\n\r\n", 9), Bad::Status);
     let mut long = b"HTTP/1.1 200 OK\r\nX: ".to_vec();
     long.extend(vec![b'a'; MAX_LINE + 10]);
