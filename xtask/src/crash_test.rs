@@ -174,14 +174,33 @@ impl<'a> Machine<'a> {
 
     /// What a stalled boot shows, before its VM goes: conductor's services
     /// as its test door says them (no answer: conductor, or everything,
-    /// stopped), and each CPU's registers (QEMU's `info registers -a`; the
-    /// kernel is stripped, so its RIPs are named by an unstripped build of
-    /// the same commit: the builds are reproducible).
+    /// stopped), each CPU's registers (QEMU's `info registers -a`), then
+    /// three times a second apart each service's CPU time (the door's `ps`)
+    /// and where each CPU is, so who runs and who waits shows. The kernel and
+    /// the programs are stripped: an unstripped build of the same commit
+    /// names the RIPs (the builds are reproducible).
     fn stalled(&mut self) -> String {
+        let mut out = format!("the test door's services:\n{}", self.door("services"));
+        out.push_str(&format!("\nthe CPUs:\n{}", self.registers()));
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_secs(1));
+            let rips: Vec<String> = self
+                .registers()
+                .lines()
+                .filter(|l| l.starts_with("CPU#") || l.starts_with("RIP="))
+                .map(String::from)
+                .collect();
+            out.push_str(&format!("\na second on:\n{}\n{}", self.door("ps"), rips.join("\n")));
+        }
+        out
+    }
+
+    /// The test door's answer to `cmd` (or why there was none).
+    fn door(&self, cmd: &str) -> String {
         use std::io::{BufRead, Write};
-        let door = std::net::TcpStream::connect(("127.0.0.1", self.o.port(3))).and_then(|mut s| {
+        let lines = std::net::TcpStream::connect(("127.0.0.1", self.o.port(3))).and_then(|mut s| {
             s.set_read_timeout(Some(Duration::from_secs(3)))?;
-            s.write_all(b"services\n")?;
+            s.write_all(format!("{cmd}\n").as_bytes())?;
             let mut lines = Vec::new();
             for line in std::io::BufReader::new(s).lines() {
                 let line = line?;
@@ -192,13 +211,15 @@ impl<'a> Machine<'a> {
             }
             Ok(lines.join("\n"))
         });
-        let door = door.unwrap_or_else(|e| format!("no answer: {e}"));
+        lines.unwrap_or_else(|e| format!("no answer: {e}"))
+    }
+
+    fn registers(&mut self) -> String {
         let cmd = fjson::Value::obj([("command-line", fjson::Value::Str("info registers -a".into()))]);
-        let regs = match self.q.execute("human-monitor-command", Some(cmd)) {
+        match self.q.execute("human-monitor-command", Some(cmd)) {
             Ok(v) => v.as_str().unwrap_or("(not text)").trim_end().to_string(),
             Err(e) => format!("(no registers: {e})"),
-        };
-        format!("the test door's services:\n{door}\nthe CPUs:\n{regs}")
+        }
     }
 
     /// QEMU quits (the load mid-write: a crash too) and starts again on the

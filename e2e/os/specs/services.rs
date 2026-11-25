@@ -47,6 +47,20 @@ pub fn restart(ctx: &mut Ctx) -> Result<(), String> {
         ctx.expect_log_count("drv-i8042: key 0x14 down", before + 1)
             .map_err(|e| format!("a service that outlived the logger's restart stopped logging: {e}"))?;
     }
+    // The door's `ps` (the crash test's stall report): each service killed
+    // above restarted at least once (more, if what it stands on was killed
+    // after it), with a process of its own whenever it's running.
+    let ps = ctx.door("ps")?;
+    for name in &restartable {
+        let line =
+            ps.iter().find(|l| l.starts_with(&format!("ps {name} "))).ok_or(format!("ps has no {name}: {ps:?}"))?;
+        let field =
+            |k: &str| line.split(k).nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<u64>().ok());
+        let running = line.starts_with(&format!("ps {name} Running "));
+        if field(" restarts ").unwrap_or(0) < 1 || field(" cpu ").is_none() || (running && field(" pid ") == Some(0)) {
+            return Err(format!("ps says {line:?} of {name}, killed once"));
+        }
+    }
     Ok(())
 }
 

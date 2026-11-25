@@ -424,6 +424,24 @@ impl Door {
                     self.send(&line);
                 }
             }
+            // Each service's process and the CPU time it has had: two a
+            // second apart say who is running (the crash test's stall report).
+            "ps" => {
+                let lines: Vec<String> = c
+                    .services
+                    .iter()
+                    .map(|s| {
+                        let (pid, cpu) = s.child.as_ref().map_or((0, 0), |ch| {
+                            (ch.pid, fstd::sys::process_usage(ch.process.raw()).map_or(0, |(cpu, _)| cpu))
+                        });
+                        let ms = cpu / 1_000_000;
+                        alloc::format!("ps {} {:?} pid {pid} restarts {} cpu {ms} ms", s.m.name, s.state, s.restarts)
+                    })
+                    .collect();
+                for line in lines {
+                    self.send(&line);
+                }
+            }
             _ => self.send("error: unknown command"),
         }
         self.send("end");
