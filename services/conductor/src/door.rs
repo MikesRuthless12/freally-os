@@ -5,7 +5,9 @@
 //!
 //! - `kill <service>`: ends the service's process; when it registers again,
 //!   the door says `back <service> <ms>`.
-//! - `log <n>`: the logger's newest `n` records, one `rec <svc> <msg>` each.
+//! - `log <n>`: the logger's newest `n` records, one `rec <svc> <msg>` each;
+//!   `log <n> times`: each with when the logger took it, `rec <ms> <svc> <msg>`
+//!   (ms of the monotonic clock: the crash test's stall report).
 //! - `services`: one `svc <name> <state>` per service.
 //! - `devices`, `fbfill <rrggbb>`: devmgr's PCI list; a whole-screen fill.
 //! - `bootctl`: the A/B record (`slot A Good 0.4.0`, `active A`, `booted A`);
@@ -252,7 +254,8 @@ impl Door {
                 _ => self.send("error: no such running service"),
             },
             "log" => {
-                let n: u16 = arg.parse().unwrap_or(10);
+                let (count, times) = arg.split_once(' ').map_or((arg, false), |(n, t)| (n, t == "times"));
+                let n: u16 = count.parse().unwrap_or(10);
                 match c.open_connection("logger", "test-door") {
                     Some(ch) => {
                         let mut client = fstd::ipc::Client::new(ch);
@@ -265,7 +268,11 @@ impl Door {
                         ) {
                             Ok((recs, _)) => {
                                 for r in recs.records {
-                                    self.send(&alloc::format!("rec {} {}", r.svc, r.msg));
+                                    if times {
+                                        self.send(&alloc::format!("rec {} {} {}", r.ts_ns / 1_000_000, r.svc, r.msg));
+                                    } else {
+                                        self.send(&alloc::format!("rec {} {}", r.svc, r.msg));
+                                    }
                                 }
                             }
                             Err(e) => self.send(&alloc::format!("error: {e:?}")),

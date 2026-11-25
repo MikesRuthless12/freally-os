@@ -80,6 +80,14 @@ pub fn read(ctx: &mut Ctx) -> Result<(), String> {
             return Err(format!("the log has no {want:?} (it has {} records)", recs.len()));
         }
     }
+    // With `times`, each record says when the logger took it (the crash
+    // test's stall report): ms, then the service.
+    let timed = ctx.door("log 200 times")?;
+    let logger = timed.iter().find(|r| r.ends_with("logger: ready (mirroring to COM1)"));
+    let ms = logger.and_then(|r| r.strip_prefix("rec ")?.split(' ').next()?.parse::<u64>().ok());
+    if !ms.is_some_and(|ms| ms < 60_000) || !logger.is_some_and(|r| r.contains(" logger logger: ready")) {
+        return Err(format!("log 200 times gave the logger's line as {logger:?}"));
+    }
     Ok(())
 }
 

@@ -182,13 +182,22 @@ impl<'a> Machine<'a> {
     /// side: the log file QEMU writes against the one at the path, and a
     /// second of its UART's registers as the guest used them.
     fn stalled(&mut self) -> String {
-        let mut out = format!("the test door's services:\n{}", self.door("services"));
-        // What the logger holds, whether or not COM1 showed it: its last lines
-        // say whether the drivers' lines reached it (no answer: the logger
-        // itself is stuck).
-        let log = self.door("log 300");
-        let tail: Vec<&str> = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();
-        out.push_str(&format!("\nthe logger's last records:\n{}", tail.join("\n")));
+        // The last stall's boot had run on: its lines reached COM1's file
+        // after the 90 s, all at once, about when this report began asking
+        // the door. So first, before anything asks the guest: the file as it
+        // stands, and 5 s on.
+        let com1 = self.o.com1_log();
+        let mut out = format!("COM1's log as the wait ended:\n{}", file_tail(&com1));
+        std::thread::sleep(Duration::from_secs(5));
+        out.push_str(&format!("\n5 s on, nothing asked:\n{}", file_tail(&com1)));
+        out.push_str(&format!("\nthe test door's services:\n{}", self.door("services")));
+        out.push_str(&format!("\nCOM1's log after the door's first answer:\n{}", file_tail(&com1)));
+        // What the logger holds, and when it took each (ms of the monotonic
+        // clock): records taken late mean the logger (or its senders) waited;
+        // taken on time but late to the file, the bytes waited after it.
+        let log = self.door("log 300 times");
+        let tail: Vec<&str> = log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect();
+        out.push_str(&format!("\nthe logger's last records (ms taken):\n{}", tail.join("\n")));
         out.push_str(&format!("\nthe CPUs:\n{}", self.registers()));
         // The last report showed the OS well (the load running, the logger
         // taking every line) and COM1's log silent: QEMU's side of COM1.
@@ -323,6 +332,18 @@ impl<'a> Machine<'a> {
             }
         }
         Err(format!("the disk was missed {} times in a row", MISSES_IN_A_ROW + 1))
+    }
+}
+
+/// `path`'s size and its last 3 lines.
+fn file_tail(path: &std::path::Path) -> String {
+    match std::fs::read(path) {
+        Ok(b) => {
+            let text = String::from_utf8_lossy(&b);
+            let last: Vec<&str> = text.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+            format!("{} bytes, ending:\n{}", b.len(), last.join("\n"))
+        }
+        Err(e) => format!("{}: {e}", path.display()),
     }
 }
 
@@ -476,6 +497,17 @@ mod tests {
             "      3  read addr 0x05 val 0x60\n      2  write addr 0x00 (bytes sent)\n      1  write addr 0x04 val 0x1b"
         );
         assert_eq!(tally(""), "(no UART register used in that second)");
+    }
+
+    #[test]
+    fn a_files_tail_is_its_size_and_last_three_lines() {
+        let dir = std::env::temp_dir().join(format!("freally-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("com1.log");
+        std::fs::write(&f, "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        assert_eq!(super::file_tail(&f), "24 bytes, ending:\nthree\nfour\nfive");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(super::file_tail(&f).contains("No such file"));
     }
 
     #[test]
