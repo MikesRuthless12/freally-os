@@ -351,18 +351,29 @@ fn frames(ctx: &Ctx) -> Result<(u64, u64), String> {
     Ok((n.next().ok_or("no count")??, n.next().ok_or("no count")??))
 }
 
-/// How many frames stage put on the screen over two seconds. A change of
-/// minute redraws the clock, a real change: then it's measured once more.
-fn drawn_over_2s(ctx: &Ctx) -> Result<u64, String> {
-    // The guest's clock is the host's (the RTC), so the host says when a minute turns.
-    let minute = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 60);
-    let mut drawn = 0;
-    for _ in 0..2 {
-        let (m0, (_, a)) = (minute(), frames(ctx)?);
+/// Whether the desktop's clock may have changed its minute while frames
+/// were counted, from `t0` to `t1` (the host's time, ms since the epoch).
+/// The guest's clock is the host's RTC read in whole seconds at boot, so its
+/// minute turns up to a second after the host's (a little more as it
+/// drifts): a host minute that turned up to 1.5 s before `t0` may turn in
+/// the guest inside the window.
+fn minute_may_turn(t0: u64, t1: u64) -> bool {
+    t0.saturating_sub(1_500).div_ceil(60_000) <= t1 / 60_000
+}
+
+/// How many frames stage put on the screen over two seconds, and when (the
+/// host's seconds into the minute, for the error that says it). A change of
+/// minute redraws the clock, a real change: then it's measured again.
+fn drawn_over_2s(ctx: &Ctx) -> Result<(u64, String), String> {
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let mut drawn = (0, String::new());
+    for _ in 0..3 {
+        let (t0, (_, a)) = (now(), frames(ctx)?);
         std::thread::sleep(Duration::from_secs(2));
-        let ((_, b), m1) = (frames(ctx)?, minute());
-        drawn = b - a;
-        if drawn == 0 || m0 == m1 {
+        let ((_, b), t1) = (frames(ctx)?, now());
+        let at = |t: u64| (t % 60_000) as f64 / 1000.0;
+        drawn = (b - a, format!("the host's second {:.1} to {:.1} of its minute", at(t0), at(t1)));
+        if drawn.0 == 0 || !minute_may_turn(t0, t1) {
             return Ok(drawn);
         }
     }
@@ -379,9 +390,9 @@ pub fn still(ctx: &mut Ctx) -> Result<(), String> {
     move_to(ctx, 200, 200)?;
     // The ring catches up with the dot, then stops.
     std::thread::sleep(Duration::from_millis(800));
-    let idle = drawn_over_2s(ctx)?;
+    let (idle, when) = drawn_over_2s(ctx)?;
     if idle != 0 {
-        return Err(format!("the idle desktop put {idle} frames on the screen in 2 s"));
+        return Err(format!("the idle desktop put {idle} frames on the screen in 2 s ({when})"));
     }
     key(ctx, "MetaLeft", true)?;
     key(ctx, "KeyM", true)?;
@@ -389,7 +400,7 @@ pub fn still(ctx: &mut Ctx) -> Result<(), String> {
     key(ctx, "MetaLeft", false)?;
     let mon = expect_window(ctx, "Monitor", true)?;
     std::thread::sleep(Duration::from_millis(1500));
-    let seen = drawn_over_2s(ctx)?;
+    let (seen, _) = drawn_over_2s(ctx)?;
     if seen == 0 {
         return Err("Monitor, open and seen, drew nothing in 2 s: the count is stuck".into());
     }
@@ -400,18 +411,41 @@ pub fn still(ctx: &mut Ctx) -> Result<(), String> {
     let hidden = drawn_over_2s(ctx);
     let placed = windows(ctx)?;
     crate::stage::ok(ctx, &format!("stage close {cover}"))?;
-    let hidden = hidden?;
+    // Monitor goes, as it came, whatever was counted: the next specs sample
+    // the ground (a red count left it open, and @terminal.vt red after it).
+    let gone = (|| {
+        move_to(ctx, 300, 300)?;
+        key(ctx, "AltLeft", true)?;
+        key(ctx, "F4", true)?;
+        key(ctx, "F4", false)?;
+        key(ctx, "AltLeft", false)?;
+        expect_window(ctx, "Monitor", false).map(|_| ())
+    })();
+    let (hidden, when) = hidden?;
     if hidden != 0 {
         return Err(format!(
-            "Monitor, covered, still put {hidden} frames on the screen in 2 s ({mon} under {:?})",
+            "Monitor, covered, still put {hidden} frames on the screen in 2 s, {when} ({mon} under {:?})",
             placed.iter().find(|l| l.ends_with("title=Cover"))
         ));
     }
-    // Monitor goes, as it came: the next specs sample the ground.
-    move_to(ctx, 300, 300)?;
-    key(ctx, "AltLeft", true)?;
-    key(ctx, "F4", true)?;
-    key(ctx, "F4", false)?;
-    key(ctx, "AltLeft", false)?;
-    expect_window(ctx, "Monitor", false).map(|_| ())
+    gone
+}
+
+#[cfg(test)]
+mod still_tests {
+    use super::minute_may_turn;
+
+    const M: u64 = 60_000;
+
+    #[test]
+    fn a_minute_the_guest_turns_late_is_measured_again() {
+        // Well inside a minute: nothing turns.
+        assert!(!minute_may_turn(100 * M + 10_000, 100 * M + 12_100));
+        // The host's minute turns in the window.
+        assert!(minute_may_turn(100 * M - 1_000, 100 * M + 1_100));
+        // The host's turned 0.4 s before: the guest's, up to a second later, may turn inside.
+        assert!(minute_may_turn(100 * M + 400, 100 * M + 2_500));
+        // 1.6 s before: the guest's has turned too.
+        assert!(!minute_may_turn(100 * M + 1_600, 100 * M + 3_700));
+    }
 }
