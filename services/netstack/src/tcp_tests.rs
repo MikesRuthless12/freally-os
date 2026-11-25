@@ -305,6 +305,19 @@ fn resets_and_syns_are_challenged() {
 }
 
 #[test]
+fn an_ack_older_than_any_window_is_challenged() {
+    let mut t = open(ISS, 1000, None);
+    // Data in the window under an ACK far behind SND.UNA (RFC 5961 § 5.2):
+    // not taken, answered with a challenge ACK.
+    t.segment(&peer(PEER + 1, ISS.wrapping_sub(100_000), ACK, 1000, b"forged"), 20 * MS);
+    assert_eq!(t.readable(), 0);
+    assert_eq!(t.poll(20 * MS)[0].ack, PEER + 1);
+    // Behind it by less than the window (a late segment): taken.
+    t.segment(&peer(PEER + 1, ISS + 1 - 500, ACK, 1000, b"late"), 21 * MS);
+    assert_eq!(t.read(10), b"late");
+}
+
+#[test]
 fn sequence_numbers_wrap() {
     let iss = u32::MAX - 2000;
     let mut t = open(iss, 65535, Some(7));

@@ -107,6 +107,8 @@ pub struct Tcb {
     snd_max: u32,
     /// The peer's window, in bytes (its field shifted by its scale).
     snd_wnd: u32,
+    /// The largest window the peer has offered (RFC 5961 § 5.2's MAX.SND.WND).
+    max_snd_wnd: u32,
     snd_wl1: u32,
     snd_wl2: u32,
     snd_shift: u8,
@@ -158,6 +160,7 @@ impl Tcb {
             snd_nxt: iss,
             snd_max: iss,
             snd_wnd: 0,
+            max_snd_wnd: 0,
             snd_wl1: 0,
             snd_wl2: 0,
             snd_shift: 0,
@@ -202,6 +205,7 @@ impl Tcb {
             t.rcv_shift = WSCALE;
         }
         t.snd_wnd = syn.window as u32;
+        t.max_snd_wnd = t.snd_wnd;
         t.snd_wl1 = syn.seq;
         t.mss = syn.mss.unwrap_or(DEFAULT_MSS).clamp(64, our_mss);
         t
@@ -506,6 +510,7 @@ impl Tcb {
             self.rcv_shift = WSCALE;
         }
         self.snd_wnd = seg.window as u32;
+        self.max_snd_wnd = self.snd_wnd;
         self.snd_wl1 = seg.seq;
         self.snd_wl2 = seg.ack;
         self.mss = seg.mss.unwrap_or(DEFAULT_MSS).clamp(64, self.our_mss);
@@ -521,8 +526,11 @@ impl Tcb {
 
     /// The ACK field (§ 3.10.7.4, fifth check): false when the segment goes no further.
     fn ack(&mut self, seg: &Tcp, now: u64) -> bool {
-        if lt(self.snd_max, seg.ack) {
-            self.ack_now = true; // acknowledges what was never sent
+        // Past what was sent, or older than SND.UNA by more than any window
+        // the peer offered (RFC 5961 § 5.2): no peer's ACK. A challenge ACK
+        // answers it, so a blind injection must hit the ACK's range too.
+        if lt(self.snd_max, seg.ack) || lt(seg.ack, self.snd_una.wrapping_sub(self.max_snd_wnd)) {
+            self.ack_now = true;
             return false;
         }
         let window = (seg.window as u32) << self.snd_shift;
@@ -561,6 +569,7 @@ impl Tcb {
         // The send window, from the newest segment (SND.WL1, SND.WL2).
         if lt(self.snd_wl1, seg.seq) || (self.snd_wl1 == seg.seq && le(self.snd_wl2, seg.ack)) {
             self.snd_wnd = window;
+            self.max_snd_wnd = self.max_snd_wnd.max(window);
             self.snd_wl1 = seg.seq;
             self.snd_wl2 = seg.ack;
             if self.probe && window > 0 {
