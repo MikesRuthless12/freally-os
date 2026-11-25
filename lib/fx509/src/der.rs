@@ -111,6 +111,17 @@ impl<'a> Reader<'a> {
         if self.peek() == Some(t) { self.read(t).map(Some) } else { Ok(None) }
     }
 
+    /// A BOOLEAN if one is next: DER's TRUE is 0xFF and FALSE 0x00, nothing
+    /// else (a BER TRUE read as false would make a critical extension not).
+    pub fn optional_bool(&mut self) -> Result<Option<bool>, Bad> {
+        match self.optional(tag::BOOLEAN)? {
+            None => Ok(None),
+            Some([0xFF]) => Ok(Some(true)),
+            Some([0x00]) => Ok(Some(false)),
+            Some(_) => Err(Bad::Value),
+        }
+    }
+
     /// A SEQUENCE's contents, as a reader of its own.
     pub fn sequence(&mut self) -> Result<Reader<'a>, Bad> {
         self.read(tag::SEQUENCE).map(Reader::new)

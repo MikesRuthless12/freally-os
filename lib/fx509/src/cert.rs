@@ -67,6 +67,8 @@ const KEY_USAGE: &[u8] = &[0x55, 0x1D, 0x0F];
 const EXT_KEY_USAGE: &[u8] = &[0x55, 0x1D, 0x25];
 const SERVER_AUTH: &[u8] = &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
 const ANY_EKU: &[u8] = &[0x55, 0x1D, 0x25, 0x00];
+/// The extensions this reader takes.
+const KNOWN: [&[u8]; 4] = [SAN, BASIC_CONSTRAINTS, KEY_USAGE, EXT_KEY_USAGE];
 
 /// Why a certificate couldn't be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +80,9 @@ pub enum Unreadable {
     Algorithm,
     /// A critical extension this reader doesn't know: RFC 5280 says refuse.
     Critical,
+    /// An extension this reader takes given twice (RFC 5280 § 4.2 allows
+    /// one): which counts would be a guess.
+    Duplicate,
 }
 
 impl From<Bad> for Unreadable {
@@ -184,10 +189,17 @@ impl<'a> Certificate<'a> {
         t.optional(tag::implicit(2))?;
         if let Some(ext) = t.optional(tag::explicit(3))? {
             let mut list = Reader::new(ext).sequence()?;
+            let mut seen = [false; KNOWN.len()];
             while !list.is_empty() {
                 let mut e = list.sequence()?;
                 let oid = e.read(tag::OID)?;
-                let critical = e.optional(tag::BOOLEAN)?.is_some_and(|b| b == [0xFF]);
+                if let Some(k) = KNOWN.iter().position(|o| *o == oid) {
+                    if seen[k] {
+                        return Err(Unreadable::Duplicate);
+                    }
+                    seen[k] = true;
+                }
+                let critical = e.optional_bool()? == Some(true);
                 let value = e.read(tag::OCTET_STRING)?;
                 e.end()?;
                 if !c.extension(oid, value)? && critical {
@@ -213,7 +225,7 @@ impl<'a> Certificate<'a> {
             }
             BASIC_CONSTRAINTS => {
                 let mut s = r.sequence()?;
-                self.ca = s.optional(tag::BOOLEAN)?.is_some_and(|b| b == [0xFF]);
+                self.ca = s.optional_bool()? == Some(true);
                 if s.peek() == Some(tag::INTEGER) {
                     self.path_len = Some(s.small()?);
                 }
