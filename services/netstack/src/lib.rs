@@ -99,7 +99,8 @@ impl Client {
                 self.next = now;
                 self.due(now)
             }
-            (Dhcp::Requesting { offer, .. }, Reply::Ack(lease)) if lease.address == offer.address => {
+            (Dhcp::Requesting { offer, .. }, Reply::Ack(mut lease)) if lease.address == offer.address => {
+                lease.dns.truncate(limits::DNS_SERVERS);
                 let renew = if lease.renew == 0 { 3600 } else { lease.renew as u64 };
                 self.next = now + renew * SECOND;
                 self.state = Dhcp::Bound { lease, since: now };
@@ -271,18 +272,30 @@ impl Slaac {
             self.router = ad.mac.map(|m| (src, m)).or(self.router);
         }
         if !ad.dns.is_empty() {
-            self.dns = ad.dns.clone();
+            self.dns = ad.dns.iter().take(limits::DNS_SERVERS).copied().collect();
         }
         for (prefix, plen, _) in &ad.prefixes {
+            // Not a link-local prefix (fe80::/10) or a multicast one (RFC 4862 § 5.5.3 b).
+            if prefix[0] == 0xFF || (prefix[0] == 0xFE && prefix[1] & 0xC0 == 0x80) {
+                continue;
+            }
             let mut a = *prefix;
             a[8..].copy_from_slice(&self.iid);
             let known =
                 self.ours(&a) || self.pending.iter().any(|(x, _)| *x == a) || self.checking.is_some_and(|c| c.0 == a);
-            if !known {
+            if !known && self.made() < limits::SLAAC_ADDRESSES {
                 self.pending.push((a, *plen));
                 self.next = self.next.min(now);
             }
         }
+    }
+
+    /// The addresses made from routers' prefixes: in use, waiting, or being checked.
+    fn made(&self) -> usize {
+        let global = |a: &Ipv6| *a != self.link_local;
+        self.addresses.iter().filter(|(a, _)| global(a)).count()
+            + self.pending.iter().filter(|(a, _)| global(a)).count()
+            + self.checking.iter().filter(|c| global(&c.0)).count()
     }
 
     /// Whether `dst` is on the link: link-local, or inside one of our prefixes.

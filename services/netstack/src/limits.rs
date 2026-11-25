@@ -5,7 +5,10 @@
 //! From the network: the neighbour caches (ARP's for IPv4, NDP's for IPv6)
 //! keep `NEIGHBOURS` entries for `NEIGHBOUR_KEEP_S`, the oldest making room;
 //! the DNS answers cached are `DNS_CACHE`, the oldest making room; no
-//! fragment is reassembled (fnet refuses them: nothing to grow). From a
+//! fragment is reassembled (fnet refuses them: nothing to grow); routers'
+//! prefixes make at most `SLAAC_ADDRESSES` addresses (a link-local or
+//! multicast prefix none), and `DNS_SERVERS` are kept from each of DHCP's
+//! lease and a router's RDNSS. From a
 //! client: `SOCKETS_PER_CLIENT` TCP connections at once, each with
 //! `TCP_BUFFER` bytes buffered each way; `PINGS_PER_CLIENT` pings and
 //! `LOOKUPS_PER_CLIENT` DNS lookups waiting (`@net.waiting`). A listener
@@ -17,6 +20,13 @@ pub const NEIGHBOURS: usize = crate::ArpCache::MAX;
 pub const NEIGHBOUR_KEEP_S: u64 = crate::ArpCache::KEEP / 1_000_000_000;
 /// DNS answers cached.
 pub const DNS_CACHE: usize = 128;
+/// IPv6 addresses SLAAC makes from routers' prefixes (the link-local one
+/// besides), in use, waiting or being checked: a peer sending advertisement
+/// after advertisement, each with new prefixes, gets no more.
+pub const SLAAC_ADDRESSES: usize = 4;
+/// DNS servers kept from each source, DHCP's lease and a router's RDNSS
+/// (RFC 8106 § 5.3.1's MaxRDNSS).
+pub const DNS_SERVERS: usize = 3;
 /// TCP connections one client may hold at once.
 pub const SOCKETS_PER_CLIENT: usize = 16;
 /// Pings (`ping` and `ping6` together) one client may have waiting at once.

@@ -55,6 +55,24 @@ fn dhcp_binds_at_the_ack_and_renews_at_t1() {
 }
 
 #[test]
+fn a_lease_gives_at_most_three_dns_servers() {
+    let mut c = Client::new(9, ME, 0);
+    c.due(0);
+    c.reply(&server(dhcp::kind::OFFER, 9, GUEST, 3600, None), S);
+    let mut ack = server(dhcp::kind::ACK, 9, GUEST, 3600, None);
+    ack.pop();
+    ack.extend_from_slice(&[6, 80]);
+    for i in 0..20u8 {
+        ack.extend_from_slice(&[10, 0, 3, i]);
+    }
+    ack.push(255);
+    c.reply(&ack, 2 * S);
+    let dns = c.lease().map(|l| l.dns.clone()).unwrap_or_default();
+    assert_eq!(dns, [[10, 0, 3, 0], [10, 0, 3, 1], [10, 0, 3, 2]]);
+    assert_eq!(dns.len(), limits::DNS_SERVERS);
+}
+
+#[test]
 fn discover_backs_off_to_a_minute() {
     let mut c = Client::new(1, ME, 0);
     let mut sent = vec![];
@@ -180,6 +198,69 @@ mod slaac {
         // The same advertisement again adds nothing.
         s.router_ad(ROUTER, &ad, 4 * S);
         assert_eq!(s.addresses.len(), 2);
+    }
+
+    #[test]
+    fn advertisements_make_no_more_than_their_limit_of_addresses() {
+        let mut s = Slaac::new(IID, 0);
+        s.due(0);
+        s.due(S);
+        // A peer on the link: a hundred advertisements, each with a new prefix (fd00:<i>::/64).
+        let mut t = 2 * S;
+        for i in 0..100u8 {
+            let mut prefix = [0u8; 16];
+            prefix[0] = 0xFD;
+            prefix[2] = i;
+            let ad = RouterAd {
+                router_lifetime_s: 1800,
+                mac: Some([2; 6]),
+                prefixes: alloc::vec![(prefix, 64, 86_400)],
+                dns: Vec::new(),
+            };
+            s.router_ad(ROUTER, &ad, t);
+            s.due(t);
+            s.due(t + S);
+            t += 2 * S;
+        }
+        let made: Vec<_> = s.addresses.iter().filter(|(a, _)| *a != s.link_local).collect();
+        assert_eq!(made.len(), limits::SLAAC_ADDRESSES, "{made:?}");
+        assert!(s.pending.is_empty() && s.checking.is_none());
+    }
+
+    #[test]
+    fn a_link_local_or_multicast_prefix_makes_no_address() {
+        let mut s = Slaac::new(IID, 0);
+        s.due(0);
+        s.due(S);
+        let mut ll = [0u8; 16];
+        ll[..2].copy_from_slice(&[0xFE, 0x80]);
+        ll[7] = 1;
+        let mut mc = [0u8; 16];
+        mc[..2].copy_from_slice(&[0xFF, 0x0E]);
+        let ad = RouterAd {
+            router_lifetime_s: 1800,
+            mac: Some([2; 6]),
+            prefixes: alloc::vec![(ll, 64, 86_400), (mc, 64, 86_400)],
+            dns: Vec::new(),
+        };
+        s.router_ad(ROUTER, &ad, 2 * S);
+        assert!(s.pending.is_empty(), "{:?}", s.pending);
+        assert_eq!(s.due(2 * S), None);
+    }
+
+    #[test]
+    fn a_router_gives_at_most_three_dns_servers() {
+        let mut s = Slaac::new(IID, 0);
+        let dns: Vec<Ipv6> = (0..20u8)
+            .map(|i| {
+                let mut a = FEC0;
+                a[15] = i;
+                a
+            })
+            .collect();
+        let ad = RouterAd { router_lifetime_s: 1800, mac: None, prefixes: Vec::new(), dns: dns.clone() };
+        s.router_ad(ROUTER, &ad, 0);
+        assert_eq!(s.dns, dns[..limits::DNS_SERVERS]);
     }
 
     #[test]
