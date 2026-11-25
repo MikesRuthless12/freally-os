@@ -9,6 +9,16 @@
 //! - `tcp hold <ip> <port> <n>` opens up to `n` connections at once, then
 //!   closes them all: `opened <k> of <n>`, and the first refusal's words
 //!   (TASK-185: netstack's limit per client).
+//! - `tcp serve <port> <n>` listens on `<port>` (TASK-184) and takes `n`
+//!   connections one after another, echoing each until its peer closes, then
+//!   closing it: `served <n> from <ip>, <bytes> bytes echoed`.
+//! - `tcp backlog <port> <backlog> <s>` listens with `<backlog>`, takes
+//!   nothing for `<s>` seconds, then accepts what waits: `accepted <k>`.
+//! - `tcp listen-as <name> <port>` asks to listen as client `<name>`:
+//!   `listening`, or `error: …` (only the test clients listen).
+//!
+//! Each listens on a netstack connection of its own, dropped when it ends:
+//! the listener, and the connections it holds, end with it.
 //!
 //! - `net waiting ping <ip> <n>` sends `n` pings to `<ip>` (3 s each) at
 //!   once, and `net waiting resolve <n>` `n` lookups of names the test
@@ -32,8 +42,62 @@ pub struct TcpDoor {
     asked: u32,
 }
 
-const USAGE: &str =
-    "tcp echo <ip> <port> <bytes, at most 4 MiB> | tcp connect <ip> <port> [ms] | tcp hold <ip> <port> <n, at most 64>";
+const USAGE: &str = "tcp echo <ip> <port> <bytes, at most 4 MiB> | tcp connect <ip> <port> [ms] | tcp hold <ip> <port> <n, at most 64> | tcp serve <port> <n> | tcp backlog <port> <backlog> <s> | tcp listen-as <name> <port>";
+
+/// `ordinal` asked of `cl`, waiting up to `secs`: the reply, or why not.
+fn call_on<Q: fwire::Wire, R: fwire::Wire>(cl: &mut Client, ordinal: u32, req: &Q, secs: u64) -> Result<R, String> {
+    cl.call::<_, R>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(secs)))
+        .map(|(r, _)| r)
+        .map_err(|e| alloc::format!("{e:?}"))
+}
+
+/// A netstack connection as client `who`, listening on `port`.
+fn listener(c: &mut Conductor, who: &str, port: u16, backlog: u16) -> Result<Client, String> {
+    let mut cl = Client::new(c.open_connection("netstack", who).ok_or("netstack isn't running")?);
+    call_on::<_, ()>(&mut cl, nt::TCP_LISTEN, &nt::Listen { port, backlog }, 3)?;
+    Ok(cl)
+}
+
+/// `tcp serve`: `n` connections taken in turn, each echoed until its peer's end.
+fn serve(c: &mut Conductor, port: u16, n: usize) -> Result<Vec<String>, String> {
+    let mut cl = listener(c, "conductor", port, 8)?;
+    let (mut echoed, mut from) = (0, [0u8; 4]);
+    for _ in 0..n {
+        let a: nt::Accepted = call_on(&mut cl, nt::TCP_ACCEPT, &nt::Accept { port, timeout_ms: 15_000 }, 17)?;
+        from = a.from;
+        loop {
+            let ask = nt::Recv { id: a.id, max: 60 * 1024, timeout_ms: 10_000 };
+            let r: nt::Received = call_on(&mut cl, nt::TCP_RECV, &ask, 12)?;
+            if r.data.is_empty() && !r.end {
+                return Err(String::from("nothing from the peer in 10 s"));
+            }
+            echoed += r.data.len();
+            if !r.data.is_empty() {
+                call_on::<_, nt::Sent>(&mut cl, nt::TCP_SEND, &nt::Send { id: a.id, data: r.data }, 10)?;
+            }
+            if r.end {
+                break;
+            }
+        }
+        call_on::<_, ()>(&mut cl, nt::TCP_CLOSE, &nt::Socket { id: a.id }, 2)?;
+    }
+    // The last FIN out before the listener's connection goes (a client's
+    // connections are reset when it does).
+    fstd::time::sleep(Duration::from_millis(500));
+    let ip = alloc::format!("{}.{}.{}.{}", from[0], from[1], from[2], from[3]);
+    Ok(alloc::vec![alloc::format!("served {n} from {ip}, {echoed} bytes echoed")])
+}
+
+/// `tcp backlog`: nothing accepted for `secs`, then everything waiting.
+fn backlog(c: &mut Conductor, port: u16, backlog: u16, secs: u64) -> Result<Vec<String>, String> {
+    let mut cl = listener(c, "conductor", port, backlog)?;
+    fstd::time::sleep(Duration::from_secs(secs));
+    let mut k = 0;
+    while call_on::<_, nt::Accepted>(&mut cl, nt::TCP_ACCEPT, &nt::Accept { port, timeout_ms: 0 }, 2).is_ok() {
+        k += 1;
+    }
+    Ok(alloc::vec![alloc::format!("accepted {k}")])
+}
 
 impl TcpDoor {
     pub fn run(&mut self, c: &mut Conductor, arg: &str) -> Vec<String> {
@@ -78,6 +142,18 @@ impl TcpDoor {
                     }
                     Ok(alloc::vec![alloc::format!("opened {} of {n}", held.len()), why])
                 }
+                _ => Err(String::from(USAGE)),
+            },
+            ["serve", port, n] => match (port.parse::<u16>(), n.parse::<usize>()) {
+                (Ok(port), Ok(n)) if n <= 16 => serve(c, port, n),
+                _ => Err(String::from(USAGE)),
+            },
+            ["backlog", port, b, s] => match (port.parse::<u16>(), b.parse::<u16>(), s.parse::<u64>()) {
+                (Ok(port), Ok(b), Ok(s)) if s <= 30 => backlog(c, port, b, s),
+                _ => Err(String::from(USAGE)),
+            },
+            ["listen-as", who, port] => match port.parse::<u16>() {
+                Ok(port) => listener(c, who, port, 1).map(|_| alloc::vec![String::from("listening")]),
                 _ => Err(String::from(USAGE)),
             },
             _ => Err(String::from(USAGE)),

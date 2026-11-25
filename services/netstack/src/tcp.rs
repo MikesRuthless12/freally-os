@@ -4,8 +4,9 @@
 //! keyed hash (RFC 6528), retransmission (RFC 6298, Karn's rule), the window
 //! and its scale (RFC 7323), slow start, congestion avoidance and fast
 //! retransmit (RFC 5681) with NewReno's recovery (RFC 6582), RST and SYN
-//! answered with challenge ACKs (RFC 5961), the zero-window probe, TIME-WAIT.
-//! No keep-alive, no listening. A [`Tcb`] knows sequence numbers, not
+//! answered with challenge ACKs (RFC 5961), the zero-window probe, TIME-WAIT;
+//! and the passive open from a listener's SYN ([`Tcb::accept`], TASK-184).
+//! No keep-alive. A [`Tcb`] knows sequence numbers, not
 //! addresses: netstack wraps what it sends in IP. Times are nanoseconds on one
 //! monotonic clock.
 
@@ -43,6 +44,8 @@ pub fn le(a: u32, b: u32) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     SynSent,
+    /// A listener's: its SYN-ACK sent, the handshake's ACK awaited.
+    SynReceived,
     Established,
     FinWait1,
     FinWait2,
@@ -140,6 +143,8 @@ pub struct Tcb {
     /// A byte past a closed window is out, to learn when it opens (RFC 9293 § 3.8.6.1).
     probe: bool,
     time_wait_until: Option<u64>,
+    /// In SYN-RECEIVED, an ACK of what was never sent: a RST at its number goes out.
+    reset_at: Option<u32>,
 }
 
 impl Tcb {
@@ -180,12 +185,33 @@ impl Tcb {
             ack_now: false,
             probe: false,
             time_wait_until: None,
+            reset_at: None,
         }
+    }
+
+    /// A connection from a peer's SYN to a listener (RFC 9293 § 3.10.7.2):
+    /// SYN-RECEIVED, its SYN-ACK out at the next [`Tcb::poll`] and again on
+    /// the SYN's timers; the window scale offered only if the SYN offered one
+    /// (RFC 7323 § 1.3). Data on the SYN isn't taken: the peer sends it again.
+    pub fn accept(iss: u32, our_mss: u16, syn: &Tcp, now: u64) -> Tcb {
+        let mut t = Tcb::connect(iss, our_mss, now);
+        t.state = State::SynReceived;
+        t.rcv_nxt = syn.seq.wrapping_add(1);
+        if let Some(s) = syn.wscale {
+            t.snd_shift = s;
+            t.rcv_shift = WSCALE;
+        }
+        t.snd_wnd = syn.window as u32;
+        t.snd_wl1 = syn.seq;
+        t.mss = syn.mss.unwrap_or(DEFAULT_MSS).clamp(64, our_mss);
+        t
     }
 
     /// Bytes taken into the send buffer (fewer than given once it's full).
     pub fn write(&mut self, data: &[u8]) -> usize {
-        if !matches!(self.state, State::SynSent | State::Established | State::CloseWait) || self.fin_queued {
+        if !matches!(self.state, State::SynSent | State::SynReceived | State::Established | State::CloseWait)
+            || self.fin_queued
+        {
             return 0;
         }
         let n = data.len().min(BUFFER - self.send.len());
@@ -266,7 +292,8 @@ impl Tcb {
             flags: if synced { flags | flag::ACK } else { flags },
             window: (self.window_bytes() >> shift).min(65535) as u16,
             mss: syn.then_some(self.our_mss),
-            wscale: syn.then_some(WSCALE),
+            // Offered on our SYN; on a SYN-ACK only if the peer's SYN offered it.
+            wscale: (syn && (self.state == State::SynSent || self.rcv_shift != 0)).then_some(WSCALE),
             data,
         }
     }
@@ -276,12 +303,34 @@ impl Tcb {
         self.rto.saturating_mul(1 << self.backoff.min(16)).min(RTO_MAX)
     }
 
-    /// When [`Tcb::poll`] next has something to do.
+    /// When [`Tcb::poll`] next has something to do: at once while data or a
+    /// FIN waits that the windows let go (written since the last poll: TASK-184
+    /// found netstack asleep with a SEND's bytes taken and not sent), else its timers.
     pub fn next_wake(&self) -> Option<u64> {
+        if self.can_send() {
+            return Some(0);
+        }
         match (self.timer, self.time_wait_until) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         }
+    }
+
+    /// Whether [`Tcb::send_new`] would send now: its own conditions, so a wake
+    /// for it is never a spin (a closed window waits for its timers).
+    fn can_send(&self) -> bool {
+        if !matches!(
+            self.state,
+            State::Established | State::CloseWait | State::FinWait1 | State::Closing | State::LastAck
+        ) || self.fin_sent
+            || self.probe
+        {
+            return false;
+        }
+        let offset = self.flight() as usize;
+        let unsent = self.send.len().saturating_sub(offset);
+        let window = self.cwnd.min(self.snd_wnd) as usize;
+        (unsent > 0 && offset < window) || (self.fin_queued && offset == self.send.len())
     }
 
     fn flight(&self) -> u32 {
@@ -330,6 +379,12 @@ impl Tcb {
             State::SynSent => return self.syn_sent(seg, now),
             _ => {}
         }
+        if self.state == State::SynReceived && seg.flags & flag::SYN != 0 && seg.seq.wrapping_add(1) == self.rcv_nxt {
+            // The peer's SYN again: our SYN-ACK was lost. It goes again now
+            // (a try of the SYN's, so a peer sending SYNs can't keep it here).
+            self.timer = Some(now);
+            return;
+        }
         let len = seg.seq_len();
         let wnd = self.window_bytes() as u32;
         let rcv_nxt = self.rcv_nxt;
@@ -360,6 +415,9 @@ impl Tcb {
         }
         if seg.flags & flag::SYN != 0 {
             self.ack_now = true; // RFC 5961 § 4.2: a SYN in a synchronized state gets a challenge ACK
+            return;
+        }
+        if self.state == State::SynReceived && seg.flags & flag::ACK != 0 && !self.syn_acked(seg, now) {
             return;
         }
         if seg.flags & flag::ACK == 0 || !self.ack(seg, now) {
@@ -396,6 +454,26 @@ impl Tcb {
                 _ => self.time_wait(now),
             }
         }
+    }
+
+    /// SYN-RECEIVED's ACK (§ 3.10.7.4): one of our SYN makes the connection
+    /// ESTABLISHED (false for any other: a RST at its number goes out).
+    fn syn_acked(&mut self, seg: &Tcp, now: u64) -> bool {
+        if !(lt(self.snd_una, seg.ack) && le(seg.ack, self.snd_max)) {
+            self.reset_at = Some(seg.ack);
+            return false;
+        }
+        // The SYN's number is taken: it was never in the send buffer.
+        self.snd_una = self.iss.wrapping_add(1);
+        if let Some((_, sent)) = self.timing.take() {
+            self.measured(now - sent);
+        }
+        self.cwnd = self.initial_window();
+        self.tries = 0;
+        self.backoff = 0;
+        self.state = State::Established;
+        self.restart_timer(now);
+        true
     }
 
     fn time_wait(&mut self, now: u64) {
@@ -555,6 +633,9 @@ impl Tcb {
                 return out;
             }
         }
+        if let Some(seq) = self.reset_at.take() {
+            out.push(Out { seq, ack: 0, flags: flag::RST, window: 0, mss: None, wscale: None, data: Vec::new() });
+        }
         if self.retransmit {
             self.retransmit = false;
             self.retransmit_first(&mut out);
@@ -573,7 +654,7 @@ impl Tcb {
     }
 
     fn timeout(&mut self, now: u64, out: &mut Vec<Out>) {
-        if self.state == State::SynSent {
+        if matches!(self.state, State::SynSent | State::SynReceived) {
             if self.tries >= SYN_TRIES {
                 return self.end(Ended::TimedOut);
             }

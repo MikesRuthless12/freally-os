@@ -36,6 +36,9 @@ const ARP_RETRY: u64 = 500_000_000;
 const MSS4: u16 = 1460;
 /// Connections a client may hold at once.
 const SOCKETS_PER_CLIENT: usize = svc_netstack::limits::SOCKETS_PER_CLIENT;
+/// Connections a listener holds not yet accepted, at most.
+#[cfg(feature = "flavour-e2e")]
+const BACKLOG: usize = svc_netstack::limits::BACKLOG;
 /// Pings and DNS lookups a client may have waiting at once.
 const PINGS_PER_CLIENT: usize = svc_netstack::limits::PINGS_PER_CLIENT;
 const LOOKUPS_PER_CLIENT: usize = svc_netstack::limits::LOOKUPS_PER_CLIENT;
@@ -84,6 +87,18 @@ struct Socket {
     /// The resolver's, not a client's: its lookup, the framed query (sent
     /// once it opens), and the answer as it arrives.
     dns: Option<(u32, Vec<u8>, Vec<u8>)>,
+    /// A listener took it and its client hasn't accepted it yet (TASK-184).
+    waiting: bool,
+}
+
+/// A port a test client listens on (TASK-184, e2e images only).
+#[cfg(feature = "flavour-e2e")]
+struct Listener {
+    client: usize,
+    port: u16,
+    backlog: usize,
+    /// ACCEPT's reply, owed until a connection is open or this deadline.
+    accepting: Option<(Owed, u64)>,
 }
 
 fn answer<T: fwire::Wire>(ch: Option<&Channel>, o: Owed, r: &T) {
@@ -137,6 +152,8 @@ struct Stack {
     resolving: Vec<(u32, usize, Owed)>,
     /// Each client's name, as `clients` holds them (whose a connection is).
     names: Vec<String>,
+    #[cfg(feature = "flavour-e2e")]
+    listeners: Vec<Listener>,
 }
 
 fn random4() -> [u8; 4] {
@@ -362,6 +379,10 @@ impl Stack {
             s.tcb.segment(&seg, t);
             return;
         }
+        #[cfg(feature = "flavour-e2e")]
+        if self.syn_to_listener(e, p, &seg, t) {
+            return;
+        }
         if seg.flags & flag::RST != 0 {
             return; // never a RST for a RST
         }
@@ -373,6 +394,96 @@ impl Stack {
         };
         let f = self.tcp_frame(e.src, p.dst, seg.dst_port, p.src, seg.src_port, &o);
         self.send(alloc::vec![f]);
+    }
+
+    /// A SYN to a port listened on (TASK-184): a connection in SYN-RECEIVED
+    /// while the listener's backlog and its client's connections have room,
+    /// else dropped (the peer tries again). True when a listener had the port.
+    #[cfg(feature = "flavour-e2e")]
+    fn syn_to_listener(&mut self, e: &Eth, p: &Ip, seg: &Tcp, t: u64) -> bool {
+        let Some(l) = self.listeners.iter().find(|l| l.port == seg.dst_port) else { return false };
+        if seg.flags & (flag::SYN | flag::ACK | flag::RST) != flag::SYN {
+            return false; // anything else for no connection: a RST, as always
+        }
+        let (client, backlog) = (l.client, l.backlog);
+        let waiting = self.sockets.iter().filter(|s| s.waiting && s.local_port == seg.dst_port).count();
+        let held = self.sockets.iter().filter(|s| s.client == client && !s.closed).count();
+        if waiting >= backlog || held >= SOCKETS_PER_CLIENT {
+            return true;
+        }
+        let iss = tcp::isn(&self.isn_key, &p.dst, seg.dst_port, &p.src, seg.src_port, t);
+        self.next_socket = self.next_socket.wrapping_add(1).max(1);
+        self.sockets.push(Socket {
+            id: self.next_socket,
+            client,
+            local_port: seg.dst_port,
+            to: p.src,
+            port: seg.src_port,
+            hop: p.src,
+            mac: Some(e.src),
+            arp_at: t,
+            tcb: Tcb::accept(iss, MSS4, seg, t),
+            connecting: None,
+            reading: None,
+            writing: None,
+            closed: false,
+            dns: None,
+            waiting: true,
+        });
+        true
+    }
+
+    /// A port listened on for client `client` (TASK-184).
+    #[cfg(feature = "flavour-e2e")]
+    fn listen(&mut self, client: usize, port: u16, backlog: u16) -> Result<(), (FErr, &'static str)> {
+        let who = self.names.get(client).map_or("", String::as_str);
+        if !svc_netstack::grants::may_listen(who, true) {
+            return Err((FErr::AccessDenied, "only the test clients listen"));
+        }
+        if port == 0 || backlog == 0 {
+            return Err((FErr::InvalidArgs, "a port and a backlog of 1 to 8"));
+        }
+        if self.listeners.iter().any(|l| l.port == port) {
+            return Err((FErr::Busy, "port taken"));
+        }
+        self.listeners.push(Listener { client, port, backlog: usize::from(backlog).min(BACKLOG), accepting: None });
+        Ok(())
+    }
+
+    /// An ACCEPT on client `client`'s listener: answered by `accepting`.
+    #[cfg(feature = "flavour-e2e")]
+    fn accept(&mut self, client: usize, owed: Owed, port: u16, timeout_ms: u32) -> Result<(), (FErr, &'static str)> {
+        let l = self
+            .listeners
+            .iter_mut()
+            .find(|l| l.client == client && l.port == port)
+            .ok_or((FErr::NotFound, "not listening there"))?;
+        if l.accepting.is_some() {
+            return Err((FErr::Busy, "an accept is waiting"));
+        }
+        l.accepting = Some((owed, now() + u64::from(timeout_ms.min(60_000)) * 1_000_000));
+        Ok(())
+    }
+
+    /// Each listener's ACCEPT: the first connection waiting that's open, or
+    /// "none came" at its deadline.
+    #[cfg(feature = "flavour-e2e")]
+    fn accepting(&mut self, clients: &[Channel], t: u64) {
+        for l in &mut self.listeners {
+            let Some((o, deadline)) = l.accepting else { continue };
+            let ch = clients.get(l.client);
+            let open = self.sockets.iter_mut().find(|s| {
+                s.waiting && s.local_port == l.port && !matches!(s.tcb.state, TcpState::SynReceived | TcpState::Closed)
+            });
+            if let Some(s) = open {
+                s.waiting = false;
+                answer(ch, o, &nt::Accepted { id: s.id, from: s.to, from_port: s.port });
+                l.accepting = None;
+            } else if t >= deadline {
+                refuse(ch, o, FErr::TimedOut, "none came");
+                l.accepting = None;
+            }
+        }
     }
 
     /// Each connection: its neighbour found, its segments sent, its timers
@@ -405,6 +516,8 @@ impl Stack {
                 i += 1;
             }
         }
+        #[cfg(feature = "flavour-e2e")]
+        self.accepting(clients, t);
     }
 
     /// The resolver's queries: UDP to the server (through its neighbour, or
@@ -537,7 +650,8 @@ impl Stack {
                 s.reading = None;
             }
         }
-        let gone = s.closed
+        // Closed by its client, or ended before its listener's client took it.
+        let gone = (s.closed || s.waiting)
             && s.tcb.state == TcpState::Closed
             && s.connecting.is_none()
             && s.reading.is_none()
@@ -591,6 +705,7 @@ impl Stack {
             writing: None,
             closed: false,
             dns: None,
+            waiting: false,
         });
         Ok(())
     }
@@ -623,6 +738,15 @@ impl Stack {
         }
         self.pending.retain(|q| q.client != c);
         self.resolving.retain(|r| r.1 != c);
+        #[cfg(feature = "flavour-e2e")]
+        {
+            self.listeners.retain(|l| l.client != c);
+            for l in &mut self.listeners {
+                if l.client > c {
+                    l.client -= 1;
+                }
+            }
+        }
         for r in &mut self.resolving {
             if r.1 > c {
                 r.1 -= 1;
@@ -821,6 +945,12 @@ impl Stack {
                 t = t.min(d);
             }
         }
+        #[cfg(feature = "flavour-e2e")]
+        for l in &self.listeners {
+            if let Some((_, d)) = l.accepting {
+                t = t.min(d);
+            }
+        }
         t
     }
 
@@ -945,6 +1075,8 @@ fn open() -> Result<(Stack, Channel), String> {
         resolver: Resolver::new(),
         resolving: Vec::new(),
         names: Vec::new(),
+        #[cfg(feature = "flavour-e2e")]
+        listeners: Vec::new(),
     };
     Ok((stack, events))
 }
@@ -1118,6 +1250,16 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
                         Ok(None)
                     }
                 }),
+            },
+            #[cfg(feature = "flavour-e2e")]
+            nt::TCP_LISTEN => match fwire::from_payload::<nt::Listen>(p) {
+                Err(_) => Err((FErr::InvalidArgs, "unreadable")),
+                Ok(l) => s.listen(i, l.port, l.backlog).map(|_| Some(fwire::reply(h.txid, h.ordinal, &()))),
+            },
+            #[cfg(feature = "flavour-e2e")]
+            nt::TCP_ACCEPT => match fwire::from_payload::<nt::Accept>(p) {
+                Err(_) => Err((FErr::InvalidArgs, "unreadable")),
+                Ok(a) => s.accept(i, owed, a.port, a.timeout_ms).map(|_| None),
             },
             nt::TCP_CLOSE => match fwire::from_payload::<nt::Socket>(p) {
                 Err(_) => Err((FErr::InvalidArgs, "unreadable")),

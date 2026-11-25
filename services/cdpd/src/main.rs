@@ -24,6 +24,8 @@ use fstd::time::{Duration, Instant};
 use fwire::proto::{ax, cdpd as cd, conductor as c, logger as l, stage as st};
 use svc_cdpd::dom::{self, Doc};
 
+mod port;
+
 fstd::program!(run);
 
 fn deadline() -> u64 {
@@ -464,10 +466,18 @@ fn run(_bootstrap: u32) -> i64 {
     let mut d =
         Cdpd { asked: Default::default(), stage: None, logger: None, doc: Doc::default(), seen: Default::default() };
     let mut clients: Vec<(Channel, String)> = Vec::new();
+    // CDP over the network too (TASK-184), once netstack listens for it.
+    let mut net = port::Port::new();
     loop {
+        net.tick();
         let mut items = alloc::vec![[listen.0.raw(), signal::READABLE]];
         items.extend(clients.iter().map(|(c, _)| [c.0.raw(), signal::READABLE | signal::PEER_CLOSED]));
-        match fstd::sys::wait_many(&items, u64::MAX) {
+        let on_net = net.channel().map(|ch| {
+            items.push([ch, signal::READABLE | signal::PEER_CLOSED]);
+            items.len() - 1
+        });
+        match fstd::sys::wait_many(&items, net.deadline()) {
+            Ok(k) if Some(k) == on_net => net.readable(&mut |method, params| d.call(method, params)),
             Ok(0) => {
                 while let Ok(m) = listen.try_recv() {
                     if let Ok((h, p)) = fwire::parse(&m.bytes)

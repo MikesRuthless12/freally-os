@@ -443,6 +443,7 @@ name = "svc-cdpd"
 version = "0.8.0"
 dependencies = [
  "fcore-abi",
+ "fcrypto",
  "fjson",
  "fstd",
  "fwire",

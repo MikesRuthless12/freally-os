@@ -724,6 +724,20 @@
       "what": "One client has at most 8 pings and 8 lookups waiting at once: ten pings to an address nobody has, and ten lookups of names the test network's DNS never answers, 8 wait and 2 are refused; with none waiting, a new one is taken."
     },
     {
+      "id": "net.listen",
+      "task": "TASK-184",
+      "setup": "e2e-testnet",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "netstack listens in e2e images, for the test clients alone: the host connects to the guest twice and each connection is echoed whole and closed; with a backlog of 2 and nothing accepted, two of five connections are taken and three get no answer; the Terminal may not listen, cdpd may."
+    },
+    {
+      "id": "cdp.network",
+      "task": "TASK-184",
+      "setup": "e2e-testnet",
+      "spec": "e2e/os/specs/net.rs",
+      "what": "cdpd's port on the network: a WebSocket client on the host opens ws://<guest>:9222/ (the accept key checked), gets Target.getTargets answered by its id and an unknown method's error by its id, its ping answered and its close echoed; a request that isn't WebSocket gets a 400."
+    },
+    {
       "id": "net.https",
       "task": "TASK-181",
       "setup": "e2e-testnet",

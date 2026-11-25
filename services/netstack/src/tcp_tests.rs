@@ -419,3 +419,108 @@ fn bulk_over_a_lossy_channel() {
         assert!(t.rto() <= RTO_MAX);
     }
 }
+
+/// A peer's SYN from `PEER`: its MSS 1400, its window 29200, its scale `shift`.
+fn syn(shift: Option<u8>) -> Tcp<'static> {
+    let mut s = peer(PEER, 0, flag::SYN, 29200, &[]);
+    s.mss = Some(1400);
+    s.wscale = shift;
+    s
+}
+
+/// The passive open (RFC 9293 § 3.10.7.2, TASK-184): a listener's SYN-ACK,
+/// then the peer's ACK makes it ESTABLISHED, its data taken with it.
+#[test]
+fn a_listener_takes_a_handshake() {
+    let mut t = Tcb::accept(ISS, 1460, &syn(Some(7)), 0);
+    assert_eq!(t.state, State::SynReceived);
+    let sa = t.poll(0);
+    assert_eq!(sa.len(), 1);
+    assert_eq!(
+        (sa[0].seq, sa[0].ack, sa[0].flags, sa[0].mss, sa[0].wscale),
+        (ISS, PEER + 1, flag::SYN | ACK, Some(1460), Some(3))
+    );
+    assert_eq!(sa[0].window, 65535, "a SYN's window is never scaled");
+    // The handshake's ACK, carrying data and the peer's scaled window.
+    t.segment(&peer(PEER + 1, ISS + 1, ACK | flag::PSH, 100, b"hi"), 10 * MS);
+    assert_eq!(t.state, State::Established);
+    assert_eq!(t.read(10), b"hi");
+    let a = t.poll(10 * MS);
+    assert_eq!((a[0].seq, a[0].ack, a[0].flags), (ISS + 1, PEER + 3, ACK));
+    assert_eq!(a[0].window, ((BUFFER) >> 3) as u16, "our window scaled, the peer having offered scaling");
+    // What it writes goes out, within the peer's window (100 << 7).
+    assert_eq!(t.write(&payload(5000)), 5000);
+    let sent: usize = t.poll(20 * MS).iter().map(|o| o.data.len()).sum();
+    assert!(sent > 0 && sent <= 12_800, "{sent} bytes in the first flight");
+}
+
+/// A peer that offers no window scale gets none back, and an unscaled window.
+#[test]
+fn no_scale_offered_none_given() {
+    let mut t = Tcb::accept(ISS, 1460, &syn(None), 0);
+    assert_eq!(t.poll(0)[0].wscale, None);
+    t.segment(&peer(PEER + 1, ISS + 1, ACK, 100, b"x"), 10 * MS);
+    assert_eq!(t.poll(10 * MS)[0].window, 65535);
+}
+
+/// No ACK: the SYN-ACK again at 1, 3, 7, 15 and 31 s, given up at 63 s.
+#[test]
+fn syn_acks_back_off_then_give_up() {
+    let mut t = Tcb::accept(ISS, 1460, &syn(Some(7)), 0);
+    let mut at = Vec::new();
+    let mut now = 0;
+    while t.state != State::Closed && now < 100 * S {
+        if t.poll(now).iter().any(|o| o.flags == flag::SYN | ACK) {
+            at.push(now / S);
+        }
+        now = t.next_wake().unwrap_or(now + S).max(now + MS);
+    }
+    assert_eq!(at, [0, 1, 3, 7, 15, 31]);
+    assert_eq!((t.state, t.ended), (State::Closed, Some(Ended::TimedOut)));
+}
+
+/// The peer's SYN again (our SYN-ACK was lost) brings the SYN-ACK again at once.
+#[test]
+fn the_same_syn_again_brings_the_syn_ack_again() {
+    let mut t = Tcb::accept(ISS, 1460, &syn(Some(7)), 0);
+    t.poll(0);
+    t.segment(&syn(Some(7)), 200 * MS);
+    let again = t.poll(200 * MS);
+    assert_eq!(again.iter().map(|o| (o.seq, o.flags)).collect::<Vec<_>>(), [(ISS, flag::SYN | ACK)]);
+}
+
+/// An ACK of something never sent is answered with a RST at its number
+/// (§ 3.10.7.4), and the connection waits on; a RST at RCV.NXT ends it.
+#[test]
+fn a_wrong_ack_is_reset_and_a_reset_ends_it() {
+    let mut t = Tcb::accept(ISS, 1460, &syn(Some(7)), 0);
+    t.poll(0);
+    t.segment(&peer(PEER + 1, ISS + 9, ACK, 100, &[]), 10 * MS);
+    assert_eq!(t.state, State::SynReceived);
+    let r = t.poll(10 * MS);
+    assert_eq!(r.iter().map(|o| (o.seq, o.flags)).collect::<Vec<_>>(), [(ISS + 9, flag::RST)]);
+    t.segment(&peer(PEER + 1, 0, flag::RST, 0, &[]), 20 * MS);
+    assert_eq!((t.state, t.ended), (State::Closed, Some(Ended::Reset)));
+}
+
+/// Data written between polls is due at once (TASK-184: netstack takes a
+/// SEND's bytes after polling, and a client with its RECV already waiting
+/// asks nothing more, so nothing else wakes it); so is a FIN. A window that
+/// can't take it waits for its timers, never a spin.
+#[test]
+fn data_written_is_due_at_once() {
+    let mut t = open(ISS, 65535, Some(7));
+    assert_eq!(t.next_wake(), None);
+    t.write(b"hello");
+    assert_eq!(t.next_wake(), Some(0), "written, not yet sent");
+    assert_eq!(t.poll(30 * MS).iter().map(|o| o.data.len()).sum::<usize>(), 5);
+    assert_ne!(t.next_wake(), Some(0), "sent: only the retransmission timer");
+    t.close();
+    assert_eq!(t.next_wake(), Some(0), "the FIN, queued");
+    t.poll(40 * MS);
+    assert_ne!(t.next_wake(), Some(0));
+    // The peer's window closed: written data waits for the persist timer.
+    let mut z = open(ISS, 0, None);
+    z.write(b"held");
+    assert_ne!(z.next_wake(), Some(0), "a closed window: no wake at once");
+}

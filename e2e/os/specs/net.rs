@@ -408,16 +408,21 @@ impl Drop for Https {
     }
 }
 
+/// The test network's first three octets (`10.77.<n>`), from netstack's
+/// lease: the host is `.1` on it, the guest `.15`.
+fn testnet_prefix(ctx: &mut Ctx) -> Result<String, String> {
+    ctx.expect_log("netstack: 10.77.")?;
+    let log = ctx.log();
+    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
+    Ok(line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string())
+}
+
 /// `@net.limits` (TASK-185): one client holds at most 16 TCP connections at
 /// once: on the test network, against a listener on the host that keeps
 /// every connection open, the 17th is refused ("too many connections"),
 /// and once they're closed a new one opens.
 pub fn limits(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.expect_log("netstack: 10.77.")?;
-    let log = ctx.log();
-    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
-    let prefix =
-        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let prefix = testnet_prefix(ctx)?;
     let host = format!("{prefix}.1");
     let script = format!(
         "import socket,time\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\ns.bind(('{host}', 7777)); s.listen(64)\nprint('listening', flush=True)\nheld=[]\nwhile True:\n    c,_=s.accept(); held.append(c)\n"
@@ -453,11 +458,7 @@ pub fn limits(ctx: &mut Ctx) -> Result<(), String> {
 /// many pings waiting"); ten lookups of names its DNS never answers: the
 /// same (netstack's 10 s); once those are over, one of each is taken again.
 pub fn waiting(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.expect_log("netstack: 10.77.")?;
-    let log = ctx.log();
-    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
-    let prefix =
-        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let prefix = testnet_prefix(ctx)?;
     let nobody = format!("{prefix}.250");
     for (what, ask) in [("pings", format!("ping {nobody}")), ("lookups", String::from("resolve"))] {
         let said = ctx.door(&format!("net waiting {ask} 10"))?;
@@ -480,6 +481,141 @@ pub fn waiting(ctx: &mut Ctx) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// A Python client on the host, its script run with the guest's address as
+/// `G`; what it prints, once it ends.
+fn host_client(script: &str, guest: &str) -> Result<std::process::Child, String> {
+    std::process::Command::new("python3")
+        .args(["-c", &format!("G = {guest:?}\n{script}")])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("python3: {e}"))
+}
+
+fn printed(child: std::process::Child) -> Result<String, String> {
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let (o, e) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(format!("the host's client: {}{}", o.trim(), e.trim()));
+    }
+    Ok(o.trim().to_string())
+}
+
+/// `@net.listen` (TASK-184): netstack listens, in e2e images, for the test
+/// clients alone. On the test network the host connects to the guest: the
+/// door's listener takes two connections in turn and echoes each (the
+/// handshake from the host, 100 KB both ways, both ends closed); with a
+/// backlog of 2 and nothing accepted, two of five connections are taken and
+/// three get no answer, then the two are accepted; a program that isn't a
+/// test client may not listen.
+pub fn listen(ctx: &mut Ctx) -> Result<(), String> {
+    let prefix = testnet_prefix(ctx)?;
+    let (guest, host) = (format!("{prefix}.15"), format!("{prefix}.1"));
+    // Connects as soon as the guest listens (refused until then).
+    let connect = "import socket,time\ndef connect(port, wait):\n    end = time.time() + 10\n    while True:\n        s = socket.socket(); s.settimeout(wait)\n        try:\n            s.connect((G, port)); return s\n        except ConnectionRefusedError:\n            s.close()\n            if time.time() > end: raise\n            time.sleep(0.1)\n";
+    let echo = format!(
+        "{connect}data = bytes((i * 7 + i // 251) % 256 for i in range(100000))\nfor _ in range(2):\n    s = connect(7000, 5); s.settimeout(10); s.sendall(data); s.shutdown(socket.SHUT_WR)\n    got = b''\n    while True:\n        b = s.recv(65536)\n        if not b: break\n        got += b\n    assert got == data, (len(got), len(data))\n    s.close()\nprint('echoed twice')\n"
+    );
+    let child = host_client(&echo, &guest)?;
+    let said = ctx.door("tcp serve 7000 2");
+    let host_said = printed(child);
+    let said = said?;
+    if said != [format!("served 2 from {host}, 200000 bytes echoed")] || host_said.as_deref() != Ok("echoed twice") {
+        return Err(format!("two connections echoed: the door said {said:?}, the host {host_said:?}"));
+    }
+    // Five at once against a backlog of 2: two handshakes, three SYNs dropped.
+    let flood = format!(
+        "{connect}import threading\nres, held = [], []\ndef one():\n    try:\n        held.append(connect(7001, 2)); res.append('ok')\n    except socket.timeout:\n        res.append('timeout')\nts = [threading.Thread(target=one) for _ in range(5)]\n[t.start() for t in ts]; [t.join() for t in ts]\nprint(res.count('ok'), 'ok,', res.count('timeout'), 'timed out', flush=True)\ntime.sleep(4)\n"
+    );
+    let child = host_client(&flood, &guest)?;
+    let said = ctx.door("tcp backlog 7001 2 5");
+    let host_said = printed(child);
+    let said = said?;
+    if said != ["accepted 2"] || host_said.as_deref() != Ok("2 ok, 3 timed out") {
+        return Err(format!("a backlog of 2: the door said {said:?}, the host {host_said:?}"));
+    }
+    let said = ctx.door("tcp listen-as terminal 7002")?;
+    if !said.first().is_some_and(|l| l.contains("only the test clients listen")) {
+        return Err(format!("the Terminal asked to listen: {said:?}"));
+    }
+    let said = ctx.door("tcp listen-as cdpd 7002")?;
+    if said != ["listening"] {
+        return Err(format!("cdpd asked to listen: {said:?}"));
+    }
+    Ok(())
+}
+
+/// `@cdp.network` (TASK-184): cdpd's port on the network. A WebSocket
+/// client on the host (the test network reaches the guest) opens
+/// `ws://<guest>:9222/` (the accept key checked), asks `Target.getTargets`
+/// and gets the desktop first by its id, asks what isn't served and gets an
+/// error by its id; its ping is answered with a pong and its close echoed; a
+/// request that isn't WebSocket is answered 400.
+pub fn cdp_network(ctx: &mut Ctx) -> Result<(), String> {
+    let prefix = testnet_prefix(ctx)?;
+    ctx.expect_log("cdpd: CDP over WebSocket on port 9222")?;
+    let client = host_client(CDP_CLIENT, &format!("{prefix}.15"))?;
+    let said = printed(client)?;
+    if !said.starts_with("CDP over WebSocket") {
+        return Err(format!("the host's WebSocket client said {said:?}"));
+    }
+    Ok(())
+}
+
+/// `@cdp.network`'s client: WebSocket written out (RFC 6455), so the host
+/// needs nothing but Python.
+const CDP_CLIENT: &str = r#"import base64, hashlib, json, os, socket, struct
+def opened():
+    s = socket.create_connection((G, 9222), 10)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall(('GET / HTTP/1.1\r\nHost: freally\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' % key).encode())
+    head = b''
+    while b'\r\n\r\n' not in head:
+        b = s.recv(1)
+        assert b, head
+        head += b
+    want = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+    assert head.startswith(b'HTTP/1.1 101 ') and ('Sec-WebSocket-Accept: ' + want).encode() in head, head
+    return s
+def exactly(s, n):
+    b = b''
+    while len(b) < n:
+        c = s.recv(n - len(b))
+        assert c, 'closed early'
+        b += c
+    return b
+def send(s, op, data):
+    mask = os.urandom(4)
+    n = len(data)
+    head = bytes([0x80 | op]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack('!H', n))
+    s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+def recv(s):
+    b0, b1 = exactly(s, 2)
+    assert b1 & 0x80 == 0, 'a server frame masked'
+    n = b1 & 0x7F
+    if n == 126: n = struct.unpack('!H', exactly(s, 2))[0]
+    elif n == 127: n = struct.unpack('!Q', exactly(s, 8))[0]
+    return b0 & 0x0F, exactly(s, n)
+s = opened()
+send(s, 1, json.dumps({'id': 1, 'method': 'Target.getTargets'}).encode())
+op, p = recv(s)
+m = json.loads(p)
+assert op == 1 and m['id'] == 1 and m['result']['targetInfos'][0]['targetId'] == 'desktop', m
+send(s, 1, b'{"id":2,"method":"No.such"}')
+m = json.loads(recv(s)[1])
+assert m['id'] == 2 and m['error']['code'] == -32000, m
+send(s, 9, b'are you there')
+assert recv(s) == (10, b'are you there')
+send(s, 8, struct.pack('!H', 1000))
+assert recv(s) == (8, struct.pack('!H', 1000))
+s.close()
+t = socket.create_connection((G, 9222), 10)
+t.sendall(b'GET / HTTP/1.1\r\nHost: freally\r\n\r\n')
+r = t.recv(100)
+assert r.startswith(b'HTTP/1.1 400 '), r
+print('CDP over WebSocket', len(m))
+"#;
 
 /// `@net.grants` (TASK-183): netstack serves the programs its list names
 /// and no one else: a client called `terminal` is served; one called
@@ -508,11 +644,7 @@ pub fn grants(ctx: &mut Ctx) -> Result<(), String> {
 /// given up after five; no root given: refused (the image trusts none yet);
 /// another root: refused.
 pub fn https(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.expect_log("netstack: 10.77.")?;
-    let log = ctx.log();
-    let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
-    let prefix =
-        line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let prefix = testnet_prefix(ctx)?;
     let off = crate::settings::host_zone()?;
     if ctx.door(&format!("zone {off} local"))? != ["ok"] {
         return Err("the zone wasn't set".into());

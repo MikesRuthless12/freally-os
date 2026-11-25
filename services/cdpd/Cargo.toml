@@ -22,6 +22,7 @@ flavour-e2e = []
 
 [dependencies]
 fcore-abi.workspace = true
+fcrypto.workspace = true
 fjson.workspace = true
 fstd.workspace = true
 fwire.workspace = true

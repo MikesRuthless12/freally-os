@@ -176,6 +176,8 @@ pub const SPECS: &[(&str, Spec)] = &[
     ("monitor.network", monitor::network),
     ("net.limits", net::limits),
     ("net.waiting", net::waiting),
+    ("net.listen", net::listen),
+    ("cdp.network", net::cdp_network),
     ("settings.network", settings::network),
     ("update.online.no", update::online_no),
     ("update.online.bad-signature", update::online_bad_signature),

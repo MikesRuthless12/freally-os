@@ -47,10 +47,14 @@ const ALWAYS: [Grant; 7] = [
 const TESTS: [Grant; 2] = [
     Grant {
         who: "conductor",
-        what: "the test door's TCP and TLS checks",
+        what: "the test door's TCP and TLS checks, and a port it listens on",
         when: "in test images only, when a test asks",
     },
-    Grant { who: "cdpd", what: "the test harness's view of the network", when: "in test images only" },
+    Grant {
+        who: "cdpd",
+        what: "the test harness's view of the network, and the port the harness reaches it on",
+        when: "in test images only",
+    },
 ];
 
 /// The list, for an e2e image (`e2e`) or any other.
@@ -62,6 +66,12 @@ pub fn list(e2e: bool) -> impl Iterator<Item = Grant> {
 /// own entries aren't a client).
 pub fn allowed(client: &str, e2e: bool) -> bool {
     client != "netstack" && list(e2e).any(|g| g.who == client)
+}
+
+/// Whether `client` may listen for connections (TASK-184): only the test
+/// clients, only in an e2e image.
+pub fn may_listen(client: &str, e2e: bool) -> bool {
+    e2e && TESTS.iter().any(|g| g.who == client)
 }
 
 #[cfg(test)]
@@ -79,6 +89,17 @@ mod tests {
         }
         for who in ["netstack", "desktop", "files", "", "terminal2"] {
             assert!(!allowed(who, true), "{who}");
+        }
+    }
+
+    /// Only the test clients listen (TASK-184), and only in an e2e image.
+    #[test]
+    fn only_the_test_clients_listen() {
+        for who in ["conductor", "cdpd"] {
+            assert!(may_listen(who, true) && !may_listen(who, false), "{who}");
+        }
+        for who in ["terminal", "settings", "updater", "monitor", "netstack", "intruder", ""] {
+            assert!(!may_listen(who, true), "{who}");
         }
     }
 

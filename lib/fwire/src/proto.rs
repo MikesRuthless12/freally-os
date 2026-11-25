@@ -1415,6 +1415,12 @@ pub mod net {
     /// `()` → `Traffic` (TASK-186): each network's packets and bytes in and
     /// out, and those dropped, as its driver counts them.
     pub const STATS: u32 = 10;
+    /// `Listen` → `()` (TASK-184, e2e images only, cdpd and the test door):
+    /// connections to `port` taken while fewer than `backlog` wait to be accepted.
+    pub const TCP_LISTEN: u32 = 11;
+    /// `Accept` → `Accepted`: the next connection to the client's listener on
+    /// `port`, once open, waiting up to `timeout_ms`.
+    pub const TCP_ACCEPT: u32 = 12;
 
     wire_struct! {
         pub struct Interface {
@@ -1489,6 +1495,15 @@ pub mod net {
     }
     wire_struct! {
         pub struct Resolve { pub name: String, pub kind: u16 }
+    }
+    wire_struct! {
+        pub struct Listen { pub port: u16, pub backlog: u16 }
+    }
+    wire_struct! {
+        pub struct Accept { pub port: u16, pub timeout_ms: u32 }
+    }
+    wire_struct! {
+        pub struct Accepted { pub id: u32, pub from: [u8; 4], pub from_port: u16 }
     }
     wire_struct! {
         pub struct Resolved { pub addresses: Vec<Vec<u8>> }

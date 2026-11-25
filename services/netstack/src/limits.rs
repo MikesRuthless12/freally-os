@@ -8,7 +8,9 @@
 //! fragment is reassembled (fnet refuses them: nothing to grow). From a
 //! client: `SOCKETS_PER_CLIENT` TCP connections at once, each with
 //! `TCP_BUFFER` bytes buffered each way; `PINGS_PER_CLIENT` pings and
-//! `LOOKUPS_PER_CLIENT` DNS lookups waiting (`@net.waiting`).
+//! `LOOKUPS_PER_CLIENT` DNS lookups waiting (`@net.waiting`). A listener
+//! (e2e images only, TASK-184) holds at most `BACKLOG` connections not yet
+//! accepted, half-open ones among them: a SYN flood fills it, nothing more.
 
 /// Entries in each neighbour cache, and how long one is kept.
 pub const NEIGHBOURS: usize = crate::ArpCache::MAX;
@@ -21,6 +23,8 @@ pub const SOCKETS_PER_CLIENT: usize = 16;
 pub const PINGS_PER_CLIENT: usize = 8;
 /// DNS lookups one client may have waiting at once.
 pub const LOOKUPS_PER_CLIENT: usize = 8;
+/// Connections a listener holds not yet accepted (the most a client may ask for).
+pub const BACKLOG: usize = 8;
 /// Bytes a TCP connection buffers each way.
 pub const TCP_BUFFER: usize = crate::tcp::BUFFER;
 
