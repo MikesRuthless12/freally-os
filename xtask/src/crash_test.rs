@@ -188,7 +188,16 @@ impl<'a> Machine<'a> {
         // stands, and 5 s on.
         let com1 = self.o.com1_log();
         let mut out = format!("COM1's log as the wait ended:\n{}", file_tail(&com1));
-        std::thread::sleep(Duration::from_secs(5));
+        // 2026-11-25's stall: the logger took 93 s of lines in 64 ms, as
+        // the door's first bytes reached the guest, while CPU 1 sat in HLT.
+        // So, still before anything asks the guest: each CPU's local APIC
+        // (its timer, what's in service and pending: a vector never EOId
+        // blocks the timer and IPIs below it) and where it is, twice.
+        for _ in 0..2 {
+            out.push_str(&format!("\nthe CPUs, unasked:\n{}", self.cpus_unasked()));
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        std::thread::sleep(Duration::from_secs(3));
         out.push_str(&format!("\n5 s on, nothing asked:\n{}", file_tail(&com1)));
         out.push_str(&format!("\nthe test door's services:\n{}", self.door("services")));
         out.push_str(&format!("\nCOM1's log after the door's first answer:\n{}", file_tail(&com1)));
@@ -270,6 +279,22 @@ impl<'a> Machine<'a> {
         self.monitor("info registers -a")
     }
 
+    /// Each CPU's local APIC (the timer's mode and count, ISR, IRR, the
+    /// priorities) and its RIP, from QEMU alone: the guest isn't asked.
+    fn cpus_unasked(&mut self) -> String {
+        let rips: Vec<String> = self
+            .registers()
+            .lines()
+            .filter(|l| l.starts_with("CPU#") || l.starts_with("RIP="))
+            .map(String::from)
+            .collect();
+        let mut out = rips.join("\n");
+        for cpu in 0..self.o.cpus {
+            out.push_str(&format!("\nlapic {cpu}: {}", lapic_lines(&self.monitor(&format!("info lapic {cpu}")))));
+        }
+        out
+    }
+
     /// A QEMU monitor command's answer, through the QMP the test holds.
     fn monitor(&mut self, line: &str) -> String {
         let cmd = fjson::Value::obj([("command-line", fjson::Value::Str(line.into()))]);
@@ -333,6 +358,17 @@ impl<'a> Machine<'a> {
         }
         Err(format!("the disk was missed {} times in a row", MISSES_IN_A_ROW + 1))
     }
+}
+
+/// The lines of `info lapic` that say why a CPU might not wake: the timer,
+/// what's in service and pending, the priorities.
+fn lapic_lines(info: &str) -> String {
+    let keep: Vec<&str> = info
+        .lines()
+        .map(str::trim)
+        .filter(|l| ["LVTT", "Timer", "ISR", "IRR", "APR"].iter().any(|k| l.starts_with(k)))
+        .collect();
+    if keep.is_empty() { info.trim().to_string() } else { keep.join(" | ") }
 }
 
 /// `path`'s size and its last 3 lines.
@@ -497,6 +533,16 @@ mod tests {
             "      3  read addr 0x05 val 0x60\n      2  write addr 0x00 (bytes sent)\n      1  write addr 0x04 val 0x1b"
         );
         assert_eq!(tally(""), "(no UART register used in that second)");
+    }
+
+    #[test]
+    fn a_lapic_is_said_by_its_timer_its_isr_irr_and_priorities() {
+        let info = "dumping local APIC state for CPU 1 \n\nLVT0\t 0x00010000 masked\nLVTT\t 0x000400ec tsc-deadline  Fixed  (vec 236)\nTimer\t DCR=0x0 (divide by 2) initial_count = 0 current_count = 0\nSPIV\t 0x000001ff\nISR\t 33\nIRR\t (none)\n\nAPR 0x00 TPR 0x00 DFR 0x0f LDR 0x00 PPR 0x20\n";
+        assert_eq!(
+            super::lapic_lines(info),
+            "LVTT\t 0x000400ec tsc-deadline  Fixed  (vec 236) | Timer\t DCR=0x0 (divide by 2) initial_count = 0 current_count = 0 | ISR\t 33 | IRR\t (none) | APR 0x00 TPR 0x00 DFR 0x0f LDR 0x00 PPR 0x20"
+        );
+        assert_eq!(super::lapic_lines("(no answer)"), "(no answer)");
     }
 
     #[test]
