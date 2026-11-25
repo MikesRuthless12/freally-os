@@ -181,6 +181,12 @@ impl<'a> Machine<'a> {
     /// names the RIPs (the builds are reproducible).
     fn stalled(&mut self) -> String {
         let mut out = format!("the test door's services:\n{}", self.door("services"));
+        // What the logger holds, whether or not COM1 showed it: its last lines
+        // say whether the drivers' lines reached it (no answer: the logger
+        // itself is stuck).
+        let log = self.door("log 300");
+        let tail: Vec<&str> = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();
+        out.push_str(&format!("\nthe logger's last records:\n{}", tail.join("\n")));
         out.push_str(&format!("\nthe CPUs:\n{}", self.registers()));
         for _ in 0..3 {
             std::thread::sleep(Duration::from_secs(1));
