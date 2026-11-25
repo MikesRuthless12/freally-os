@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The stub resolver (TASK-176), tested on the host: a name's A or AAAA
 //! records from the servers DHCP (and RDNSS) gave, over UDP from a random
-//! port with a random id, again over TCP when the answer was truncated;
+//! port with a random id, again over TCP when the answer was truncated (TCP
+//! is IPv4's alone: an IPv6 server's truncated answer goes to an IPv4 server);
 //! CNAME chains followed (at most 8); answers cached by their TTL (at most a
 //! day), a name that doesn't exist for a minute. It knows no sockets: it
 //! says what to send, and is told what came back. Times are nanoseconds.
@@ -11,6 +12,7 @@ use alloc::vec::Vec;
 
 use fnet::Ipv4;
 use fnet::dns::{self, Found};
+use fnet::ipv6::Ipv6;
 
 const SECOND: u64 = 1_000_000_000;
 /// A UDP query's wait before it goes again, doubling: 1, 2 s, then the next server.
@@ -37,11 +39,18 @@ pub enum Answer {
     Failed,
 }
 
+/// A DNS server: DHCP's (IPv4) or RDNSS's (IPv6, TASK-176).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Server {
+    V4(Ipv4),
+    V6(Ipv6),
+}
+
 /// What the resolver wants sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Send {
     /// A UDP query to `server`:53 from `port`.
-    Udp { server: Ipv4, port: u16, bytes: Vec<u8> },
+    Udp { server: Server, port: u16, bytes: Vec<u8> },
     /// A TCP query to `server`:53 (the message, its 2-byte length added by the sender), for lookup `id`.
     Tcp { id: u32, server: Ipv4, bytes: Vec<u8> },
 }
@@ -72,7 +81,8 @@ struct Cached {
 }
 
 pub struct Resolver {
-    pub servers: Vec<Ipv4>,
+    /// IPv4's first, then IPv6's.
+    pub servers: Vec<Server>,
     lookups: Vec<Lookup>,
     cache: Vec<Cached>,
     next_id: u32,
@@ -137,7 +147,7 @@ impl Resolver {
     }
 
     /// The lookup's next UDP query: a fresh id and port each time (RFC 5452).
-    fn ask(servers: &[Ipv4], l: &mut Lookup, now: u64, random: [u8; 4], out: &mut Vec<Send>) {
+    fn ask(servers: &[Server], l: &mut Lookup, now: u64, random: [u8; 4], out: &mut Vec<Send>) {
         l.txid = u16::from_be_bytes([random[0], random[1]]);
         // An ephemeral port, 49152–65535.
         l.port = 49152 + u16::from_be_bytes([random[2], random[3]]) % 16384;
@@ -157,7 +167,7 @@ impl Resolver {
     /// A UDP datagram from `from`:53 to our `port`. Finished lookups come back as (id, answer).
     pub fn udp(
         &mut self,
-        from: Ipv4,
+        from: Server,
         port: u16,
         bytes: &[u8],
         now: u64,
@@ -176,11 +186,26 @@ impl Resolver {
             return Vec::new();
         }
         if r.truncated {
+            let server = match from {
+                Server::V4(a) => a,
+                Server::V6(_) => {
+                    // No TCP over IPv6: an IPv4 server asked instead, if there's one.
+                    let Some(k) = self.servers.iter().position(|s| matches!(s, Server::V4(_))) else {
+                        return alloc::vec![self.finish(i, Answer::Failed, 0, now)];
+                    };
+                    let l = &mut self.lookups[i];
+                    l.server = k;
+                    l.tries = 0;
+                    l.wait = FIRST_WAIT;
+                    Resolver::ask(&self.servers, l, now, random, out);
+                    return Vec::new();
+                }
+            };
             let l = &mut self.lookups[i];
             l.tcp = true;
             l.next = l.deadline;
             if let Some(q) = dns::query(l.txid, &l.asking, l.qtype) {
-                out.push(Send::Tcp { id: l.id, server: from, bytes: q });
+                out.push(Send::Tcp { id: l.id, server, bytes: q });
             }
             return Vec::new();
         }

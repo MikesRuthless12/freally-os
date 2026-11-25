@@ -551,20 +551,35 @@ pub fn listen(ctx: &mut Ctx) -> Result<(), String> {
 /// `ws://<guest>:9222/` (the accept key checked), asks `Target.getTargets`
 /// and gets the desktop first by its id, asks what isn't served and gets an
 /// error by its id; takes a screenshot (a PNG the size of QEMU's screen),
-/// moves the mouse (the pointer follows) and presses Tab (the focus moves),
-/// all through stage; its ping is answered with a pong and its close
+/// moves the mouse (the pointer follows) and presses Tab (the focus moves;
+/// or, the Terminal having it, types a word the shell answers), all
+/// through stage; its ping is answered with a pong and its close
 /// echoed; a request that isn't WebSocket is answered 400.
 pub fn cdp_network(ctx: &mut Ctx) -> Result<(), String> {
     let prefix = testnet_prefix(ctx)?;
     ctx.expect_log("cdpd: CDP over WebSocket on port 9222")?;
     let client = host_client(CDP_CLIENT, &format!("{prefix}.15"))?;
     let said = printed(client)?;
-    let size: Vec<u32> =
-        said.strip_prefix("CDP over WebSocket ").unwrap_or("").split(' ').filter_map(|n| n.parse().ok()).collect();
+    let words: Vec<&str> = said.strip_prefix("CDP over WebSocket ").unwrap_or("").split(' ').collect();
+    let size: Vec<u32> = words.iter().take(2).filter_map(|n| n.parse().ok()).collect();
     // cdpd's screenshot (stage's picture) the size of cdp-host's (QEMU's).
     let shot = ctx.screenshot()?;
     if size != [shot.w, shot.h] {
         return Err(format!("the host's WebSocket client said {said:?}; QEMU's screen is {}x{}", shot.w, shot.h));
+    }
+    // Keys typed into the Terminal: the shell answered `ws6` (no such command).
+    if words.get(2) == Some(&"terminal") {
+        let start = std::time::Instant::now();
+        while !crate::terminal::screen_text(ctx)?.lines().any(|l| l.trim().starts_with("ws6: ")) {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                return Err(format!(
+                    "`ws6` typed over WebSocket never answered: the terminal {:?}; stage {:?}",
+                    ctx.door("terminal screen"),
+                    ctx.door("stage list")
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
     Ok(())
 }
@@ -626,16 +641,25 @@ call(5, 'Input.dispatchMouseEvent', {'type': 'mouseMoved', 'deltaX': dx, 'deltaY
 to = call(6, 'Freally.nodeAt')['at']
 assert (to['x'] - at['x']) * dx > 0 and (to['y'] - at['y']) * dy > 0, (at, to, dx, dy)
 before = call(7, 'Freally.focusedNode')
-for kind in ('keyDown', 'keyUp'):
-    call(8, 'Input.dispatchKeyEvent', {'type': kind, 'code': 'Tab', 'key': 'Tab'})
-# The key reaches the app through stage; its tree says so once it has run.
-import time
-end = time.time() + 3
-after = before
-while after == before and time.time() < end:
-    time.sleep(0.1)
-    after = call(9, 'Freally.focusedNode')
-assert after != before, ('Tab moved no focus', before)
+def press(code):
+    for kind in ('keyDown', 'keyUp'):
+        call(8, 'Input.dispatchKeyEvent', {'type': kind, 'code': code})
+if (before.get('node') or {}).get('testid') == 'terminal-screen':
+    # The Terminal takes Tab itself: `ws6` typed instead (the spec reads the shell's answer).
+    for code in ['KeyW', 'KeyS', 'Digit6', 'Enter']:
+        press(code)
+    keys = 'terminal'
+else:
+    press('Tab')
+    # The key reaches the app through stage; its tree says so once it has run.
+    import time
+    end = time.time() + 3
+    after = before
+    while after == before and time.time() < end:
+        time.sleep(0.1)
+        after = call(9, 'Freally.focusedNode')
+    assert after != before, ('Tab moved no focus', before)
+    keys = 'focus'
 send(s, 9, b'are you there')
 assert recv(s) == (10, b'are you there')
 send(s, 8, struct.pack('!H', 1000))
@@ -645,8 +669,30 @@ t = socket.create_connection((G, 9222), 10)
 t.sendall(b'GET / HTTP/1.1\r\nHost: freally\r\n\r\n')
 r = t.recv(100)
 assert r.startswith(b'HTTP/1.1 400 '), r
-print('CDP over WebSocket', W, H)
+print('CDP over WebSocket', W, H, keys)
 "#;
+
+/// `@net.dns6` (TASK-176): DNS over IPv6 alone. This test network's lease
+/// names no DNS server; its router advertisements give an address (SLAAC)
+/// and, by RDNSS, the IPv6 server fd78:<n>::1: `ip` shows it, and the
+/// shell's nslookup gets its answers from it, over IPv6.
+pub fn dns6(ctx: &mut Ctx) -> Result<(), String> {
+    ctx.expect_log("netstack: 10.78.")?;
+    let log = ctx.log();
+    let lease = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
+    if !lease.contains("DNS none") {
+        return Err(format!("the lease named a DNS server: {lease}"));
+    }
+    let prefix =
+        lease.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string();
+    let n = prefix.rsplit('.').next().unwrap_or_default().to_string();
+    ctx.expect_log(&format!("netstack: fd78:{n}:"))?;
+    open(ctx)?;
+    shell_until(ctx, "ip", &[&format!("dns fd78:{n}::1")])?;
+    shell_until(ctx, "nslookup test.freally.local", &[&format!("test.freally.local has address {prefix}.1")])?;
+    shell_until(ctx, "nslookup six.freally.local", &["six.freally.local has address fec0::1"])?;
+    Ok(())
+}
 
 /// `@net.grants` (TASK-183): netstack serves the programs its list names
 /// and no one else: a client called `terminal` is served; one called

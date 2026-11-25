@@ -30,6 +30,9 @@ pub struct VmOptions {
     /// The NIC on a test network of its own (TASK-176): a TAP device, and a
     /// DHCP and DNS server on it (`e2e/os/net/testnet.py`), not QEMU's.
     pub testnet: bool,
+    /// The test network gives DNS over IPv6 alone (RDNSS, TASK-176): its own
+    /// tap and addresses, the lease naming no DNS server.
+    pub testnet6: bool,
     /// What the test update host serves (`fup::online_www`), for the CDP runner.
     pub www: Option<PathBuf>,
     pub memory_mb: u32,
@@ -95,6 +98,7 @@ impl VmOptions {
             updates: false,
             nic: None,
             testnet: false,
+            testnet6: false,
             www: None,
             cpu: None,
         }
@@ -148,7 +152,11 @@ impl VmOptions {
     /// The test network's TAP device and its /24 (`frt2`, `10.77.2`), by the port offset.
     pub fn testnet_names(&self) -> (String, String) {
         let n = self.port_offset / 100;
-        (format!("frt{n}"), format!("10.77.{n}"))
+        if self.testnet6 {
+            (format!("fr6t{n}"), format!("10.78.{n}"))
+        } else {
+            (format!("frt{n}"), format!("10.77.{n}"))
+        }
     }
 
     /// The port a spec's TLS server listens on, for this VM (TASK-180).
@@ -360,7 +368,13 @@ fn testnet_up(o: &VmOptions) -> Result<(), String> {
             .args([
                 "-c",
                 &format!(
-                    "ip tuntap add dev {tap} mode tap && ip addr add {prefix}.1/24 dev {tap} && ip link set {tap} up"
+                    "ip tuntap add dev {tap} mode tap && ip addr add {prefix}.1/24 dev {tap} && ip link set {tap} up{}",
+                    // IPv6's DNS server on the tap (no DAD: nothing else is on it).
+                    if o.testnet6 {
+                        format!(" && ip -6 addr add fd78:{}::1/64 dev {tap} nodad", o.port_offset / 100)
+                    } else {
+                        String::new()
+                    }
                 ),
             ])
             .status()
@@ -377,6 +391,7 @@ fn testnet_up(o: &VmOptions) -> Result<(), String> {
     Command::new("python3")
         .arg(util::repo_root().join("e2e/os/net/testnet.py"))
         .args([&tap, &prefix])
+        .args(o.testnet6.then_some("--v6"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .spawn()

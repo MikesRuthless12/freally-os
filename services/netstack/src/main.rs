@@ -22,7 +22,7 @@ use fstd::time::{Duration, Instant};
 use fwire::proto::conductor as c;
 use fwire::proto::net as nt;
 use fwire::proto::netdev as nd;
-use svc_netstack::resolver::{self, Answer, Resolver};
+use svc_netstack::resolver::{self, Answer, Resolver, Server};
 use svc_netstack::tcp::{self as tcp, Ended, Out, State as TcpState, Tcb};
 use svc_netstack::{ArpCache, Client as Dhcp, Neighbors, Slaac, Slaac6, next_hop};
 
@@ -337,7 +337,8 @@ impl Stack {
                             && self.resolver.ports().any(|q| q == u.dst_port)
                         {
                             let mut sends = Vec::new();
-                            let done = self.resolver.udp(p.src, u.dst_port, u.data, now(), random4(), &mut sends);
+                            let done =
+                                self.resolver.udp(Server::V4(p.src), u.dst_port, u.data, now(), random4(), &mut sends);
                             self.dns_send(sends);
                             self.resolved(done, clients);
                             return;
@@ -521,12 +522,14 @@ impl Stack {
     }
 
     /// The resolver's queries: UDP to the server (through its neighbour, or
-    /// dropped till ARP finds it: the resolver asks again), or a connection.
+    /// dropped till ARP or NDP finds it: the resolver asks again), or a connection.
     fn dns_send(&mut self, sends: Vec<resolver::Send>) {
-        let Some((src, prefix, router)) = self.ours() else { return };
+        let v4 = self.ours();
         for q in sends {
             match q {
-                resolver::Send::Udp { server, port, bytes } => {
+                resolver::Send::Udp { server: Server::V6(server), port, bytes } => self.dns_send6(server, port, &bytes),
+                resolver::Send::Udp { server: Server::V4(server), port, bytes } => {
+                    let Some((src, prefix, router)) = v4 else { continue };
                     let Some(hop) = next_hop(server, src, prefix, router) else { continue };
                     match self.arp.find(hop, now()) {
                         Some(mac) => {
@@ -537,6 +540,7 @@ impl Stack {
                     }
                 }
                 resolver::Send::Tcp { id, server, bytes } => {
+                    let Some((src, prefix, router)) = v4 else { continue };
                     let Some(hop) = next_hop(server, src, prefix, router) else { continue };
                     let mut framed = (bytes.len() as u16).to_be_bytes().to_vec();
                     framed.extend_from_slice(&bytes);
@@ -760,8 +764,33 @@ impl Stack {
     }
 
     /// The resolver's servers (the lease's), its retries, and its deadlines.
+    /// A query to an IPv6 server (RDNSS's, TASK-176): to it on the link, else
+    /// through the router; dropped till NDP finds the neighbour.
+    fn dns_send6(&mut self, server: Ipv6, port: u16, bytes: &[u8]) {
+        let Some(src) = self.slaac.source_for(&server) else { return };
+        let hop = if self.slaac.on_link(&server) { Some(server) } else { self.slaac.router.map(|r| r.0) };
+        let Some(hop) = hop else { return };
+        let t = now();
+        let mac = self.nd6.find(hop, t).or(self.slaac.router.filter(|r| r.0 == hop).map(|r| r.1));
+        match mac {
+            Some(mac) => {
+                let d = v6::udp6(&src, &server, port, fnet::dns::PORT, bytes);
+                let packet = v6::ip6(src, server, v6::NEXT_UDP, 64, &d);
+                let frame = fnet::eth(mac, self.mac, v6::ETHERTYPE_IPV6, &packet);
+                self.send(alloc::vec![frame]);
+            }
+            None => {
+                let from = self.slaac.source_for(&hop).unwrap_or(src);
+                self.ndp_request(from, hop);
+            }
+        }
+    }
+
     fn dns_due(&mut self, clients: &[Channel]) {
-        let servers = self.dhcp.lease().map(|l| l.dns.clone()).unwrap_or_default();
+        // DHCP's servers first, then RDNSS's (TASK-176).
+        let v4 = self.dhcp.lease().map(|l| l.dns.clone()).unwrap_or_default();
+        let servers: Vec<Server> =
+            v4.into_iter().map(Server::V4).chain(self.slaac.dns.iter().copied().map(Server::V6)).collect();
         if self.resolver.servers != servers {
             self.resolver.servers = servers;
         }
@@ -783,9 +812,23 @@ impl Stack {
         }
     }
 
-    /// An IPv6 packet: ICMPv6 alone (echo, and NDP's four messages).
+    /// An IPv6 packet: ICMPv6 (echo, and NDP's four messages), and the DNS
+    /// answers of the servers RDNSS gave (TASK-176).
     fn ipv6(&mut self, e: &Eth, clients: &[Channel]) {
         let Ok(p) = Ip6::parse(e.payload) else { return };
+        if p.next == v6::NEXT_UDP {
+            if self.slaac.ours(&p.dst)
+                && let Ok(u) = v6::udp6_parse(&p.src, &p.dst, p.payload)
+                && u.src_port == fnet::dns::PORT
+                && self.resolver.ports().any(|q| q == u.dst_port)
+            {
+                let mut sends = Vec::new();
+                let done = self.resolver.udp(Server::V6(p.src), u.dst_port, u.data, now(), random4(), &mut sends);
+                self.dns_send(sends);
+                self.resolved(done, clients);
+            }
+            return;
+        }
         if p.next != v6::NEXT_ICMPV6 {
             return;
         }

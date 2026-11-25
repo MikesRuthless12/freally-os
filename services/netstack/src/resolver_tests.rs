@@ -6,11 +6,14 @@ use alloc::vec::Vec;
 
 use fnet::dns::{TYPE_A, TYPE_AAAA, TYPE_CNAME};
 
-use crate::resolver::{Answer, Resolver, Send};
+use crate::resolver::{Answer, Resolver, Send, Server};
 
 const S: u64 = 1_000_000_000;
-const ONE: [u8; 4] = [10, 0, 3, 1];
-const TWO: [u8; 4] = [10, 0, 3, 2];
+const ONE_V4: [u8; 4] = [10, 0, 3, 1];
+const ONE: Server = Server::V4(ONE_V4);
+const TWO: Server = Server::V4([10, 0, 3, 2]);
+/// An IPv6 server, as RDNSS gives one.
+const SIX: Server = Server::V6([0xFD, 0x77, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
 fn name(n: &str) -> Vec<u8> {
     let mut v = Vec::new();
@@ -44,14 +47,14 @@ fn reply(id: u16, q: &str, qtype: u16, rcode: u8, tc: bool, answers: &[(&str, u1
 }
 
 /// The one UDP query in `out`: (server, port, its id).
-fn udp(out: &[Send]) -> (fnet::Ipv4, u16, u16) {
+fn udp(out: &[Send]) -> (Server, u16, u16) {
     match out {
         [Send::Udp { server, port, bytes }] => (*server, *port, u16::from_be_bytes([bytes[0], bytes[1]])),
         other => panic!("not one UDP query: {other:?}"),
     }
 }
 
-fn resolver(servers: &[fnet::Ipv4]) -> Resolver {
+fn resolver(servers: &[Server]) -> Resolver {
     let mut r = Resolver::new();
     r.servers = servers.to_vec();
     r
@@ -124,7 +127,7 @@ fn truncated_then_tcp() {
         r.udp(ONE, port, &reply(txid, "big.freally.local", TYPE_A, 0, true, &[]), S / 10, [0; 4], &mut out).is_empty()
     );
     let Send::Tcp { id: tid, server, bytes } = &out[0] else { panic!("{out:?}") };
-    assert_eq!((*tid, *server, u16::from_be_bytes([bytes[0], bytes[1]])), (id, ONE, txid));
+    assert_eq!((*tid, *server, u16::from_be_bytes([bytes[0], bytes[1]])), (id, ONE_V4, txid));
     let many: Vec<(&str, u16, u32, Vec<u8>)> =
         (1..=40).map(|i| ("big.freally.local", TYPE_A, 60, vec![10, 0, 4, i])).collect();
     let done = r.tcp(id, Some(&reply(txid, "big.freally.local", TYPE_A, 0, false, &many)), S / 5, [0; 4], &mut out);
@@ -226,4 +229,41 @@ fn the_cache_never_holds_more_than_its_limit() {
         assert!(r.cached() <= crate::limits::DNS_CACHE, "{} cached after {i}", r.cached());
     }
     assert_eq!(r.cached(), crate::limits::DNS_CACHE);
+}
+
+/// RDNSS's servers (TASK-176): an IPv6 server is asked as an IPv4 one is,
+/// and its answer taken from it alone; a truncated answer from it goes to an
+/// IPv4 server (TCP is IPv4's alone in netstack), or fails with none.
+#[test]
+fn ipv6_servers() {
+    let mut out = Vec::new();
+    let mut r = resolver(&[SIX]);
+    let id = r.lookup("six.freally.local", TYPE_AAAA, 0, [1, 2, 3, 4], &mut out).unwrap_err();
+    let (server, port, txid) = udp(&out);
+    assert_eq!(server, SIX);
+    out.clear();
+    let six = vec![0xFE, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let answer =
+        reply(txid, "six.freally.local", TYPE_AAAA, 0, false, &[("six.freally.local", TYPE_AAAA, 60, six.clone())]);
+    assert!(r.udp(ONE, port, &answer, S / 10, [0; 4], &mut out).is_empty(), "the same bytes from another server");
+    assert_eq!(r.udp(SIX, port, &answer, S / 10, [0; 4], &mut out), [(id, Answer::Found(vec![six]))]);
+
+    // Truncated from the IPv6 server, an IPv4 one there too: that one is asked.
+    let mut r = resolver(&[SIX, ONE]);
+    let _ = r.lookup("big.freally.local", TYPE_A, 0, [5, 5, 5, 5], &mut out);
+    let (server, port, txid) = udp(&out);
+    assert_eq!(server, SIX);
+    out.clear();
+    let truncated = reply(txid, "big.freally.local", TYPE_A, 0, true, &[]);
+    assert!(r.udp(SIX, port, &truncated, S / 10, [6, 6, 6, 6], &mut out).is_empty());
+    assert_eq!(udp(&out).0, ONE, "the IPv4 server asked next");
+
+    // Truncated from it, and no IPv4 server: the lookup fails.
+    let mut r = resolver(&[SIX]);
+    out.clear();
+    let id = r.lookup("big.freally.local", TYPE_A, 0, [5, 5, 5, 5], &mut out).unwrap_err();
+    let (_, port, txid) = udp(&out);
+    out.clear();
+    let truncated = reply(txid, "big.freally.local", TYPE_A, 0, true, &[]);
+    assert_eq!(r.udp(SIX, port, &truncated, S / 10, [0; 4], &mut out), [(id, Answer::Failed)]);
 }

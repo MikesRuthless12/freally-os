@@ -141,6 +141,7 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         o.cmdline = s.get("cmdline").and_then(Value::as_str).map(String::from);
         o.nic = s.get("nic").and_then(Value::as_str).map(String::from);
         o.testnet = s.get("testnet").and_then(Value::as_bool).unwrap_or(false);
+        o.testnet6 = s.get("testnet6").and_then(Value::as_bool).unwrap_or(false);
         o.cpu = s.get("cpu").and_then(Value::as_str).map(String::from);
         if let Some(n) = s.get("cpus").and_then(Value::as_i64) {
             o.cpus = n.clamp(1, 64) as u32;

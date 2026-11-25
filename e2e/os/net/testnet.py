@@ -4,7 +4,11 @@
 # server <prefix>.1, no router: nothing leaves this link) and a DNS server
 # over UDP and TCP with a fixed zone. Linux answers ARP. A host tool, run as
 # root inside WSL by xtask; it ends with its parent.
-#   testnet.py <tap> <prefix>     e.g. testnet.py frt2 10.77.2
+#   testnet.py <tap> <prefix>          e.g. testnet.py frt2 10.77.2
+#   testnet.py <tap> <prefix> --v6     IPv6's DNS alone (TASK-176): the lease
+#     names no DNS server; router advertisements give the prefix fd78:<n>::/64
+#     and, by RDNSS (RFC 8106), the server fd78:<n>::1, which xtask put on the
+#     tap; the same zone answers there over UDP.
 import ctypes
 import signal
 import socket
@@ -14,6 +18,7 @@ import sys
 import threading
 
 tap, prefix = sys.argv[1], sys.argv[2]
+v6 = "--v6" in sys.argv[3:]
 me = f"{prefix}.1"
 guest = f"{prefix}.15"
 # End with xtask (PR_SET_PDEATHSIG = 1).
@@ -151,11 +156,49 @@ def dhcp():
         r[236:240] = b"\x63\x82\x53\x63"
         opts = bytes([53, 1, reply]) + bytes([54, 4]) + socket.inet_aton(me)
         opts += bytes([51, 4]) + struct.pack("!I", 86400) + bytes([1, 4]) + socket.inet_aton("255.255.255.0")
-        opts += bytes([6, 4]) + socket.inet_aton(me) + b"\xff"
+        if not v6:
+            opts += bytes([6, 4]) + socket.inet_aton(me)
+        opts += b"\xff"
         s.sendto(bytes(r) + opts, ("255.255.255.255", 68))
+
+
+six = f"fd78:{prefix.rsplit('.', 1)[1]}::1"
+
+
+def router_ads():
+    """Router advertisements on the tap: the prefix fd78:<n>::/64 (on the
+    link, for SLAAC) and RDNSS naming `six`; at once for each solicitation,
+    and every 3 s. Not a default router (lifetime 0): the server is on the link."""
+    s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, tap.encode())
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)
+    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, 255)
+    s.settimeout(3)
+    mac = bytes.fromhex(open(f"/sys/class/net/{tap}/address").read().strip().replace(":", ""))
+    ad = bytes([134, 0, 0, 0, 64, 0, 0, 0]) + bytes(8)
+    ad += bytes([1, 1]) + mac
+    ad += bytes([3, 4, 64, 0xC0]) + struct.pack("!II", 86400, 14400) + bytes(4)
+    ad += socket.inet_pton(socket.AF_INET6, f"fd78:{prefix.rsplit('.', 1)[1]}::")
+    ad += bytes([25, 3, 0, 0]) + struct.pack("!I", 3600) + socket.inet_pton(socket.AF_INET6, six)
+    index = socket.if_nametoindex(tap)
+    while True:
+        s.sendto(ad, ("ff02::1", 0, 0, index))
+        try:
+            m, _ = s.recvfrom(1500)
+            while m[:1] != b"\x85":  # 133: a router solicitation
+                m, _ = s.recvfrom(1500)
+        except socket.timeout:
+            pass
+
+
+class Udp6Server(Reuse, socketserver.ThreadingUDPServer):
+    address_family = socket.AF_INET6
 
 
 threading.Thread(target=dhcp, daemon=True).start()
 threading.Thread(target=UdpServer((me, 53), Udp).serve_forever, daemon=True).start()
-print(f"testnet: {tap} {me}: DHCP and DNS up", flush=True)
+if v6:
+    threading.Thread(target=router_ads, daemon=True).start()
+    threading.Thread(target=Udp6Server((six, 53), Udp).serve_forever, daemon=True).start()
+print(f"testnet: {tap} {me}: DHCP and DNS up" + (f", IPv6's DNS at {six}" if v6 else ""), flush=True)
 TcpServer((me, 53), Tcp).serve_forever()

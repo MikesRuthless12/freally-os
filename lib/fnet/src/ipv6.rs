@@ -12,6 +12,7 @@ pub type Ipv6 = [u8; 16];
 
 pub const ETHERTYPE_IPV6: u16 = 0x86DD;
 pub const NEXT_ICMPV6: u8 = 58;
+pub const NEXT_UDP: u8 = 17;
 pub const UNSPECIFIED: Ipv6 = [0; 16];
 /// ff02::2, every router on the link.
 pub const ALL_ROUTERS: Ipv6 = [0xFF, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
@@ -95,6 +96,42 @@ pub fn icmp6_parse<'a>(src: &Ipv6, dst: &Ipv6, m: &'a [u8]) -> Result<(u8, u8, &
         return Err(Bad::Checksum);
     }
     Ok((m[0], m[1], &m[4..]))
+}
+
+/// A UDP datagram over IPv6 (TASK-176), its checksum made over the IPv6
+/// pseudo-header (0 is sent as 0xFFFF: over IPv6 a checksum is required).
+pub fn udp6(src: &Ipv6, dst: &Ipv6, src_port: u16, dst_port: u16, data: &[u8]) -> Vec<u8> {
+    let len = 8 + data.len();
+    let mut p = Vec::with_capacity(len);
+    p.extend_from_slice(&src_port.to_be_bytes());
+    p.extend_from_slice(&dst_port.to_be_bytes());
+    p.extend_from_slice(&(len as u16).to_be_bytes());
+    p.extend_from_slice(&[0, 0]);
+    p.extend_from_slice(data);
+    let sum = match checksum(&p, pseudo6(src, dst, NEXT_UDP, len as u32)) {
+        0 => 0xFFFF,
+        s => s,
+    };
+    p[6..8].copy_from_slice(&sum.to_be_bytes());
+    p
+}
+
+/// A UDP datagram over IPv6 read, its checksum checked; one with none (0)
+/// is refused (RFC 8200 § 8.1).
+pub fn udp6_parse<'a>(src: &Ipv6, dst: &Ipv6, p: &'a [u8]) -> Result<crate::Udp<'a>, Bad> {
+    if p.len() < 8 {
+        return Err(Bad::Short);
+    }
+    let len = u16::from_be_bytes([p[4], p[5]]) as usize;
+    if len < 8 || len > p.len() {
+        return Err(Bad::TotalLength);
+    }
+    let p = &p[..len];
+    if p[6..8] == [0, 0] || checksum(p, pseudo6(src, dst, NEXT_UDP, len as u32)) != 0 {
+        return Err(Bad::Checksum);
+    }
+    let port = |at: usize| u16::from_be_bytes([p[at], p[at + 1]]);
+    Ok(crate::Udp { src_port: port(0), dst_port: port(2), data: &p[8..] })
 }
 
 /// The solicited-node multicast address of `a` (ff02::1:ffXX:XXXX).

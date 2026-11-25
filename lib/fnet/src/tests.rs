@@ -192,6 +192,25 @@ mod v6 {
         assert_eq!(Ip6::parse(&long), Err(Bad::TotalLength));
     }
 
+    /// UDP over IPv6 (TASK-176: DNS to the servers RDNSS gives): both ways,
+    /// the checksum over the IPv6 pseudo-header, and required (RFC 8200 § 8.1).
+    #[test]
+    fn udp_over_ipv6() {
+        let u = udp6(&A, &ROUTER, 49152, 53, b"query");
+        let want = crate::Udp { src_port: 49152, dst_port: 53, data: &b"query"[..] };
+        assert_eq!(udp6_parse(&A, &ROUTER, &u), Ok(want));
+        let mut other = A;
+        other[15] ^= 1;
+        assert_eq!(udp6_parse(&other, &ROUTER, &u), Err(Bad::Checksum), "another address");
+        let mut none = u.clone();
+        none[6..8].fill(0);
+        assert_eq!(udp6_parse(&A, &ROUTER, &none), Err(Bad::Checksum), "no checksum: refused over IPv6");
+        assert_eq!(udp6_parse(&A, &ROUTER, &u[..7]), Err(Bad::Short));
+        let mut long = u.clone();
+        long[5] = 200;
+        assert_eq!(udp6_parse(&A, &ROUTER, &long), Err(Bad::TotalLength));
+    }
+
     #[test]
     fn icmpv6_checksums_cover_the_addresses() {
         let m = icmp6(&A, &ROUTER, kind::ECHO_REQUEST, 0, &[0x46, 0x52, 0, 1, 9, 9]);

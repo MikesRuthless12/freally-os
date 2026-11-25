@@ -73,6 +73,13 @@ fn seeds() -> Vec<Vec<u8>> {
             v6::ETHERTYPE_IPV6,
             &v6::ip6(ll, router, 6, 64, &tcp.bytes(pseudo6(&ll, &router, tcp.wire_len()))),
         ),
+        // A DNS answer over IPv6 (TASK-176: the servers RDNSS gives).
+        fnet::eth(
+            MAC,
+            MAC,
+            v6::ETHERTYPE_IPV6,
+            &v6::ip6(router, ll, v6::NEXT_UDP, 64, &v6::udp6(&router, &ll, 53, 49152, &dns_reply)),
+        ),
         dhcp::request(0x1234, MAC, &dhcp::Lease::default()),
         dns_reply,
     ]
@@ -96,6 +103,10 @@ fn parse_all(b: &[u8]) {
     }
     if let Ok(p) = v6::Ip6::parse(e.payload) {
         let _ = Tcp::parse(p.payload, pseudo6(&p.src, &p.dst, p.payload.len()));
+        // DNS over IPv6 (TASK-176), as netstack chains it.
+        if let Ok(u) = v6::udp6_parse(&p.src, &p.dst, p.payload) {
+            let _ = dns::parse(u.data);
+        }
         if let Ok((_, _, body)) = v6::icmp6_parse(&p.src, &p.dst, p.payload) {
             let _ = v6::router_ad(body);
             let _ = v6::neighbor(body);
