@@ -19,7 +19,15 @@ Every byte of a Freally OS system image is verified before it runs:
 - Each account's home is its own encrypted subvolume (XChaCha20-Poly1305 per 4 KiB block). Its key is sealed under one made from the password (Argon2id at 64 MiB, three passes), opened at login and wiped at logout.
 - The account records (each password's salt and sealed key) can be read by the accounts service alone; a wrong password waits a second longer each time from the third.
 - An exported account (`.facct`) is sealed with its password; what's copied to the clipboard is emptied when the session ends.
-- Nothing is sent anywhere: there's no network stack yet, no telemetry, and no account with us.
+- There's no telemetry and no account with us: nothing about you is sent anywhere. What does go over the network, and when, is below.
+
+## The network
+
+- Freally OS connects only when something asks, and **Settings ▸ Network** lists every kind of connection it can make: netstack's own (DHCP for an address, IPv6 router discovery, and DNS to the servers the network gave, only when a program asks for a name), then each program it serves: the Terminal's `ip`, `ping`, `nslookup` and `fetch` when you run them, Settings, Monitor's Network tab while it's shown, and the updater only when you press *Check online* and then *Download*. Any other program is refused, and the refusal is logged.
+- Nothing listens for connections from outside: no server, no remote login, no open port. (Test images listen for the test harness; release images don't carry that code.)
+- Encrypted connections are TLS 1.3 only (no older TLS, no resumption, no 0-RTT), the server's certificate chain checked against roots built into the image, and an update is installed only if it's signed (below).
+- Every parser that reads what comes off the network is fuzzed (Ethernet, ARP, IPv4 and IPv6, ICMP, UDP, TCP, DHCP, DNS, X.509, TLS, HTTP), and every table a peer or a program can grow has a limit.
+- A known gap: a network card's DMA isn't yet confined by an IOMMU, so a faulty or hostile card could reach memory it wasn't given. Confining it (Intel VT-d) comes later.
 
 ## Updates and disks
 
