@@ -104,7 +104,50 @@ pub fn exception(f: &mut Frame) {
 
 pub fn unexpected_interrupt(f: &mut Frame) {
     klog!("freally-core: an interrupt arrived on vector {} with no handler", f.vector);
+    // Taken all the same: left in service, it would hold off this CPU's
+    // timer and every IPI at or below its priority for good (the spurious
+    // vector, which takes no EOI, has its own handler).
+    crate::arch::apic::eoi();
 }
+
+crate::ktest!(exceptions_a_stray_interrupt_leaves_the_timer_working, {
+    use crate::arch::apic;
+    // A vector nothing routes: between the reschedule IPI (33) and the
+    // device lines (48 on). Its priority class (2) is the timer's: left in
+    // service, it would hold the timer and every IPI off this CPU for good.
+    const STRAY: u8 = 40;
+    let c = crate::smp::this();
+    let was_on = cpu::interrupts_enabled();
+    cpu::interrupts_off();
+    apic::send_ipi(apic::id(), STRAY);
+    cpu::interrupts_on();
+    let until = cpu::rdtsc() + crate::time::ns_to_ticks(200_000);
+    while cpu::rdtsc() < until {
+        core::hint::spin_loop();
+    }
+    cpu::interrupts_off();
+    let before = c.fires.load(Ordering::SeqCst);
+    apic::arm_deadline(cpu::rdtsc() + crate::time::ns_to_ticks(1_000_000));
+    cpu::interrupts_on();
+    let give_up = cpu::rdtsc() + crate::time::ns_to_ticks(200_000_000);
+    while c.fires.load(Ordering::SeqCst) == before && cpu::rdtsc() < give_up {
+        core::hint::spin_loop();
+    }
+    cpu::interrupts_off();
+    let fired = c.fires.load(Ordering::SeqCst) != before;
+    if !fired {
+        // Put this CPU right for the tests after this one.
+        apic::eoi();
+    }
+    if was_on {
+        cpu::interrupts_on();
+    }
+    if fired {
+        Ok(())
+    } else {
+        Err("after a stray interrupt the timer never fired: the stray vector was left in service")
+    }
+});
 
 /// Logs, paints the panic screen and halts. Never returns.
 pub fn stop(what: &str, detail: &str) -> ! {
