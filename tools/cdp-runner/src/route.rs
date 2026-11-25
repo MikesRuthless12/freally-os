@@ -75,6 +75,11 @@ impl Ends {
         }
     }
 
+    /// Whether cdpd's methods go by its port (the setup's `"cdpd": true`).
+    pub fn by_port(&self) -> bool {
+        self.cdpd.is_some()
+    }
+
     /// cdpd's methods on each road, for the leg's log.
     pub fn roads(&self) -> String {
         format!(

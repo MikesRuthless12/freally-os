@@ -158,6 +158,7 @@ pub fn ipv6(ctx: &mut Ctx) -> Result<(), String> {
 /// one answers (no one has 10.0.2.99) is given up at its deadline, said (TASK-177).
 pub fn tcp(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("netstack: 10.0.2.15/24 from 10.0.2.2 by DHCP")?;
+    settled(ctx)?;
     let echoed = ctx.door("tcp echo 10.0.2.100 7 1048576")?;
     let line = echoed.iter().find(|l| l.starts_with("echoed 1048576 bytes in "));
     let line = line.ok_or_else(|| format!("tcp echo said {echoed:?}"))?;
@@ -410,8 +411,29 @@ impl Drop for Https {
 
 /// The test network's first three octets (`10.77.<n>`), from netstack's
 /// lease: the host is `.1` on it, the guest `.15`.
+/// Waits (30 s) for this boot's desktop to draw its first frame (S3 on
+/// conductor's boot line). A door command runs inside conductor, and these
+/// specs' hold it for seconds (a connection no one answers, a listener
+/// waiting); a service starting meanwhile can't reach conductor's directory
+/// in its 2 s, and ends (the desktop did once, `@net.tcp` first in its VM).
+fn settled(ctx: &Ctx) -> Result<(), String> {
+    let start = Instant::now();
+    loop {
+        let log = ctx.log();
+        let boot = log.rfind("freally-boot ").unwrap_or(0);
+        if log[boot..].lines().any(|l| l.contains("conductor: boot: ") && l.contains(" S3=")) {
+            return Ok(());
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            return Err("this boot's desktop never drew its first frame (no S3)".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn testnet_prefix(ctx: &mut Ctx) -> Result<String, String> {
     ctx.expect_log("netstack: 10.77.")?;
+    settled(ctx)?;
     let log = ctx.log();
     let line = log.lines().find(|l| l.contains("by DHCP")).ok_or("no DHCP lease said")?;
     Ok(line.split("netstack: ").nth(1).and_then(|r| r.split(".15/").next()).ok_or("an odd lease line")?.to_string())

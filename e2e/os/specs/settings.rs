@@ -599,13 +599,23 @@ pub fn network(ctx: &mut Ctx) -> Result<(), String> {
                 "cdpd: the test harness's view of the network, and the port the harness reaches it on; in test images only.",
             ),
         ),
-        ("settings-network-open-0", String::from("No connection is open.")),
     ];
     for (id, words) in want {
         let said = network_line(ctx, id)?;
         if said != words {
             return Err(format!("{id} says {said:?}, not {words:?}"));
         }
+    }
+    // Open now: nothing, or on cdpd's port (TASK-184) the harness's own
+    // connection to it, the one this page was read over.
+    let open = network_line(ctx, "settings-network-open-0")?;
+    let fits = if ctx.cdp.by_port() {
+        open.starts_with("cdpd: TCP to 10.0.2.2:") && open.ends_with(" (Established)")
+    } else {
+        open == "No connection is open."
+    };
+    if !fits {
+        return Err(format!("settings-network-open-0 says {open:?}"));
     }
     if q(ctx, &sel("settings-network-grant-9"))? != 0 {
         return Err("more than the nine connections a test image can make".into());
