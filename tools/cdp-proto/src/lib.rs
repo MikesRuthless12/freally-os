@@ -254,6 +254,28 @@ impl WebSocket {
     }
 }
 
+/// The methods cdpd serves (TASK-063): cdp-host hands them to it through
+/// the test door; a runner given cdpd's own port sends them there (TASK-184).
+pub fn cdpd_serves(m: &str) -> bool {
+    m.starts_with("DOM.")
+        || m.starts_with("Accessibility.")
+        || m == "Log.read"
+        || m == "Performance.getMetrics"
+        || m == "Target.getTargets"
+        || matches!(
+            m,
+            "Freally.getBootTimeline"
+                | "Freally.getProcesses"
+                | "Freally.getFaults"
+                | "Freally.getManifest"
+                | "Freally.readBack"
+                | "Freally.inventory"
+                | "Freally.nodeAt"
+                | "Freally.focusedNode"
+                | "Freally.ordinals"
+        )
+}
+
 /// A CDP client: `call` sends `{id, method, params}` and waits for its reply.
 pub struct Cdp {
     ws: WebSocket,
@@ -288,6 +310,12 @@ impl Cdp {
         Ok(Cdp { ws: WebSocket::connect(hp, path)?, next_id: 1, events: Vec::new() })
     }
 
+    /// Connects straight to the WebSocket at `host_port` and `path`: an
+    /// endpoint with no `/json/list`, as cdpd's own port (TASK-184).
+    pub fn connect_ws(host_port: &str, path: &str) -> io::Result<Cdp> {
+        Ok(Cdp { ws: WebSocket::connect(host_port, path)?, next_id: 1, events: Vec::new() })
+    }
+
     /// The events that arrived since the last time, oldest first.
     pub fn take_events(&mut self) -> Vec<Value> {
         core::mem::take(&mut self.events)
@@ -295,6 +323,13 @@ impl Cdp {
 
     /// Calls `method`; `Err` carries CDP's error message.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.exchange(method, params).unwrap_or_else(|e| Err(e.to_string()))
+    }
+
+    /// As [`Cdp::call`], with the connection's failure apart from the
+    /// method's: `Err` when the connection failed (closed, reset, silent for
+    /// 60 s), `Ok(Err)` when the method did.
+    pub fn exchange(&mut self, method: &str, params: Value) -> io::Result<Result<Value, String>> {
         let id = self.next_id;
         self.next_id += 1;
         let msg = Value::obj([("id", id.into()), ("method", method.into()), ("params", params)]);
@@ -302,11 +337,14 @@ impl Cdp {
         if trace {
             eprintln!("cdp → {id} {method}");
         }
-        self.ws.send_text(&msg.to_json()).map_err(|e| e.to_string())?;
+        self.ws.send_text(&msg.to_json())?;
         loop {
-            match self.ws.recv().map_err(|e| e.to_string())? {
+            match self.ws.recv()? {
                 Message::Text(t) => {
-                    let v = fjson::parse(&t).map_err(|e| format!("bad reply: {e:?}"))?;
+                    let v = match fjson::parse(&t) {
+                        Ok(v) => v,
+                        Err(e) => return Ok(Err(format!("bad reply: {e:?}"))),
+                    };
                     if v.get("id").and_then(Value::as_i64) != Some(id) {
                         // An event is kept for `take_events`; another call's reply is dropped.
                         if v.get("method").is_some() {
@@ -321,12 +359,14 @@ impl Cdp {
                         eprintln!("cdp ← {id}");
                     }
                     if let Some(e) = v.get("error") {
-                        return Err(e.get("message").and_then(Value::as_str).unwrap_or("error").to_string());
+                        return Ok(Err(e.get("message").and_then(Value::as_str).unwrap_or("error").to_string()));
                     }
-                    return Ok(v.get("result").cloned().unwrap_or(Value::Obj(Vec::new())));
+                    return Ok(Ok(v.get("result").cloned().unwrap_or(Value::Obj(Vec::new()))));
                 }
                 Message::Binary(_) => continue,
-                Message::Close => return Err("the connection closed".into()),
+                Message::Close => {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "the connection closed"));
+                }
             }
         }
     }

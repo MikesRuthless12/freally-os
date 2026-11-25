@@ -17,6 +17,8 @@ use std::process::{Child, Command};
 pub const COM1_PORT: u16 = 4551;
 /// The host's TLS test server, which QEMU's 10.0.2.100:443 reaches (TASK-180).
 pub const TLS_PORT: u16 = 4560;
+/// This machine's end of cdpd's port, the guest's 9222 (TASK-184 part 4).
+pub const CDPD_PORT: u16 = 4561;
 
 #[derive(Clone, Debug)]
 pub struct VmOptions {
@@ -70,6 +72,10 @@ pub struct VmOptions {
     /// A network card of this QEMU model (`virtio-net-pci`, `e1000`, `e1000e`)
     /// on QEMU's user network (TASK-172), else none. `--nic <model>`.
     pub nic: Option<String>,
+    /// cdpd's port reachable from this machine (TASK-184 part 4): the user
+    /// network's card (`virtio-net-pci` when `nic` names none) forwards
+    /// [`VmOptions::cdpd_port`] to the guest's 9222. Never with `testnet`.
+    pub cdpd: bool,
     /// QEMU's CPU model instead of `host` (KVM): `host,-tsc-deadline` is a
     /// CPU without TSC-deadline, as VirtualBox shows a guest (TASK-113).
     pub cpu: Option<String>,
@@ -97,6 +103,7 @@ impl VmOptions {
             carry: None,
             updates: false,
             nic: None,
+            cdpd: false,
             testnet: false,
             testnet6: false,
             www: None,
@@ -162,6 +169,29 @@ impl VmOptions {
     /// The port a spec's TLS server listens on, for this VM (TASK-180).
     pub fn tls_port(&self) -> u16 {
         TLS_PORT + self.port_offset
+    }
+
+    /// This machine's end of cdpd's port, for this VM (TASK-184 part 4).
+    pub fn cdpd_port(&self) -> u16 {
+        CDPD_PORT + self.port_offset
+    }
+
+    /// The network card's QEMU model: the one asked for, or, for cdpd's port alone, virtio-net.
+    pub fn nic_model(&self) -> Option<String> {
+        self.nic.clone().or_else(|| self.cdpd.then(|| String::from("virtio-net-pci")))
+    }
+
+    /// The user network's `-netdev`: restricted, with the test's ways out
+    /// (the echo port, the TLS server) and, for cdpd, the way in.
+    pub fn user_netdev(&self) -> String {
+        let mut n = format!(
+            "user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:443-cmd:nc -N 127.0.0.1 {}",
+            self.tls_port()
+        );
+        if self.cdpd {
+            n.push_str(&format!(",hostfwd=tcp:127.0.0.1:{}-:9222", self.cdpd_port()));
+        }
+        n
     }
 }
 
@@ -273,15 +303,14 @@ pub fn qemu(o: &VmOptions, esp: &Path) -> Command {
     // Two ways out, for the tests: 10.0.2.100:7, the echo port, is handed to
     // `cat` on this machine (TCP, TASK-177), and 10.0.2.100:443 to the TLS
     // test server a spec starts on this machine's `tls_port` (TASK-180).
-    match &o.nic {
+    match &o.nic_model() {
         Some(model) if o.testnet => {
             let (tap, _) = o.testnet_names();
             c.args(["-netdev", &format!("tap,id=n0,ifname={tap},script=no,downscript=no")]);
             c.arg("-device").arg(format!("{model},netdev=n0"));
         }
         Some(model) => {
-            let tls = format!("guestfwd=tcp:10.0.2.100:443-cmd:nc -N 127.0.0.1 {}", o.tls_port());
-            c.args(["-netdev", &format!("user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat,{tls}")]);
+            c.args(["-netdev", &o.user_netdev()]);
             c.arg("-device").arg(format!("{model},netdev=n0"));
         }
         None => {
@@ -469,6 +498,22 @@ pub fn tamper(path: &Path, byte: usize) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cdpds_port_comes_in_on_the_user_network_alone() {
+        let mut o = VmOptions::new(Flavour::E2e, "t");
+        o.port_offset = 200;
+        assert_eq!(o.nic_model(), None, "no card, no port");
+        assert!(!o.user_netdev().contains("hostfwd"));
+        o.cdpd = true;
+        assert_eq!(o.nic_model().as_deref(), Some("virtio-net-pci"));
+        let n = o.user_netdev();
+        assert!(n.starts_with("user,id=n0,restrict=on,"), "{n}");
+        assert!(n.ends_with(",hostfwd=tcp:127.0.0.1:4761-:9222"), "{n}");
+        assert!(n.contains("guestfwd=tcp:10.0.2.100:443-cmd:nc -N 127.0.0.1 4760"), "{n}");
+        o.nic = Some(String::from("e1000"));
+        assert_eq!(o.nic_model().as_deref(), Some("e1000"), "the setup's own card");
+    }
 
     #[test]
     fn a_firmware_store_past_half_written_is_full() {

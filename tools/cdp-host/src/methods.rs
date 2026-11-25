@@ -3,30 +3,10 @@
 //! through the test door (TASK-063). Without a door, cdpd's methods say so.
 
 use crate::door::Door;
+use cdp_proto::cdpd_serves;
 use cdp_proto::qmp::Qmp;
 use fjson::Value;
 use std::path::Path;
-
-/// The methods cdpd serves.
-fn cdpd_serves(m: &str) -> bool {
-    m.starts_with("DOM.")
-        || m.starts_with("Accessibility.")
-        || m == "Log.read"
-        || m == "Performance.getMetrics"
-        || m == "Target.getTargets"
-        || matches!(
-            m,
-            "Freally.getBootTimeline"
-                | "Freally.getProcesses"
-                | "Freally.getFaults"
-                | "Freally.getManifest"
-                | "Freally.readBack"
-                | "Freally.inventory"
-                | "Freally.nodeAt"
-                | "Freally.focusedNode"
-                | "Freally.ordinals"
-        )
-}
 
 /// Serves one CDP call. `Ok(result)` or `Err((code, message))`.
 pub fn call(

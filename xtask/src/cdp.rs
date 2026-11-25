@@ -142,6 +142,12 @@ fn os_leg(only: Option<&[String]>) -> Result<(usize, usize), String> {
         o.nic = s.get("nic").and_then(Value::as_str).map(String::from);
         o.testnet = s.get("testnet").and_then(Value::as_bool).unwrap_or(false);
         o.testnet6 = s.get("testnet6").and_then(Value::as_bool).unwrap_or(false);
+        o.cdpd = s.get("cdpd").and_then(Value::as_bool).unwrap_or(false);
+        if o.cdpd && o.testnet {
+            return Err(format!(
+                "setup {setup}: cdpd's port is on QEMU's user network, a test network's card is a TAP"
+            ));
+        }
         o.cpu = s.get("cpu").and_then(Value::as_str).map(String::from);
         if let Some(n) = s.get("cpus").and_then(Value::as_i64) {
             o.cpus = n.clamp(1, 64) as u32;
@@ -339,6 +345,7 @@ fn run_setup(
             &failures.display().to_string(),
         ])
         .args(&com3)
+        .args(if o.cdpd { vec![String::from("--cdpd"), format!("127.0.0.1:{}", o.cdpd_port())] } else { Vec::new() })
         .args(o.www.as_ref().map(|w| vec![String::from("--www"), w.display().to_string()]).unwrap_or_default())
         .args(inventory_out.map(|p| vec![String::from("--inventory-out"), p.display().to_string()]).unwrap_or_default())
         .stdout(Stdio::piped())

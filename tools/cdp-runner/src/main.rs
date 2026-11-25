@@ -62,6 +62,8 @@ mod theme;
 #[path = "../../../e2e/os/specs/update.rs"]
 mod update;
 
+mod route;
+
 use cdp_proto::Cdp;
 use fjson::Value;
 use std::path::PathBuf;
@@ -231,7 +233,8 @@ pub fn greenish(r: u8, g: u8, b: u8) -> bool {
 }
 
 pub struct Ctx {
-    pub cdp: Cdp,
+    /// cdp-host, and cdpd's own port when the setup has it (TASK-184 part 4).
+    pub cdp: route::Ends,
     pub com1: PathBuf,
     pub failures: PathBuf,
     pub spec: String,
@@ -642,6 +645,7 @@ impl Ctx {
     /// TASK-102): the guard's counts begin again, as after `reset`.
     pub fn rebooted_by_guest(&mut self) {
         self.rebooted = true;
+        self.cdp.rebooted();
     }
 
     /// A warm reboot (RAM kept), as a restart button does.
@@ -652,6 +656,7 @@ impl Ctx {
         self.rebooted = true;
         let boots = self.log_count("freally-boot ");
         self.cdp.call("Page.reload", Value::Obj(Vec::new()))?;
+        self.cdp.rebooted();
         let start = Instant::now();
         while self.log_count("freally-boot ") <= boots {
             if start.elapsed() > Duration::from_secs(60) {
@@ -720,7 +725,9 @@ fn main() {
         return;
     }
     let (Some(endpoint), Some(com1), Some(specs)) = (arg("--endpoint"), arg("--com1-log"), arg("--specs")) else {
-        eprintln!("cdp-runner --endpoint HOST:PORT --com1-log PATH --specs id,id [--failures DIR] | --list");
+        eprintln!(
+            "cdp-runner --endpoint HOST:PORT --com1-log PATH --specs id,id [--cdpd HOST:PORT] [--failures DIR] | --list"
+        );
         std::process::exit(2);
     };
     let failures = PathBuf::from(arg("--failures").unwrap_or_else(|| "cdp-failures".into()));
@@ -732,7 +739,7 @@ fn main() {
         }
     };
     let mut ctx = Ctx {
-        cdp,
+        cdp: route::Ends::new(cdp, arg("--cdpd")),
         com1: PathBuf::from(com1),
         failures,
         spec: String::new(),
