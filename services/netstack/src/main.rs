@@ -22,7 +22,7 @@ use fstd::time::{Duration, Instant};
 use fwire::proto::conductor as c;
 use fwire::proto::net as nt;
 use fwire::proto::netdev as nd;
-use svc_netstack::resolver::{self, Answer, Resolver, Server};
+use svc_netstack::resolver::{self, Answer, Ids, Resolver, Server};
 use svc_netstack::tcp::{self as tcp, Ended, Out, State as TcpState, Tcb};
 use svc_netstack::{ArpCache, Client as Dhcp, Neighbors, Slaac, Slaac6, next_hop};
 
@@ -147,6 +147,8 @@ struct Stack {
     next_port: u16,
     /// RFC 6528's secret, for initial sequence numbers.
     isn_key: [u8; 32],
+    /// Each lookup's id and port.
+    ids: Ids,
     resolver: Resolver,
     /// Lookups clients are waiting on: (the resolver's id, the client, its reply).
     resolving: Vec<(u32, usize, Owed)>,
@@ -154,12 +156,6 @@ struct Stack {
     names: Vec<String>,
     #[cfg(feature = "flavour-e2e")]
     listeners: Vec<Listener>,
-}
-
-fn random4() -> [u8; 4] {
-    let mut r = [0u8; 4];
-    let _ = frandom::fill(&mut r);
-    r
 }
 
 fn now() -> u64 {
@@ -337,8 +333,14 @@ impl Stack {
                             && self.resolver.ports().any(|q| q == u.dst_port)
                         {
                             let mut sends = Vec::new();
-                            let done =
-                                self.resolver.udp(Server::V4(p.src), u.dst_port, u.data, now(), random4(), &mut sends);
+                            let done = self.resolver.udp(
+                                Server::V4(p.src),
+                                u.dst_port,
+                                u.data,
+                                now(),
+                                self.ids.draw(),
+                                &mut sends,
+                            );
                             self.dns_send(sends);
                             self.resolved(done, clients);
                             return;
@@ -594,7 +596,7 @@ impl Stack {
         s.connecting = None;
         s.closed = true;
         let mut sends = Vec::new();
-        let done = self.resolver.tcp(id, answer.as_deref(), t, random4(), &mut sends);
+        let done = self.resolver.tcp(id, answer.as_deref(), t, self.ids.draw(), &mut sends);
         self.dns_send(sends);
         self.resolved(done, clients);
         true
@@ -795,7 +797,7 @@ impl Stack {
             self.resolver.servers = servers;
         }
         let mut sends = Vec::new();
-        let done = self.resolver.due(now(), random4, &mut sends);
+        let done = self.resolver.due(now(), || self.ids.draw(), &mut sends);
         self.dns_send(sends);
         self.resolved(done, clients);
     }
@@ -823,7 +825,7 @@ impl Stack {
                 && self.resolver.ports().any(|q| q == u.dst_port)
             {
                 let mut sends = Vec::new();
-                let done = self.resolver.udp(Server::V6(p.src), u.dst_port, u.data, now(), random4(), &mut sends);
+                let done = self.resolver.udp(Server::V6(p.src), u.dst_port, u.data, now(), self.ids.draw(), &mut sends);
                 self.dns_send(sends);
                 self.resolved(done, clients);
             }
@@ -1092,13 +1094,14 @@ fn open() -> Result<(Stack, Channel), String> {
         .map_err(|e| alloc::format!("{e:?}"))?;
     let events = Channel(hs.into_iter().next().ok_or("no events channel")?);
     // DHCP's transaction id, and IPv6's interface id: random, never the MAC.
-    let mut r = [0u8; 12 + 32 + 2];
+    let mut r = [0u8; 12 + 32 + 2 + 32];
     frandom::fill(&mut r).map_err(|_| String::from("no randomness (RDRAND/RDSEED refused)"))?;
     let xid = u32::from_le_bytes([r[0], r[1], r[2], r[3]]);
     let iid: [u8; 8] = r[4..12].try_into().map_err(|_| String::from("no randomness"))?;
     let isn_key: [u8; 32] = r[12..44].try_into().map_err(|_| String::from("no randomness"))?;
     let span = EPHEMERAL.len() as u16;
     let next_port = EPHEMERAL.start() + u16::from_le_bytes([r[44], r[45]]) % span;
+    let ids: [u8; 32] = r[46..78].try_into().map_err(|_| String::from("no randomness"))?;
     let stack = Stack {
         dev,
         mac: info.mac,
@@ -1115,6 +1118,7 @@ fn open() -> Result<(Stack, Channel), String> {
         next_socket: 0,
         next_port,
         isn_key,
+        ids: Ids::new(ids),
         resolver: Resolver::new(),
         resolving: Vec::new(),
         names: Vec::new(),
@@ -1255,7 +1259,7 @@ fn serve(s: &mut Stack, ch: &Channel, i: usize) -> bool {
                 }
                 Ok(q) => {
                     let mut sends = Vec::new();
-                    match s.resolver.lookup(&q.name, q.kind, now(), random4(), &mut sends) {
+                    match s.resolver.lookup(&q.name, q.kind, now(), s.ids.draw(), &mut sends) {
                         // From the cache, or a name that can't be one: answered now.
                         Ok(Answer::Found(addresses)) => {
                             Ok(Some(fwire::reply(h.txid, h.ordinal, &nt::Resolved { addresses })))

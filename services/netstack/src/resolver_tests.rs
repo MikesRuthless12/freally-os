@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use fnet::dns::{TYPE_A, TYPE_AAAA, TYPE_CNAME};
 
-use crate::resolver::{Answer, Resolver, Send, Server};
+use crate::resolver::{Answer, Ids, Resolver, Send, Server};
 
 const S: u64 = 1_000_000_000;
 const ONE_V4: [u8; 4] = [10, 0, 3, 1];
@@ -266,4 +266,17 @@ fn ipv6_servers() {
     out.clear();
     let truncated = reply(txid, "big.freally.local", TYPE_A, 0, true, &[]);
     assert_eq!(r.udp(SIX, port, &truncated, S / 10, [0; 4], &mut out), [(id, Answer::Failed)]);
+}
+
+#[test]
+fn ids_are_keyed_and_dont_repeat() {
+    let mut a = Ids::new([7; 32]);
+    let drawn: Vec<[u8; 4]> = (0..1000).map(|_| a.draw()).collect();
+    assert!(drawn.iter().all(|d| *d != [0; 4]));
+    for (i, d) in drawn.iter().enumerate() {
+        assert!(!drawn[..i].contains(d), "draw {i} repeats");
+    }
+    // The key is what makes them: the same key, the same; another, others.
+    assert_eq!(Ids::new([7; 32]).draw(), drawn[0]);
+    assert_ne!(Ids::new([8; 32]).draw(), drawn[0]);
 }

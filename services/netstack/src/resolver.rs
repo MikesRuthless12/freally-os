@@ -24,6 +24,29 @@ const MAX_TTL: u32 = 86_400;
 const NEGATIVE_TTL: u64 = 60 * SECOND;
 const CACHE: usize = crate::limits::DNS_CACHE;
 
+/// What a lookup is sent with, its id and its source port: HMAC-SHA-256 of a
+/// count under a key drawn once at start. Drawn from the CPU each time
+/// instead, it could fail (RDSEED running dry), and a query sent with a zero
+/// id from the first port is one anyone could answer falsely.
+pub struct Ids {
+    key: [u8; 32],
+    count: u64,
+}
+
+impl Ids {
+    pub fn new(key: [u8; 32]) -> Ids {
+        Ids { key, count: 0 }
+    }
+
+    pub fn draw(&mut self) -> [u8; 4] {
+        self.count += 1;
+        let mut h = fcrypto::hkdf::Hmac::new(&self.key);
+        h.update(&self.count.to_le_bytes());
+        let f = h.finish();
+        [f[0], f[1], f[2], f[3]]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
     /// The addresses (4 or 16 bytes each).
