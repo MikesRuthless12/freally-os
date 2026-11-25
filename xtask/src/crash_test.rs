@@ -188,6 +188,17 @@ impl<'a> Machine<'a> {
         let tail: Vec<&str> = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();
         out.push_str(&format!("\nthe logger's last records:\n{}", tail.join("\n")));
         out.push_str(&format!("\nthe CPUs:\n{}", self.registers()));
+        // The last report showed the OS well (the load running, the logger
+        // taking every line) and COM1's log silent: QEMU's side of COM1.
+        out.push_str(&format!("\nQEMU's character devices:\n{}", self.monitor("info chardev")));
+        let port = self.o.port(1);
+        let ss = std::process::Command::new("ss")
+            .args(["-tnpo", &format!("( sport = :{port} or dport = :{port} )")])
+            .output();
+        out.push_str(&format!(
+            "\nTCP on COM1's port {port}:\n{}",
+            ss.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_else(|e| e.to_string())
+        ));
         for _ in 0..3 {
             std::thread::sleep(Duration::from_secs(1));
             let rips: Vec<String> = self
@@ -221,10 +232,15 @@ impl<'a> Machine<'a> {
     }
 
     fn registers(&mut self) -> String {
-        let cmd = fjson::Value::obj([("command-line", fjson::Value::Str("info registers -a".into()))]);
+        self.monitor("info registers -a")
+    }
+
+    /// A QEMU monitor command's answer, through the QMP the test holds.
+    fn monitor(&mut self, line: &str) -> String {
+        let cmd = fjson::Value::obj([("command-line", fjson::Value::Str(line.into()))]);
         match self.q.execute("human-monitor-command", Some(cmd)) {
             Ok(v) => v.as_str().unwrap_or("(not text)").trim_end().to_string(),
-            Err(e) => format!("(no registers: {e})"),
+            Err(e) => format!("(no answer to {line}: {e})"),
         }
     }
 
