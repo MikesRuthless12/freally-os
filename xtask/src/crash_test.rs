@@ -178,7 +178,9 @@ impl<'a> Machine<'a> {
     /// three times a second apart each service's CPU time (the door's `ps`)
     /// and where each CPU is, so who runs and who waits shows. The kernel and
     /// the programs are stripped: an unstripped build of the same commit
-    /// names the RIPs (the builds are reproducible).
+    /// names the RIPs (the builds are reproducible). Last, COM1 from QEMU's
+    /// side: the log file QEMU writes against the one at the path, and a
+    /// second of its UART's registers as the guest used them.
     fn stalled(&mut self) -> String {
         let mut out = format!("the test door's services:\n{}", self.door("services"));
         // What the logger holds, whether or not COM1 showed it: its last lines
@@ -209,7 +211,31 @@ impl<'a> Machine<'a> {
                 .collect();
             out.push_str(&format!("\na second on:\n{}\n{}", self.door("ps"), rips.join("\n")));
         }
+        // The logger took every line without waiting on COM1 (its CPU time
+        // barely moved), so QEMU's UART took the bytes: did they reach the
+        // file the test reads? (Nothing asks the test door from here on, so
+        // the UART trace is COM1's.)
+        let log = self.o.com1_log();
+        out.push_str(&format!("\nCOM1's log, before the trace:\n{}", log_files(self.child.id(), &log)));
+        out.push_str(&format!("\nthe UARTs for a second (QEMU's trace):\n{}", self.uart_trace()));
+        out.push_str(&format!("\nCOM1's log, after it:\n{}", log_files(self.child.id(), &log)));
         out
+    }
+
+    /// A second of QEMU's `serial_read`/`serial_write` trace (HMP
+    /// `trace-event`, written where HMP's `logfile` says), tallied.
+    fn uart_trace(&mut self) -> String {
+        let file = self.o.dir().join("uart-trace.log");
+        let _ = std::fs::remove_file(&file);
+        let mut said = vec![self.monitor(&format!("logfile {}", file.display()))];
+        said.push(self.monitor("trace-event serial_read on"));
+        said.push(self.monitor("trace-event serial_write on"));
+        std::thread::sleep(Duration::from_secs(1));
+        said.push(self.monitor("trace-event serial_read off"));
+        said.push(self.monitor("trace-event serial_write off"));
+        let said: Vec<String> = said.into_iter().filter(|s| !s.is_empty()).collect();
+        let trace = std::fs::read_to_string(&file).map_or_else(|e| format!("(no trace: {e})"), |t| tally(&t));
+        if said.is_empty() { trace } else { format!("{trace}\nthe monitor said: {}", said.join("; ")) }
     }
 
     /// The test door's answer to `cmd` (or why there was none).
@@ -300,6 +326,61 @@ impl<'a> Machine<'a> {
     }
 }
 
+/// The file at `log` and each file process `pid` holds open as it (from
+/// /proc), with their sizes: QEMU's own `(deleted)` means the path was given
+/// another file; the same size before and after a second the guest wrote
+/// means QEMU stopped writing it.
+fn log_files(pid: u32, log: &std::path::Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+    let size = |p: &std::path::Path| {
+        std::fs::metadata(p).map_or_else(|e| e.to_string(), |m| format!("{} bytes, inode {}", m.len(), m.ino()))
+    };
+    let mut out = format!("{}: {}", log.display(), size(log));
+    let fds =
+        std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(|e| out.push_str(&format!("\n(/proc/{pid}/fd: {e})")));
+    for fd in fds.into_iter().flatten().flatten() {
+        if let Ok(to) = std::fs::read_link(fd.path())
+            && to.as_os_str().as_encoded_bytes().starts_with(log.as_os_str().as_encoded_bytes())
+        {
+            out.push_str(&format!(
+                "\nheld as fd {} -> {}: {}",
+                fd.file_name().to_string_lossy(),
+                to.display(),
+                size(&fd.path())
+            ));
+        }
+    }
+    out
+}
+
+/// QEMU's UART trace lines (`serial_read read addr 0x05 val 0x60`) counted
+/// by register and value, most first, the bytes sent (writes to register 0)
+/// as one count. LSR (register 5) read as 0x60 is a UART that sends; THRE
+/// (0x20) clear, one that can't; DR (0x01) set with no one reading, MCR's
+/// loopback (0x10).
+fn tally(trace: &str) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for line in trace.lines() {
+        let Some(at) = line.find("serial_") else { continue };
+        let w: Vec<&str> = line[at..].split_whitespace().collect();
+        let [_, kind, "addr", addr, "val", val, ..] = w[..] else { continue };
+        let key = if kind == "write" && addr == "0x00" {
+            String::from("write addr 0x00 (bytes sent)")
+        } else {
+            format!("{kind} addr {addr} val {val}")
+        };
+        match counts.iter_mut().find(|c| c.0 == key) {
+            Some(c) => c.1 += 1,
+            None => counts.push((key, 1)),
+        }
+    }
+    if counts.is_empty() {
+        return String::from("(no UART register used in that second)");
+    }
+    counts.sort_by_key(|c| std::cmp::Reverse(c.1));
+    counts.iter().take(12).map(|(k, n)| format!("{n:>7}  {k}")).collect::<Vec<_>>().join("\n")
+}
+
 pub fn run(resets: usize, seed: u64, planted: bool) -> Result<String, String> {
     let built = build::build_crash_load(planted)?;
     let mut o = VmOptions::new(Flavour::E2e, if planted { "crash-test-planted" } else { "crash-test" });
@@ -383,5 +464,35 @@ mod tests {
         );
         assert!(matches!(judge("[ffs] ffs: crash-load: BROKEN: file-1 isn't what version 3 wrote\n"), Boot::Broken(_)));
         assert!(matches!(judge("[conductor] conductor: ffs crashed 6 times in 60 s\n"), Boot::Broken(_)));
+    }
+
+    #[test]
+    fn the_uart_trace_is_tallied_by_register() {
+        let trace = "serial_read read addr 0x05 val 0x60\nserial_write write addr 0x00 val 0x41\n\
+                     serial_read read addr 0x05 val 0x60\n4242@1764000000.000001:serial_write write addr 0x00 val 0x42\n\
+                     serial_write write addr 0x04 val 0x1b\nserial_read read addr 0x05 val 0x60\nsomething else\n";
+        assert_eq!(
+            tally(trace),
+            "      3  read addr 0x05 val 0x60\n      2  write addr 0x00 (bytes sent)\n      1  write addr 0x04 val 0x1b"
+        );
+        assert_eq!(tally(""), "(no UART register used in that second)");
+    }
+
+    #[test]
+    fn a_log_file_given_another_at_its_path_shows() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("crash-test-log-files-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join("com1.log");
+        let mut held = std::fs::File::create(&log).unwrap();
+        held.write_all(b"twelve bytes").unwrap();
+        let seen = log_files(std::process::id(), &log);
+        assert!(seen.contains("held as fd") && seen.contains("12 bytes") && !seen.contains("(deleted)"), "{seen}");
+        std::fs::remove_file(&log).unwrap();
+        std::fs::write(&log, b"").unwrap();
+        let seen = log_files(std::process::id(), &log);
+        assert!(seen.contains("(deleted): 12 bytes") && seen.contains("com1.log: 0 bytes"), "{seen}");
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
