@@ -803,6 +803,7 @@ fn main() {
             println!("    note: {n}");
         }
     }
+    println!("roads: {}", ctx.cdp.roads());
     if let Some(out) = arg("--inventory-out")
         && let Err(e) = std::fs::write(&out, ctx.inv.to_json().to_json())
     {

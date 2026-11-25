@@ -35,9 +35,36 @@ pub(crate) fn signed_in(ctx: &mut Ctx) -> Result<(), String> {
     if ctx.door("accounts list")? == ["(none)"] {
         ok(ctx, &format!("accounts create {OWNER} {PASSWORD}"))?;
     }
+    desktop_locked(ctx)?;
     let made = ctx.log_count("desktop: mike's session");
     ok(ctx, &format!("accounts login {OWNER} {PASSWORD}"))?;
     waits_for_log(ctx, "desktop: mike's session", made)?;
+    Ok(())
+}
+
+/// Waits (5 s) for the desktop to have seen the last logout. It asks
+/// accounts who's in every 500 ms, so a login straight after a logout (the
+/// door's: `@settings.hardware` ends with one) can come before it looked, and
+/// it then never says the session began: with cdpd's port the next spec's
+/// login came that fast.
+fn desktop_locked(ctx: &Ctx) -> Result<(), String> {
+    let thinks_in = |ctx: &Ctx| {
+        let log = ctx.log();
+        // This boot's lines only: a desktop starts locked without saying so.
+        let boot = log.rfind("freally-boot ").unwrap_or(0);
+        log[boot..]
+            .lines()
+            .rev()
+            .find(|l| l.contains("desktop: ") && (l.ends_with("'s session") || l.contains(" logged out: locked")))
+            .is_some_and(|l| l.ends_with("'s session"))
+    };
+    let start = Instant::now();
+    while thinks_in(ctx) {
+        if start.elapsed() > Duration::from_secs(5) {
+            return Err("the desktop never saw the logout (it still says a session is on)".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     Ok(())
 }
 

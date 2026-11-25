@@ -18,30 +18,70 @@ pub struct Ends {
     /// cdpd's port, and its connection once open.
     cdpd: Option<(String, Option<Cdp>)>,
     wait: Duration,
+    /// cdpd's methods by its port, and through cdp-host (COM3's door):
+    /// TASK-184 part 5 times the leg on each road.
+    by_port: Tally,
+    by_door: Tally,
+}
+
+/// Calls taken, and the time they took.
+#[derive(Default, Clone, Copy)]
+struct Tally {
+    calls: u64,
+    time: Duration,
+}
+
+impl Tally {
+    fn add(&mut self, start: Instant) {
+        self.calls += 1;
+        self.time += start.elapsed();
+    }
+
+    fn said(self, road: &str) -> String {
+        let each = if self.calls == 0 { 0.0 } else { self.time.as_secs_f64() * 1e3 / self.calls as f64 };
+        format!("{} {road} in {:.1} s ({each:.1} ms each)", self.calls, self.time.as_secs_f64())
+    }
 }
 
 impl Ends {
     pub fn new(host: Cdp, cdpd: Option<String>) -> Ends {
-        Ends { host, cdpd: cdpd.map(|a| (a, None)), wait: CDPD_WAIT }
+        Ends {
+            host,
+            cdpd: cdpd.map(|a| (a, None)),
+            wait: CDPD_WAIT,
+            by_port: Tally::default(),
+            by_door: Tally::default(),
+        }
     }
 
     /// Calls `method` at the end that serves it; `Err` carries CDP's error,
     /// or says cdpd's port never answered.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        let wait = self.wait;
-        let Some((addr, conn)) = self.cdpd.as_mut().filter(|_| cdpd_serves(method)) else {
+        if !cdpd_serves(method) {
             return self.host.call(method, params);
-        };
-        for _ in 0..2 {
-            if conn.is_none() {
-                *conn = Some(open(addr, wait)?);
+        }
+        let start = Instant::now();
+        match self.cdpd.as_mut() {
+            Some((addr, conn)) => {
+                let r = by_port(addr, conn, self.wait, method, params);
+                self.by_port.add(start);
+                r
             }
-            match conn.as_mut().map(|c| c.exchange(method, params.clone())) {
-                Some(Ok(answer)) => return answer,
-                _ => *conn = None, // dropped: opened again, the call sent again
+            None => {
+                let r = self.host.call(method, params);
+                self.by_door.add(start);
+                r
             }
         }
-        Err(format!("cdpd's port at {addr} dropped {method} twice"))
+    }
+
+    /// cdpd's methods on each road, for the leg's log.
+    pub fn roads(&self) -> String {
+        format!(
+            "cdpd's methods: {}; {}",
+            self.by_port.said("by its port"),
+            self.by_door.said("through cdp-host and COM3's door")
+        )
     }
 
     /// Events (`Log.entryAdded`) come from cdp-host.
@@ -55,6 +95,21 @@ impl Ends {
             *c = None;
         }
     }
+}
+
+/// A call on cdpd's port: a dropped connection opened again and the call
+/// sent again, once.
+fn by_port(addr: &str, conn: &mut Option<Cdp>, wait: Duration, method: &str, params: Value) -> Result<Value, String> {
+    for _ in 0..2 {
+        if conn.is_none() {
+            *conn = Some(open(addr, wait)?);
+        }
+        match conn.as_mut().map(|c| c.exchange(method, params.clone())) {
+            Some(Ok(answer)) => return answer,
+            _ => *conn = None, // dropped: opened again, the call sent again
+        }
+    }
+    Err(format!("cdpd's port at {addr} dropped {method} twice"))
 }
 
 /// cdpd's port, tried until it answers a WebSocket's handshake (QEMU takes
@@ -133,6 +188,9 @@ mod tests {
         e.rebooted();
         assert_eq!(from(&mut e, "DOM.getDocument"), "cdpd");
         assert_eq!(opened.load(Ordering::SeqCst), 3);
+        // Each road's calls counted: cdpd's methods only, the machine's not.
+        assert_eq!((e.by_port.calls, e.by_door.calls), (6, 0));
+        assert!(e.roads().starts_with("cdpd's methods: 6 by its port in "), "{}", e.roads());
     }
 
     #[test]
@@ -140,6 +198,8 @@ mod tests {
         let (host, _) = end("host");
         let mut e = Ends::new(Cdp::connect_ws(&host, "/").unwrap(), None);
         assert_eq!(from(&mut e, "DOM.getDocument"), "host");
+        assert_eq!(from(&mut e, "Input.dispatchKeyEvent"), "host");
+        assert_eq!((e.by_port.calls, e.by_door.calls), (0, 1), "cdpd's method counted on COM3's road");
     }
 
     #[test]

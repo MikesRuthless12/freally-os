@@ -14,7 +14,7 @@
     "e2e-ab-good": { "flavour": "e2e", "slot_b": "same" },
     "e2e-panel-16": { "flavour": "e2e", "edid": "panel-16" },
     "e2e-gpt": { "flavour": "e2e", "gpt": true },
-    "e2e-gpt-session": { "flavour": "e2e", "gpt": true },
+    "e2e-gpt-session": { "flavour": "e2e", "gpt": true, "cdpd": true },
     "e2e-gpt-carry": { "flavour": "e2e", "gpt": true, "carry": { "from": "e2e-gpt-session", "user": "carol" } },
     "e2e-gpt-power": { "flavour": "e2e", "gpt": true },
     "e2e-gpt-ab": { "flavour": "e2e", "gpt": true, "slot_b": "crash-test" },
