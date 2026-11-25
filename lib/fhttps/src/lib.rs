@@ -23,6 +23,22 @@ use fwire::proto::net as nt;
 pub const REDIRECTS: usize = 5;
 /// The whole fetch, redirects and all.
 const WHOLE: Duration = Duration::from_secs(60);
+/// A connection that ended before its response did, without close_notify.
+const CUT: &str = "the connection ended without close_notify, the response not whole";
+
+/// The response once the connection has ended: whole by its own framing,
+/// or, read to the close, only after the server's close_notify. A TCP end
+/// without it is one anyone on the path can forge, cutting the body short
+/// unseen (TLS truncation).
+fn at_end(http: &mut fhttp::Reader, close_notify: bool) -> Result<fhttp::Response, String> {
+    if let Some(r) = http.done() {
+        return Ok(r.clone());
+    }
+    if !close_notify {
+        return Err(String::from(CUT));
+    }
+    http.close().cloned().map_err(|e| alloc::format!("http {e:?}"))
+}
 
 /// An `https://` URL: its host (lower case), port and path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,13 +232,10 @@ impl Conn<'_> {
             self.flush(tls)?;
             http.feed(&tls.take_data()).map_err(|e| alloc::format!("http {e:?}"))?;
         }
+        let close_notify = tls.peer_closed();
         tls.close();
         let _ = self.flush(tls);
-        let r = match http.done() {
-            Some(r) => r.clone(),
-            None => http.close().map_err(|e| alloc::format!("http {e:?}"))?.clone(),
-        };
-        Ok((suite, r))
+        Ok((suite, at_end(&mut http, close_notify)?))
     }
 }
 
@@ -323,7 +336,11 @@ impl<'r> Stream<'r> {
         let mut c = Conn { net, id: self.id, end: self.end };
         let data = if self.tls.peer_closed() { Vec::new() } else { c.recv("in the body")? };
         if data.is_empty() {
-            // The connection's end: whole only if the body ran to it.
+            // The connection's end: whole only if the body ran to it, and the
+            // server said so with close_notify.
+            if !self.tls.peer_closed() {
+                return Err(String::from(CUT));
+            }
             self.http.close().map_err(|e| alloc::format!("http {e:?}"))?;
             let rest = self.http.take_body();
             return Ok((!rest.is_empty()).then_some(rest));
@@ -370,5 +387,25 @@ mod tests {
         ] {
             assert!(Url::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_body_to_the_close_is_whole_only_after_close_notify() {
+        let fed = |wire: &[u8]| {
+            let mut h = fhttp::Reader::new(100);
+            h.feed(wire).unwrap();
+            h
+        };
+        // Read to the close: a TCP end alone could be anyone's.
+        let close = b"HTTP/1.0 200 OK\r\n\r\nall of i";
+        assert_eq!(at_end(&mut fed(close), false).unwrap_err(), CUT);
+        assert_eq!(at_end(&mut fed(close), true).map(|r| r.body), Ok(b"all of i".to_vec()));
+        // Whole by its length: close_notify or not.
+        let length = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        assert_eq!(at_end(&mut fed(length), false).map(|r| r.body), Ok(b"ok".to_vec()));
+        // Cut short of its length: refused either way.
+        let short = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nok";
+        assert!(at_end(&mut fed(short), false).is_err());
+        assert!(at_end(&mut fed(short), true).is_err());
     }
 }
