@@ -96,6 +96,14 @@ pub fn write(end: &ChannelEnd, msg: Message) -> Result<(), FErr> {
     Ok(())
 }
 
+/// ktest builds only: how long `read` lingers between taking the last
+/// message and saying the queue is empty, and how often it has: a test opens
+/// the window a write can land in, and lands one there.
+#[cfg(feature = "ktest")]
+static READ_GAP_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "ktest")]
+static READ_GAPS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Reads one message if it fits `max_bytes` and `max_handles`; otherwise
 /// `Err((BufferTooSmall, bytes, handles))` says what it needs.
 pub fn read(end: &ChannelEnd, max_bytes: usize, max_handles: usize) -> Result<Message, (FErr, usize, usize)> {
@@ -111,7 +119,25 @@ pub fn read(end: &ChannelEnd, max_bytes: usize, max_handles: usize) -> Result<Me
     let empty = q.is_empty();
     drop(q);
     if empty {
+        #[cfg(feature = "ktest")]
+        {
+            let gap = READ_GAP_NS.load(Ordering::Acquire);
+            if gap != 0 {
+                READ_GAPS.fetch_add(1, Ordering::AcqRel);
+                let until = crate::arch::cpu::rdtsc() + crate::time::ns_to_ticks(gap);
+                while crate::arch::cpu::rdtsc() < until {
+                    core::hint::spin_loop();
+                }
+            }
+        }
         end.pair.headers[end.side].update(signal::READABLE, 0);
+        // A write can land between taking the last message and the clear
+        // above: its READABLE went with ours, and its message would sit
+        // unsignalled until another came. Look again (a write after this
+        // look sets READABLE itself).
+        if !end.pair.inbox[end.side].lock().is_empty() {
+            end.pair.headers[end.side].update(0, signal::READABLE);
+        }
     }
     Ok(m)
 }
@@ -315,6 +341,85 @@ pub fn bench() -> u64 {
     RTT.store(median, Ordering::Relaxed);
     median
 }
+
+ktest!(ipc_a_message_written_as_the_last_is_read_stays_readable, {
+    use core::sync::atomic::{AtomicPtr, AtomicU64};
+    // The reader takes one message per wake, as the logger takes its new
+    // clients. A writer on another CPU sends one, then a second exactly
+    // while `read` is between taking the first and saying the queue is
+    // empty (its ktest gap, 50 µs here). `read` once cleared READABLE there
+    // on the empty queue it had seen, and the second sat unsignalled until
+    // another came (the crash test's logger, 93 s). Fails after a second.
+    const ROUNDS: u64 = 50;
+    static ENDS: AtomicPtr<(ChannelEnd, ChannelEnd)> = AtomicPtr::new(core::ptr::null_mut());
+    static READ: AtomicU64 = AtomicU64::new(0);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    fn after(ns: u64) -> u64 {
+        crate::arch::cpu::rdtsc() + crate::time::ns_to_ticks(ns)
+    }
+    extern "C" fn writer(_: u64) {
+        // SAFETY: set (to a leaked pair) before this thread starts.
+        let (a, _) = unsafe { &*ENDS.load(Ordering::Acquire) };
+        for i in 0..ROUNDS {
+            let gaps = READ_GAPS.load(Ordering::Acquire);
+            let _ = write(a, Message { bytes: alloc::vec![1], handles: Vec::new() });
+            // The reader is in the gap of its read of the first: the second now.
+            let give_up = after(1_000_000_000);
+            while READ_GAPS.load(Ordering::Acquire) == gaps && crate::arch::cpu::rdtsc() < give_up {
+                core::hint::spin_loop();
+            }
+            let _ = write(a, Message { bytes: alloc::vec![2], handles: Vec::new() });
+            let give_up = after(2_000_000_000);
+            while READ.load(Ordering::Acquire) < 2 * (i + 1) && crate::arch::cpu::rdtsc() < give_up {
+                core::hint::spin_loop();
+            }
+            if READ.load(Ordering::Acquire) < 2 * (i + 1) {
+                break;
+            }
+        }
+        DONE.store(true, Ordering::Release);
+    }
+    let n = crate::smp::online();
+    if n < 2 {
+        klog!("    skipped: one CPU (this test needs -smp 2 or more)");
+        return Ok(());
+    }
+    let here = {
+        let _irq = crate::arch::cpu::IrqOff::new();
+        crate::smp::this().index as usize
+    };
+    let ends: &'static (ChannelEnd, ChannelEnd) = alloc::boxed::Box::leak(alloc::boxed::Box::new(channel_pair()));
+    ENDS.store(ends as *const _ as *mut _, Ordering::Release);
+    READ.store(0, Ordering::SeqCst);
+    DONE.store(false, Ordering::SeqCst);
+    READ_GAP_NS.store(50_000, Ordering::Release);
+    let t = sched::create("writer", sched::Class::Normal, writer, 0, false)?;
+    sched::pin(&t, (here + 1) % n);
+    sched::start(&t);
+    let (_, b) = ends;
+    let mut unsignalled = false;
+    for _ in 0..2 * ROUNDS {
+        if wait_one(b.header(), signal::READABLE | signal::PEER_CLOSED, after(1_000_000_000)).is_err() {
+            // A second with no READABLE: was a message there all along?
+            unsignalled = read(b, 8, 0).is_ok();
+            break;
+        }
+        if read(b, 8, 0).is_ok() {
+            READ.fetch_add(1, Ordering::Release);
+        }
+    }
+    READ_GAP_NS.store(0, Ordering::Release);
+    while !DONE.load(Ordering::Acquire) {
+        sched::sleep_ns(1_000_000);
+    }
+    if unsignalled {
+        Err("a message written as the last was read sat with READABLE clear (a second, unsignalled)")
+    } else if READ.load(Ordering::SeqCst) != 2 * ROUNDS {
+        Err("the reader waited a second with no message")
+    } else {
+        Ok(())
+    }
+});
 
 ktest!(ipc_no_wake_is_lost_between_cpus, {
     use core::sync::atomic::{AtomicPtr, AtomicU64};
