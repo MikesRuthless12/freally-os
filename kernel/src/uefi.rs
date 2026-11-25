@@ -41,7 +41,7 @@ pub fn power_off() -> FErr {
     let _one = CALL.lock();
     crate::arch::cpu::interrupts_off();
     crate::sched::with_fpu_saved(|| {
-        // SAFETY: as `set_var`'s call; ResetSystem takes no memory of ours.
+        // SAFETY: as `with_runtime`'s; ResetSystem takes no memory of ours.
         unsafe { ((*(rt as *const RuntimeServices)).reset_system)(RESET_SHUTDOWN, 0, 0, core::ptr::null()) }
     });
     FErr::Internal
@@ -50,35 +50,38 @@ pub fn power_off() -> FErr {
 /// One runtime call at a time: firmware isn't reentrant.
 static CALL: SpinLock<()> = SpinLock::new(());
 
-/// `FreallyClock` as the firmware keeps it, read once at boot; `None` when
-/// it has none, it's damaged, or there are no runtime services.
-pub fn get_clock() -> Option<fbootctl::clock::Zone> {
+/// `call` with the firmware's runtime table: one call at a time, interrupts
+/// off and the FPU's state saved around it; `None` when the firmware gave
+/// none (no Memory Attributes Table, or none at all).
+fn with_runtime<R>(call: impl FnOnce(&RuntimeServices) -> R) -> Option<R> {
     let rt = crate::boot_info().map_or(0, |b| b.uefi_runtime);
     if rt == 0 {
         return None;
     }
-    let name: Vec<u16> = fbootctl::clock::NAME.encode_utf16().chain(core::iter::once(0)).collect();
-    let mut data = [0u8; fbootctl::clock::SIZE];
-    let mut len = data.len();
     let _one = CALL.lock();
     let irq = crate::arch::cpu::interrupts_enabled();
     crate::arch::cpu::interrupts_off();
-    let status = crate::sched::with_fpu_saved(|| {
-        // SAFETY: as `set_var`'s call; `len` says how much `data` holds, and
-        // a variable longer than that is refused (EFI_BUFFER_TOO_SMALL).
-        unsafe {
-            ((*(rt as *const RuntimeServices)).get_variable)(
-                name.as_ptr(),
-                &FREALLY_VENDOR_GUID,
-                core::ptr::null_mut(),
-                &mut len,
-                data.as_mut_ptr(),
-            )
-        }
-    });
+    // SAFETY: the firmware's runtime table at its direct-map address
+    // (SetVirtualAddressMap), its code mapped executable.
+    let r = crate::sched::with_fpu_saved(|| call(unsafe { &*(rt as *const RuntimeServices) }));
     if irq {
         crate::arch::cpu::interrupts_on();
     }
+    Some(r)
+}
+
+/// `FreallyClock` as the firmware keeps it, read once at boot; `None` when
+/// it has none, it's damaged, or there are no runtime services.
+pub fn get_clock() -> Option<fbootctl::clock::Zone> {
+    let name: Vec<u16> = fbootctl::clock::NAME.encode_utf16().chain(core::iter::once(0)).collect();
+    let mut data = [0u8; fbootctl::clock::SIZE];
+    let mut len = data.len();
+    // `len` says how much `data` holds; a variable longer than that is
+    // refused (EFI_BUFFER_TOO_SMALL). The name and data are kernel memory,
+    // alive for the call.
+    let status = with_runtime(|rt| {
+        (rt.get_variable)(name.as_ptr(), &FREALLY_VENDOR_GUID, core::ptr::null_mut(), &mut len, data.as_mut_ptr())
+    })?;
     if status != 0 {
         return None;
     }
@@ -87,32 +90,12 @@ pub fn get_clock() -> Option<fbootctl::clock::Zone> {
 
 /// Writes `name` (one of ours: non-volatile, boot and runtime access).
 pub fn set_var(name: &str, data: &[u8]) -> Result<(), FErr> {
-    let rt = crate::boot_info().map_or(0, |b| b.uefi_runtime);
-    if rt == 0 {
-        // The firmware gave no Memory Attributes Table (or none at all).
-        return Err(FErr::NotSupported);
-    }
     let name: Vec<u16> = name.encode_utf16().chain(core::iter::once(0)).collect();
-    let _one = CALL.lock();
-    let irq = crate::arch::cpu::interrupts_enabled();
-    crate::arch::cpu::interrupts_off();
-    let status = crate::sched::with_fpu_saved(|| {
-        // SAFETY: the firmware's runtime table at its direct-map address
-        // (SetVirtualAddressMap), its code mapped executable; the name and
-        // data are kernel memory, alive for the call.
-        unsafe {
-            ((*(rt as *const RuntimeServices)).set_variable)(
-                name.as_ptr(),
-                &FREALLY_VENDOR_GUID,
-                fbootctl::ATTRIBUTES,
-                data.len(),
-                data.as_ptr(),
-            )
-        }
-    });
-    if irq {
-        crate::arch::cpu::interrupts_on();
-    }
+    // The name and data are kernel memory, alive for the call.
+    let status = with_runtime(|rt| {
+        (rt.set_variable)(name.as_ptr(), &FREALLY_VENDOR_GUID, fbootctl::ATTRIBUTES, data.len(), data.as_ptr())
+    })
+    .ok_or(FErr::NotSupported)?;
     match status & !(1 << 63) {
         0 => Ok(()),
         2 => Err(FErr::InvalidArgs),   // EFI_INVALID_PARAMETER

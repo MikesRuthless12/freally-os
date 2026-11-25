@@ -4,8 +4,9 @@
 //! packages found (`/system/updates`, Home ▸ Downloads), one chosen and
 //! inspected (its version, who signed it, its notes), installed with a
 //! meter, then *Restart now*. And *Check online* (TASK-182): what the update
-//! host offers, its size and notes, downloaded and installed only on yes. The updater does the work; this decides what's
-//! said and which keys there are.
+//! host offers, its size and notes, downloaded and installed only on yes.
+//! The updater does the work; this decides what's said and which keys there
+//! are.
 
 use alloc::string::String;
 use alloc::vec::Vec;

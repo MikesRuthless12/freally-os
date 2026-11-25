@@ -229,10 +229,7 @@ impl TcpDoor {
     }
 
     fn call<Q: fwire::Wire, R: fwire::Wire>(&mut self, ordinal: u32, req: &Q, secs: u64) -> Result<R, String> {
-        let cl = self.client.as_mut().ok_or("netstack isn't up")?;
-        cl.call::<_, R>(ordinal, req, Vec::new(), Instant::after(Duration::from_secs(secs)))
-            .map(|(r, _)| r)
-            .map_err(|e| alloc::format!("{e:?}"))
+        call_on(self.client.as_mut().ok_or("netstack isn't up")?, ordinal, req, secs)
     }
 
     fn connect(&mut self, to: [u8; 4], port: u16, timeout_ms: u32) -> Result<u32, String> {
