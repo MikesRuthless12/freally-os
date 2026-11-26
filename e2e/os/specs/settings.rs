@@ -29,7 +29,18 @@ fn ok(ctx: &Ctx, cmd: &str) -> Result<(), String> {
 
 /// The Owner made (on a new disk) and logged in, and the desktop theirs.
 pub(crate) fn signed_in(ctx: &mut Ctx) -> Result<(), String> {
-    if ctx.door("accounts who")? == [OWNER] {
+    // After a restart accounts comes up a moment after ffs mounts, and until
+    // then the door says so: the phase-8 soak's first round had
+    // @update.online's login land there.
+    let start = Instant::now();
+    let who = loop {
+        let who = ctx.door("accounts who")?;
+        if who != ["error: accounts isn't up"] || start.elapsed() > Duration::from_secs(20) {
+            break who;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    if who == [OWNER] {
         return Ok(());
     }
     if ctx.door("accounts list")? == ["(none)"] {
