@@ -109,6 +109,11 @@ static READ_GAPS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 pub fn read(end: &ChannelEnd, max_bytes: usize, max_handles: usize) -> Result<Message, (FErr, usize, usize)> {
     let mut q = end.pair.inbox[end.side].lock();
     let Some(m) = q.front() else {
+        drop(q);
+        // A write's READABLE can come after its message was taken (it sets
+        // READABLE once it has let go of the queue): nothing here, so not
+        // readable, or a waiter on it would never sleep.
+        settle_readable(end);
         let peer_gone = end.pair.closed[1 - end.side].load(Ordering::Acquire);
         return Err((if peer_gone { FErr::PeerClosed } else { FErr::ShouldWait }, 0, 0));
     };
@@ -130,16 +135,21 @@ pub fn read(end: &ChannelEnd, max_bytes: usize, max_handles: usize) -> Result<Me
                 }
             }
         }
-        end.pair.headers[end.side].update(signal::READABLE, 0);
-        // A write can land between taking the last message and the clear
-        // above: its READABLE went with ours, and its message would sit
-        // unsignalled until another came. Look again (a write after this
-        // look sets READABLE itself).
-        if !end.pair.inbox[end.side].lock().is_empty() {
-            end.pair.headers[end.side].update(0, signal::READABLE);
-        }
+        settle_readable(end);
     }
     Ok(m)
+}
+
+/// READABLE as the queue now is: cleared, then set again if a message is
+/// there. A write can land between a read's look and the clear, and its
+/// READABLE would go with ours, its message sitting unsignalled until another
+/// came; a write after the second look sets READABLE itself. No lock is held
+/// across a signal.
+fn settle_readable(end: &ChannelEnd) {
+    end.pair.headers[end.side].update(signal::READABLE, 0);
+    if !end.pair.inbox[end.side].lock().is_empty() {
+        end.pair.headers[end.side].update(0, signal::READABLE);
+    }
 }
 
 /// Waits for any of `signals` on `h`; returns what was observed, or `TimedOut`
@@ -419,6 +429,26 @@ ktest!(ipc_a_message_written_as_the_last_is_read_stays_readable, {
     } else {
         Ok(())
     }
+});
+
+ktest!(ipc_a_read_that_finds_nothing_clears_a_late_readable, {
+    // `write` sets READABLE after it lets go of the queue: a reader on another
+    // CPU can take its message and clear READABLE in between, and the write's
+    // READABLE then lands on an empty queue. A waiter woken by it reads
+    // nothing (ShouldWait) and waits again; were READABLE still set, that wait
+    // would return at once, every time (fstd's `recv` spinning a CPU until the
+    // next message came). The late READABLE set here by hand.
+    let (a, b) = channel_pair();
+    write(&a, Message { bytes: alloc::vec![1], handles: Vec::new() }).map_err(|_| "the write failed")?;
+    read(&b, 8, 0).map_err(|_| "the read failed")?;
+    b.header().update(0, signal::READABLE);
+    if !matches!(read(&b, 8, 0), Err((FErr::ShouldWait, _, _))) {
+        return Err("an empty channel gave something other than ShouldWait");
+    }
+    if b.header().get() & signal::READABLE != 0 {
+        return Err("a read that found nothing left READABLE set: a waiter on it would never sleep");
+    }
+    Ok(())
 });
 
 ktest!(ipc_no_wake_is_lost_between_cpus, {
