@@ -111,6 +111,7 @@ pub fn e1000e(ctx: &mut Ctx) -> Result<(), String> {
 /// back from the driver's counts) (TASK-172, FR-060).
 pub fn virtio(ctx: &mut Ctx) -> Result<(), String> {
     ctx.expect_log("drv-virtio-net: up, MAC 52:54:00:12:34:56, link up")?;
+    settled(ctx)?;
     let info = ctx.door("netdev info")?;
     let want = "info drv-virtio-net mac=52:54:00:12:34:56 mtu=1500 link=up";
     if info.first().map(String::as_str) != Some(want) {
@@ -409,28 +410,32 @@ impl Drop for Https {
     }
 }
 
-/// The test network's first three octets (`10.77.<n>`), from netstack's
-/// lease: the host is `.1` on it, the guest `.15`.
-/// Waits (30 s) for this boot's desktop to draw its first frame (S3 on
-/// conductor's boot line). A door command runs inside conductor, and these
-/// specs' hold it for seconds (a connection no one answers, a listener
-/// waiting); a service starting meanwhile can't reach conductor's directory
-/// in its 2 s, and ends (the desktop did once, `@net.tcp` first in its VM).
+/// Waits (30 s) for this boot's desktop to be up (S4 on conductor's boot
+/// line). A door command runs inside conductor, and these specs' hold it for
+/// seconds (an address no one answers, a listener waiting); a service
+/// starting meanwhile can't reach conductor's directory in its 2 s, and ends.
+/// The desktop asks the directory until its Rack is up (for stage, which
+/// registers after its first frame, then its art), so S3 is too soon: the
+/// desktop ended with `@net.tcp` first in its VM, then `@net.virtio`.
 fn settled(ctx: &Ctx) -> Result<(), String> {
     let start = Instant::now();
-    loop {
-        let log = ctx.log();
-        let boot = log.rfind("freally-boot ").unwrap_or(0);
-        if log[boot..].lines().any(|l| l.contains("conductor: boot: ") && l.contains(" S3=")) {
-            return Ok(());
-        }
+    while !desktop_up(&ctx.log()) {
         if start.elapsed() > Duration::from_secs(30) {
-            return Err("this boot's desktop never drew its first frame (no S3)".into());
+            return Err("this boot's desktop never came up (no S4)".into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    Ok(())
 }
 
+/// Whether the log's last boot has its desktop up: S4 on conductor's boot line.
+fn desktop_up(log: &str) -> bool {
+    let boot = log.rfind("freally-boot ").unwrap_or(0);
+    log[boot..].lines().any(|l| l.contains("conductor: boot: ") && l.contains(" S4="))
+}
+
+/// The test network's first three octets (`10.77.<n>`), from netstack's
+/// lease: the host is `.1` on it, the guest `.15`.
 fn testnet_prefix(ctx: &mut Ctx) -> Result<String, String> {
     ctx.expect_log("netstack: 10.77.")?;
     settled(ctx)?;
@@ -793,4 +798,23 @@ pub fn https(ctx: &mut Ctx) -> Result<(), String> {
     shell_until(ctx, "fetch --root /home/tester/other.pem https://test.freally.local/", &["certificate UnknownRoot"])?;
     let _ = std::fs::remove_dir_all(&base);
     Ok(())
+}
+
+#[cfg(test)]
+mod settled_tests {
+    use super::desktop_up;
+
+    const BOOT: &str = "freally-boot 0.8.0 (e2e)\n";
+    const S3: &str = "[conductor] conductor: boot: B0=0.0 S2=457.9 S3=644.5 ms after B0; firmware times: no FPDT\n";
+    const S4: &str =
+        "[conductor] conductor: boot: B0=0.0 S2=457.9 S3=644.5 S4=2657.7 ms after B0; firmware times: no FPDT\n";
+
+    #[test]
+    fn the_desktop_is_up_only_once_this_boot_has_s4() {
+        // Stage's first frame: the desktop is still asking conductor for stage and its art.
+        assert!(!desktop_up(&format!("{BOOT}{S3}")));
+        assert!(desktop_up(&format!("{BOOT}{S3}{S4}")));
+        // The last boot's S4 says nothing about this one.
+        assert!(!desktop_up(&format!("{BOOT}{S3}{S4}{BOOT}{S3}")));
+    }
 }
