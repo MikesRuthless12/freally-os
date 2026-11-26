@@ -106,7 +106,10 @@ class Udp(socketserver.BaseRequestHandler):
 class Tcp(socketserver.StreamRequestHandler):
     def handle(self):
         try:
-            n = struct.unpack("!H", self.rfile.read(2))[0]
+            head = self.rfile.read(2)
+            if not head:  # xtask's "is it up?": connected, sent nothing
+                return
+            n = struct.unpack("!H", head)[0]
             r = answer(self.rfile.read(n), False)
             self.wfile.write(struct.pack("!H", len(r)) + r)
         except Exception as e:
